@@ -46,6 +46,26 @@ function extractGeminiText(data: GeminiResponse): string {
   return text;
 }
 
+const SNOWBALL_APR = 0.2199;
+const SNOWBALL_MIN_PAYMENT = 40;
+
+function amortizeDebt(balance: number, apr: number, monthlyPayment: number) {
+  const rate = apr / 12;
+  if (monthlyPayment <= balance * rate) {
+    return { months: 999, interest: Number.POSITIVE_INFINITY };
+  }
+
+  const months = Math.ceil(
+    Math.log(monthlyPayment / (monthlyPayment - rate * balance)) / Math.log(1 + rate)
+  );
+  const interest = Math.max(0, monthlyPayment * months - balance);
+  return { months, interest };
+}
+
+function money(amount: number) {
+  return Math.round(amount).toLocaleString("en-US");
+}
+
 const App: React.FC = () => {
   const [emergencyFund, setEmergencyFund] = useState(400);
   const [points, setPoints] = useState(0);
@@ -58,6 +78,8 @@ const App: React.FC = () => {
   const [lessonStep, setLessonStep] = useState(0);
   const [lessonDone, setLessonDone] = useState(false);
   const [plusPulse, setPlusPulse] = useState(false);
+  const [extraPayment, setExtraPayment] = useState(50);
+  const [takeHome, setTakeHome] = useState(2500);
 
   const emergencyGoal = 1000;
   const remainingDebt = 1250;
@@ -66,6 +88,31 @@ const App: React.FC = () => {
 
   const emergencyPct = Math.min(100, Math.round((emergencyFund / emergencyGoal) * 100));
   const fundComplete = emergencyFund >= emergencyGoal;
+
+  const snowballImpact = useMemo(() => {
+    const baseline = amortizeDebt(remainingDebt, SNOWBALL_APR, SNOWBALL_MIN_PAYMENT);
+    const boosted = amortizeDebt(
+      remainingDebt,
+      SNOWBALL_APR,
+      SNOWBALL_MIN_PAYMENT + extraPayment
+    );
+    const interestSaved = Math.max(0, Math.round(baseline.interest - boosted.interest));
+    const monthsSaved = Math.max(0, baseline.months - boosted.months);
+    return {
+      interestSaved,
+      monthsSaved,
+      payoffMonths: boosted.months,
+    };
+  }, [remainingDebt, extraPayment]);
+
+  const budgetSplit = useMemo(() => {
+    const pay = Math.max(0, takeHome);
+    return {
+      needs: pay * 0.5,
+      wants: pay * 0.3,
+      savings: pay * 0.2,
+    };
+  }, [takeHome]);
 
   const ring = useMemo(() => {
     const radius = 54;
@@ -265,6 +312,88 @@ const App: React.FC = () => {
             <p style={styles.statHint}>
               {fundComplete ? "Starter fund locked in. Huge." : `+ $50 · ${emergencyPct}% to starter goal`}
             </p>
+          </article>
+        </section>
+
+        <section style={styles.toolsGrid}>
+          <article style={styles.toolCard} aria-label="Debt Snowball Simulator">
+            <div style={styles.toolHead}>
+              <div>
+                <p style={styles.statLabel}>Debt Snowball Simulator</p>
+                <h3 style={styles.toolTitle}>Extra Monthly Payment</h3>
+              </div>
+              <span style={styles.snowballTag}>Debt Snowball Active ⛄</span>
+            </div>
+
+            <div style={styles.sliderValueRow}>
+              <span style={styles.sliderHint}>$25</span>
+              <span style={styles.sliderCurrent}>${extraPayment}</span>
+              <span style={styles.sliderHint}>$250</span>
+            </div>
+            <input
+              type="range"
+              min={25}
+              max={250}
+              step={5}
+              value={extraPayment}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                setExtraPayment(Number(e.target.value))
+              }
+              aria-label="Extra monthly payment"
+              className="matter-slider"
+              style={styles.slider}
+            />
+
+            <div style={styles.impactBox}>
+              Saves ${money(snowballImpact.interestSaved)} in interest & cuts{" "}
+              {snowballImpact.monthsSaved}{" "}
+              {snowballImpact.monthsSaved === 1 ? "month" : "months"} off your debt!
+            </div>
+            <p style={styles.statHint}>
+              Min ${SNOWBALL_MIN_PAYMENT} + extra ${extraPayment} · paid off in{" "}
+              {snowballImpact.payoffMonths} months at {(SNOWBALL_APR * 100).toFixed(2)}% APR
+            </p>
+          </article>
+
+          <article style={styles.toolCard} aria-label="50/30/20 Smart Budget Splitter">
+            <p style={styles.statLabel}>50/30/20 Smart Budget Splitter</p>
+            <h3 style={styles.toolTitle}>Monthly Take-Home Pay</h3>
+            <div style={styles.payRow}>
+              <span style={styles.payPrefix}>$</span>
+              <input
+                style={styles.payInput}
+                type="text"
+                inputMode="decimal"
+                value={takeHome}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                  const raw = e.target.value.replace(/[^0-9.]/g, "");
+                  const next = Number(raw);
+                  setTakeHome(Number.isFinite(next) ? next : 0);
+                }}
+                aria-label="Monthly take-home pay"
+              />
+            </div>
+
+            <div style={styles.splitBar} aria-hidden="true">
+              <div style={{ ...styles.splitNeeds, flex: 50 }} />
+              <div style={{ ...styles.splitWants, flex: 30 }} />
+              <div style={{ ...styles.splitSave, flex: 20 }} />
+            </div>
+
+            <ul style={styles.splitLegend}>
+              <li style={styles.splitItem}>
+                <span style={{ ...styles.splitDot, background: "#10B981" }} />
+                <span>Needs (50%): ${money(budgetSplit.needs)}</span>
+              </li>
+              <li style={styles.splitItem}>
+                <span style={{ ...styles.splitDot, background: "#6EE7B7" }} />
+                <span>Wants (30%): ${money(budgetSplit.wants)}</span>
+              </li>
+              <li style={styles.splitItem}>
+                <span style={{ ...styles.splitDot, background: "#047857" }} />
+                <span>Savings / Debt Snowball (20%): ${money(budgetSplit.savings)}</span>
+              </li>
+            </ul>
           </article>
         </section>
 
@@ -561,6 +690,128 @@ const styles: Record<string, React.CSSProperties> = {
     gridTemplateColumns: "1fr 1fr",
     gap: 12,
   },
+  toolsGrid: {
+    display: "grid",
+    gridTemplateColumns: "1fr",
+    gap: 12,
+  },
+  toolCard: {
+    background: "#1E293B",
+    border: "1px solid #334155",
+    borderRadius: 16,
+    padding: 16,
+  },
+  toolHead: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 10,
+    marginBottom: 8,
+    flexWrap: "wrap",
+  },
+  toolTitle: {
+    margin: "6px 0 0",
+    fontSize: 16,
+    fontWeight: 800,
+    letterSpacing: "-0.02em",
+  },
+  sliderValueRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginTop: 10,
+  },
+  sliderHint: {
+    fontSize: 11,
+    color: "#94A3B8",
+    fontWeight: 600,
+  },
+  sliderCurrent: {
+    fontSize: 22,
+    fontWeight: 800,
+    color: "#10B981",
+    letterSpacing: "-0.03em",
+  },
+  slider: {
+    width: "100%",
+    margin: "10px 0 12px",
+    accentColor: "#10B981",
+    cursor: "pointer",
+  },
+  impactBox: {
+    background: "rgba(16, 185, 129, 0.12)",
+    border: "1px solid rgba(16, 185, 129, 0.35)",
+    color: "#A7F3D0",
+    borderRadius: 12,
+    padding: "10px 12px",
+    fontSize: 13,
+    fontWeight: 700,
+    lineHeight: 1.45,
+  },
+  payRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    margin: "10px 0 14px",
+    background: "#0F172A",
+    border: "1px solid #334155",
+    borderRadius: 12,
+    padding: "0 12px",
+  },
+  payPrefix: {
+    color: "#10B981",
+    fontWeight: 800,
+    fontSize: 18,
+  },
+  payInput: {
+    flex: 1,
+    background: "transparent",
+    border: "none",
+    color: "#F8FAFC",
+    fontSize: 20,
+    fontWeight: 800,
+    padding: "12px 0",
+    outline: "none",
+  },
+  splitBar: {
+    display: "flex",
+    height: 12,
+    borderRadius: 999,
+    overflow: "hidden",
+    background: "#0F172A",
+    marginBottom: 14,
+  },
+  splitNeeds: {
+    background: "#10B981",
+  },
+  splitWants: {
+    background: "#6EE7B7",
+  },
+  splitSave: {
+    background: "#047857",
+  },
+  splitLegend: {
+    listStyle: "none",
+    margin: 0,
+    padding: 0,
+    display: "flex",
+    flexDirection: "column",
+    gap: 8,
+  },
+  splitItem: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    fontSize: 13,
+    color: "#E2E8F0",
+    fontWeight: 600,
+  },
+  splitDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 999,
+    flexShrink: 0,
+  },
   statCard: {
     background: "#1E293B",
     border: "1px solid #334155",
@@ -817,6 +1068,33 @@ const css = `
   .matter-pop { animation: matterPop 0.24s ease-out; }
   input::placeholder { color: #64748B; }
   button:disabled { cursor: default; }
+  .matter-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 6px;
+    border-radius: 999px;
+    background: #0F172A;
+    outline: none;
+  }
+  .matter-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: #10B981;
+    border: 2px solid #042F2E;
+    cursor: pointer;
+    box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.2);
+  }
+  .matter-slider::-moz-range-thumb {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: #10B981;
+    border: 2px solid #042F2E;
+    cursor: pointer;
+  }
 `;
 
 export default App;
