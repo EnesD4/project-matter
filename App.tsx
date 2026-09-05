@@ -1,11 +1,56 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 type LessonStep = {
   emoji: string;
   title: string;
   body: string;
 };
+
+type TabId = "dashboard" | "snowball" | "lessons" | "socrates";
+
+type ChatSender = "user" | "socrates";
+
+type ChatMessage = {
+  id: string;
+  sender: ChatSender;
+  text: string;
+  timestamp: number;
+};
+
+function createChatMessage(sender: ChatSender, text: string): ChatMessage {
+  return {
+    id: `m-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    sender,
+    text,
+    timestamp: Date.now(),
+  };
+}
+
+const TABS: Array<{ id: TabId; emoji: string; label: string; caption: string }> = [
+  { id: "dashboard", emoji: "📊", label: "Dashboard", caption: "50/30/20 Budget" },
+  { id: "snowball", emoji: "❄️", label: "Debt Snowball", caption: "Payoff plan" },
+  { id: "lessons", emoji: "🎓", label: "Lessons", caption: "Mastery" },
+  { id: "socrates", emoji: "🏛️", label: "Socrates AI", caption: "Mentor" },
+];
+
+const PREVIEW_LESSONS = [
+  {
+    emoji: "🧠",
+    title: "Lesson 1: The Psychology of Debt",
+    blurb: "Why balances linger — and how to flip the script.",
+  },
+  {
+    emoji: "❄️",
+    title: "Lesson 2: Snowball vs. Avalanche",
+    blurb: "Pick a payoff method you'll actually stick with.",
+  },
+  {
+    emoji: "📊",
+    title: "Lesson 3: The 50/30/20 Rule in Action",
+    blurb: "Turn take-home pay into a plan, not a vibe.",
+  },
+];
 
 const LESSON_STEPS: LessonStep[] = [
   {
@@ -66,16 +111,16 @@ const App: React.FC = () => {
   const [emergencyFund, setEmergencyFund] = useState(400);
   const [points, setPoints] = useState(0);
   const [question, setQuestion] = useState("");
-  const [socratesOpen, setSocratesOpen] = useState(false);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [socratesLoading, setSocratesLoading] = useState(false);
-  const [socratesReply, setSocratesReply] = useState("");
-  const [socratesError, setSocratesError] = useState("");
+  const chatLogRef = useRef<HTMLDivElement | null>(null);
   const [lessonOpen, setLessonOpen] = useState(false);
   const [lessonStep, setLessonStep] = useState(0);
   const [lessonDone, setLessonDone] = useState(false);
   const [plusPulse, setPlusPulse] = useState(false);
   const [extraPayment, setExtraPayment] = useState(50);
   const [takeHome, setTakeHome] = useState(2500);
+  const [activeTab, setActiveTab] = useState<TabId>("dashboard");
 
   const emergencyGoal = 1000;
   const remainingDebt = 1250;
@@ -121,6 +166,13 @@ const App: React.FC = () => {
     };
   }, [score, scoreMax]);
 
+  useEffect(() => {
+    const log = chatLogRef.current;
+    if (log) {
+      log.scrollTop = log.scrollHeight;
+    }
+  }, [messages, socratesLoading, activeTab]);
+
   const addEmergency = () => {
     setEmergencyFund((prev: number) => Math.min(emergencyGoal, prev + 50));
     setPlusPulse(true);
@@ -133,17 +185,22 @@ const App: React.FC = () => {
       return;
     }
 
-    setSocratesOpen(true);
+    const userMessage = createChatMessage("user", prompt);
+    const thread = [...messages, userMessage];
+    setMessages((prev) => [...prev, userMessage]);
+    setQuestion("");
     setSocratesLoading(true);
-    setSocratesReply("");
-    setSocratesError("");
 
     try {
       const apiKey = getGeminiApiKey();
-      const userPrompt = `Enes's snapshot: remaining debt $1,250, emergency fund $${emergencyFund} / $1,000, financial health score 785 / 1000, Debt Snowball Active, 5-day streak.\n\nQuestion: ${prompt}`;
+      const history = thread
+        .slice(-12)
+        .map((msg) => `${msg.sender === "user" ? "User" : "Socrates"}: ${msg.text}`)
+        .join("\n");
+      const userPrompt = `Enes's snapshot: remaining debt $1,250, emergency fund $${emergencyFund} / $1,000, financial health score 785 / 1000, Debt Snowball Active, 5-day streak.\n\nConversation:\n${history}\n\nReply to the latest user message.`;
 
       if (!apiKey) {
-        setSocratesReply(SOCRATES_MOCK_REPLY);
+        setMessages((prev) => [...prev, createChatMessage("socrates", SOCRATES_MOCK_REPLY)]);
         return;
       }
 
@@ -155,23 +212,19 @@ const App: React.FC = () => {
         throw new Error("Socrates came back blank. Try that question again.");
       }
 
-      setSocratesReply(text);
+      setMessages((prev) => [...prev, createChatMessage("socrates", text)]);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Something glitched. Try again.";
-      setSocratesReply(
-        "Couldn't reach Gemini just now, so here's the analog take: crush high-interest debt, keep the emergency fund growing, then automate investing. Try again in a minute."
-      );
-      setSocratesError(message);
+      setMessages((prev) => [
+        ...prev,
+        createChatMessage(
+          "socrates",
+          `Couldn't reach Gemini just now: ${message} Crush high-interest debt, keep the emergency fund growing, then automate investing — and try again in a minute.`
+        ),
+      ]);
     } finally {
       setSocratesLoading(false);
     }
-  };
-
-  const closeSocrates = () => {
-    if (socratesLoading) {
-      return;
-    }
-    setSocratesOpen(false);
   };
 
   const openLesson = () => {
@@ -203,6 +256,7 @@ const App: React.FC = () => {
       <style>{css}</style>
 
       <div style={styles.shell}>
+        {activeTab !== "socrates" && (
         <header style={styles.header}>
           <div>
             <p style={styles.brand}>MATTER</p>
@@ -216,248 +270,317 @@ const App: React.FC = () => {
             </div>
           </div>
         </header>
+        )}
 
-        {points > 0 && (
+        {points > 0 && activeTab !== "socrates" && (
           <div style={styles.pointsToast}>+{points} pts earned today</div>
         )}
 
-        <section style={styles.scoreCard} aria-label="Financial Health Score">
-          <div style={styles.scoreRow}>
-            <div style={styles.ringWrap}>
-              <svg width="140" height="140" viewBox="0 0 140 140">
-                <circle
-                  cx="70"
-                  cy="70"
-                  r={ring.radius}
-                  fill="none"
-                  stroke="#1E293B"
-                  strokeWidth="10"
+        {activeTab === "dashboard" && (
+          <div className="matter-tab-panel" style={styles.tabPanel}>
+            <section style={styles.scoreCard} aria-label="Financial Health Score">
+              <div style={styles.scoreRow}>
+                <div style={styles.ringWrap}>
+                  <svg width="140" height="140" viewBox="0 0 140 140">
+                    <circle
+                      cx="70"
+                      cy="70"
+                      r={ring.radius}
+                      fill="none"
+                      stroke="#1E293B"
+                      strokeWidth="10"
+                    />
+                    <circle
+                      cx="70"
+                      cy="70"
+                      r={ring.radius}
+                      fill="none"
+                      stroke="#10B981"
+                      strokeWidth="10"
+                      strokeLinecap="round"
+                      strokeDasharray={ring.circumference}
+                      strokeDashoffset={ring.dashOffset}
+                      transform="rotate(-90 70 70)"
+                      style={{ transition: "stroke-dashoffset 0.6s ease" }}
+                    />
+                  </svg>
+                  <div style={styles.ringLabel}>
+                    <span style={styles.scoreValue}>785</span>
+                    <span style={styles.scoreMax}>/ 1000</span>
+                  </div>
+                </div>
+                <div style={styles.scoreCopy}>
+                  <p style={styles.scoreKicker}>Financial Health Score</p>
+                  <h2 style={styles.scoreTitle}>You’re in a strong lane</h2>
+                  <p style={styles.scoreBody}>
+                    Debt plan on. Streak alive. Keep stacking the boring wins.
+                  </p>
+                  <span style={styles.snowballTag}>Debt Snowball Active ⛄</span>
+                </div>
+              </div>
+            </section>
+
+            <section style={styles.dualGrid}>
+              <article style={styles.statCard}>
+                <p style={styles.statLabel}>Remaining Debt</p>
+                <p style={styles.statValue}>${remainingDebt.toLocaleString("en-US")}</p>
+                <p style={styles.statHint}>Snowball target · smallest first</p>
+              </article>
+
+              <article style={styles.statCard}>
+                <div style={styles.fundHead}>
+                  <p style={styles.statLabel}>Emergency Fund</p>
+                  <button
+                    type="button"
+                    onClick={addEmergency}
+                    disabled={fundComplete}
+                    aria-label="Add 50 dollars to emergency fund"
+                    style={{
+                      ...styles.plusBtn,
+                      opacity: fundComplete ? 0.45 : 1,
+                      transform: plusPulse ? "scale(1.08)" : "scale(1)",
+                    }}
+                  >
+                    +
+                  </button>
+                </div>
+                <p style={styles.statValue}>
+                  ${emergencyFund.toLocaleString("en-US")}{" "}
+                  <span style={styles.statMuted}>/ ${emergencyGoal.toLocaleString("en-US")}</span>
+                </p>
+                <div style={styles.barTrack}>
+                  <div style={{ ...styles.barFill, width: `${emergencyPct}%` }} />
+                </div>
+                <p style={styles.statHint}>
+                  {fundComplete ? "Starter fund locked in. Huge." : `+ $50 · ${emergencyPct}% to starter goal`}
+                </p>
+              </article>
+            </section>
+
+            <article style={styles.toolCard} aria-label="50/30/20 Smart Budget Splitter">
+              <p style={styles.statLabel}>50/30/20 Smart Budget Splitter</p>
+              <h3 style={styles.toolTitle}>Monthly Take-Home Pay</h3>
+              <div style={styles.payRow}>
+                <span style={styles.payPrefix}>$</span>
+                <input
+                  style={styles.payInput}
+                  type="text"
+                  inputMode="decimal"
+                  value={takeHome}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                    const raw = e.target.value.replace(/[^0-9.]/g, "");
+                    const next = Number(raw);
+                    setTakeHome(Number.isFinite(next) ? next : 0);
+                  }}
+                  aria-label="Monthly take-home pay"
                 />
-                <circle
-                  cx="70"
-                  cy="70"
-                  r={ring.radius}
-                  fill="none"
-                  stroke="#10B981"
-                  strokeWidth="10"
-                  strokeLinecap="round"
-                  strokeDasharray={ring.circumference}
-                  strokeDashoffset={ring.dashOffset}
-                  transform="rotate(-90 70 70)"
-                  style={{ transition: "stroke-dashoffset 0.6s ease" }}
-                />
-              </svg>
-              <div style={styles.ringLabel}>
-                <span style={styles.scoreValue}>785</span>
-                <span style={styles.scoreMax}>/ 1000</span>
+              </div>
+
+              <div style={styles.splitBar} aria-hidden="true">
+                <div style={{ ...styles.splitNeeds, flex: 50 }} />
+                <div style={{ ...styles.splitWants, flex: 30 }} />
+                <div style={{ ...styles.splitSave, flex: 20 }} />
+              </div>
+
+              <ul style={styles.splitLegend}>
+                <li style={styles.splitItem}>
+                  <span style={{ ...styles.splitDot, background: "#10B981" }} />
+                  <span>Needs (50%): ${money(budgetSplit.needs)}</span>
+                </li>
+                <li style={styles.splitItem}>
+                  <span style={{ ...styles.splitDot, background: "#6EE7B7" }} />
+                  <span>Wants (30%): ${money(budgetSplit.wants)}</span>
+                </li>
+                <li style={styles.splitItem}>
+                  <span style={{ ...styles.splitDot, background: "#047857" }} />
+                  <span>Savings / Debt Snowball (20%): ${money(budgetSplit.savings)}</span>
+                </li>
+              </ul>
+            </article>
+
+            <button type="button" style={styles.lessonBanner} onClick={openLesson}>
+              <span style={styles.lessonBadge}>3-MIN</span>
+              <span style={styles.lessonText}>
+                3-Min Lesson: ETF Basics with iShares (Powered by BlackRock)
+              </span>
+              <span style={styles.lessonCta}>{lessonDone ? "Review" : "Start"}</span>
+            </button>
+          </div>
+        )}
+
+        {activeTab === "snowball" && (
+          <div className="matter-tab-panel" style={styles.tabPanel}>
+            <article style={styles.statCard}>
+              <p style={styles.statLabel}>Remaining Debt</p>
+              <p style={styles.statValue}>${remainingDebt.toLocaleString("en-US")}</p>
+              <p style={styles.statHint}>Snowball target · smallest first</p>
+            </article>
+
+            <article style={styles.toolCard} aria-label="Debt Snowball Simulator">
+              <div style={styles.toolHead}>
+                <div>
+                  <p style={styles.statLabel}>Debt Snowball Simulator</p>
+                  <h3 style={styles.toolTitle}>Extra Monthly Payment</h3>
+                </div>
+                <span style={styles.snowballTag}>Debt Snowball Active ⛄</span>
+              </div>
+
+              <div style={styles.sliderValueRow}>
+                <span style={styles.sliderHint}>$25</span>
+                <span style={styles.sliderCurrent}>${extraPayment}</span>
+                <span style={styles.sliderHint}>$250</span>
+              </div>
+              <input
+                type="range"
+                min={25}
+                max={250}
+                step={5}
+                value={extraPayment}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  setExtraPayment(Number(e.target.value))
+                }
+                aria-label="Extra monthly payment"
+                className="matter-slider"
+                style={styles.slider}
+              />
+
+              <div style={styles.impactBox}>
+                Saves ${money(snowballImpact.interestSaved)} in interest & cuts{" "}
+                {snowballImpact.monthsSaved}{" "}
+                {snowballImpact.monthsSaved === 1 ? "month" : "months"} off your debt!
+              </div>
+              <p style={styles.statHint}>
+                Min ${SNOWBALL_MIN_PAYMENT} + extra ${extraPayment} · paid off in{" "}
+                {snowballImpact.payoffMonths} months at {(SNOWBALL_APR * 100).toFixed(2)}% APR
+              </p>
+            </article>
+          </div>
+        )}
+
+        {activeTab === "lessons" && (
+          <div className="matter-tab-panel" style={styles.tabPanel}>
+            <section style={styles.lessonsHero}>
+              <div style={styles.lessonsHeroTop}>
+                <h2 style={styles.lessonsTitle}>Financial Mastery Lessons</h2>
+                <span style={styles.comingSoonBadge}>Coming Soon</span>
+              </div>
+              <p style={styles.lessonsSubtitle}>
+                Learn debt payoff strategies, investing fundamentals, and wealth building.
+              </p>
+              <p style={styles.moduleHint}>Module In Development</p>
+            </section>
+
+            {PREVIEW_LESSONS.map((lesson) => (
+              <article key={lesson.title} style={styles.lockedCard}>
+                <div style={styles.lockedCardTop}>
+                  <span style={styles.lockedEmoji}>{lesson.emoji}</span>
+                  <span style={styles.lockChip}>Locked</span>
+                </div>
+                <h3 style={styles.lockedTitle}>{lesson.title}</h3>
+                <p style={styles.lockedBlurb}>{lesson.blurb}</p>
+              </article>
+            ))}
+          </div>
+        )}
+
+        {activeTab === "socrates" && (
+          <div className="matter-tab-panel" style={styles.chatWindow}>
+            <div style={styles.chatHeader}>
+              <div style={styles.socratesAvatar} aria-hidden="true">
+                🏛️
+              </div>
+              <div>
+                <p style={styles.askLabel}>Socrates AI</p>
+                <p style={styles.askHint}>Your Gen Z money mentor — no lecture, just plays.</p>
               </div>
             </div>
-            <div style={styles.scoreCopy}>
-              <p style={styles.scoreKicker}>Financial Health Score</p>
-              <h2 style={styles.scoreTitle}>You’re in a strong lane</h2>
-              <p style={styles.scoreBody}>
-                Debt plan on. Streak alive. Keep stacking the boring wins.
-              </p>
-              <span style={styles.snowballTag}>Debt Snowball Active ⛄</span>
+
+            <div ref={chatLogRef} style={styles.chatLog} aria-live="polite">
+              {messages.length === 0 && !socratesLoading && (
+                <p style={styles.chatEmpty}>Ask anything about debt, budget, or investing. The thread stays here.</p>
+              )}
+              {messages.map((msg) => {
+                const isUser = msg.sender === "user";
+                return (
+                  <div
+                    key={msg.id}
+                    style={{
+                      ...styles.chatRow,
+                      justifyContent: isUser ? "flex-end" : "flex-start",
+                    }}
+                  >
+                    {!isUser && (
+                      <div style={styles.socratesAvatarSm} aria-hidden="true">
+                        🏛️
+                      </div>
+                    )}
+                    <div style={isUser ? styles.bubbleUser : styles.bubbleSocrates}>
+                      {msg.text}
+                    </div>
+                  </div>
+                );
+              })}
+              {socratesLoading && (
+                <div style={{ ...styles.chatRow, justifyContent: "flex-start" }}>
+                  <div style={styles.socratesAvatarSm} aria-hidden="true">
+                    🏛️
+                  </div>
+                  <div style={styles.thinkingBubble}>Socrates is thinking...</div>
+                </div>
+              )}
             </div>
-          </div>
-        </section>
 
-        <section style={styles.dualGrid}>
-          <article style={styles.statCard}>
-            <p style={styles.statLabel}>Remaining Debt</p>
-            <p style={styles.statValue}>${remainingDebt.toLocaleString("en-US")}</p>
-            <p style={styles.statHint}>Snowball target · smallest first</p>
-          </article>
-
-          <article style={styles.statCard}>
-            <div style={styles.fundHead}>
-              <p style={styles.statLabel}>Emergency Fund</p>
+            <div style={styles.chatComposer}>
+              <input
+                style={styles.askInput}
+                value={question}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQuestion(e.target.value)}
+                onKeyDown={onAskKeyDown}
+                placeholder="Ask Socrates..."
+                aria-label="Ask Socrates"
+                disabled={socratesLoading}
+              />
               <button
                 type="button"
-                onClick={addEmergency}
-                disabled={fundComplete}
-                aria-label="Add 50 dollars to emergency fund"
                 style={{
-                  ...styles.plusBtn,
-                  opacity: fundComplete ? 0.45 : 1,
-                  transform: plusPulse ? "scale(1.08)" : "scale(1)",
+                  ...styles.sendBtn,
+                  opacity: socratesLoading || !question.trim() ? 0.55 : 1,
                 }}
+                onClick={() => void askSocrates()}
+                disabled={socratesLoading || !question.trim()}
               >
-                +
+                {socratesLoading ? "..." : "Send"}
               </button>
             </div>
-            <p style={styles.statValue}>
-              ${emergencyFund.toLocaleString("en-US")}{" "}
-              <span style={styles.statMuted}>/ ${emergencyGoal.toLocaleString("en-US")}</span>
-            </p>
-            <div style={styles.barTrack}>
-              <div style={{ ...styles.barFill, width: `${emergencyPct}%` }} />
-            </div>
-            <p style={styles.statHint}>
-              {fundComplete ? "Starter fund locked in. Huge." : `+ $50 · ${emergencyPct}% to starter goal`}
-            </p>
-          </article>
-        </section>
-
-        <section style={styles.toolsGrid}>
-          <article style={styles.toolCard} aria-label="Debt Snowball Simulator">
-            <div style={styles.toolHead}>
-              <div>
-                <p style={styles.statLabel}>Debt Snowball Simulator</p>
-                <h3 style={styles.toolTitle}>Extra Monthly Payment</h3>
-              </div>
-              <span style={styles.snowballTag}>Debt Snowball Active ⛄</span>
-            </div>
-
-            <div style={styles.sliderValueRow}>
-              <span style={styles.sliderHint}>$25</span>
-              <span style={styles.sliderCurrent}>${extraPayment}</span>
-              <span style={styles.sliderHint}>$250</span>
-            </div>
-            <input
-              type="range"
-              min={25}
-              max={250}
-              step={5}
-              value={extraPayment}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                setExtraPayment(Number(e.target.value))
-              }
-              aria-label="Extra monthly payment"
-              className="matter-slider"
-              style={styles.slider}
-            />
-
-            <div style={styles.impactBox}>
-              Saves ${money(snowballImpact.interestSaved)} in interest & cuts{" "}
-              {snowballImpact.monthsSaved}{" "}
-              {snowballImpact.monthsSaved === 1 ? "month" : "months"} off your debt!
-            </div>
-            <p style={styles.statHint}>
-              Min ${SNOWBALL_MIN_PAYMENT} + extra ${extraPayment} · paid off in{" "}
-              {snowballImpact.payoffMonths} months at {(SNOWBALL_APR * 100).toFixed(2)}% APR
-            </p>
-          </article>
-
-          <article style={styles.toolCard} aria-label="50/30/20 Smart Budget Splitter">
-            <p style={styles.statLabel}>50/30/20 Smart Budget Splitter</p>
-            <h3 style={styles.toolTitle}>Monthly Take-Home Pay</h3>
-            <div style={styles.payRow}>
-              <span style={styles.payPrefix}>$</span>
-              <input
-                style={styles.payInput}
-                type="text"
-                inputMode="decimal"
-                value={takeHome}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
-                  const raw = e.target.value.replace(/[^0-9.]/g, "");
-                  const next = Number(raw);
-                  setTakeHome(Number.isFinite(next) ? next : 0);
-                }}
-                aria-label="Monthly take-home pay"
-              />
-            </div>
-
-            <div style={styles.splitBar} aria-hidden="true">
-              <div style={{ ...styles.splitNeeds, flex: 50 }} />
-              <div style={{ ...styles.splitWants, flex: 30 }} />
-              <div style={{ ...styles.splitSave, flex: 20 }} />
-            </div>
-
-            <ul style={styles.splitLegend}>
-              <li style={styles.splitItem}>
-                <span style={{ ...styles.splitDot, background: "#10B981" }} />
-                <span>Needs (50%): ${money(budgetSplit.needs)}</span>
-              </li>
-              <li style={styles.splitItem}>
-                <span style={{ ...styles.splitDot, background: "#6EE7B7" }} />
-                <span>Wants (30%): ${money(budgetSplit.wants)}</span>
-              </li>
-              <li style={styles.splitItem}>
-                <span style={{ ...styles.splitDot, background: "#047857" }} />
-                <span>Savings / Debt Snowball (20%): ${money(budgetSplit.savings)}</span>
-              </li>
-            </ul>
-          </article>
-        </section>
-
-        <section style={styles.askCard}>
-          <p style={styles.askLabel}>Socrates AI</p>
-          <p style={styles.askHint}>Your Gen Z money mentor — no lecture, just plays.</p>
-          <div style={styles.askRow}>
-            <input
-              style={styles.askInput}
-              value={question}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQuestion(e.target.value)}
-              onKeyDown={onAskKeyDown}
-              placeholder="Ask Socrates..."
-              aria-label="Ask Socrates"
-              disabled={socratesLoading}
-            />
-            <button
-              type="button"
-              style={{
-                ...styles.sendBtn,
-                opacity: socratesLoading || !question.trim() ? 0.55 : 1,
-              }}
-              onClick={() => void askSocrates()}
-              disabled={socratesLoading || !question.trim()}
-            >
-              {socratesLoading ? "..." : "Send"}
-            </button>
           </div>
-        </section>
+        )}
 
-        <button type="button" style={styles.lessonBanner} onClick={openLesson}>
-          <span style={styles.lessonBadge}>3-MIN</span>
-          <span style={styles.lessonText}>
-            3-Min Lesson: ETF Basics with iShares (Powered by BlackRock)
-          </span>
-          <span style={styles.lessonCta}>{lessonDone ? "Review" : "Start"}</span>
-        </button>
-
+        {activeTab !== "socrates" && (
         <footer style={styles.footer}>Matter · Built for the US · Stay consistent</footer>
+        )}
       </div>
 
-      {socratesOpen && (
-        <div style={styles.overlay} onClick={closeSocrates} role="presentation">
-          <div
-            className="matter-slide-up"
-            style={styles.sheet}
-            onClick={(e: React.MouseEvent<HTMLDivElement>) => e.stopPropagation()}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="socrates-title"
-          >
-            <div style={styles.sheetHandle} />
-            <p style={styles.sheetKicker}>Socrates AI</p>
-            <h3 id="socrates-title" style={styles.sheetTitle}>
-              {socratesLoading
-                ? "Socrates is thinking..."
-                : socratesError
-                  ? "Quick timeout"
-                  : "Socrates"}
-            </h3>
-            <p style={{ ...styles.sheetBody, whiteSpace: "pre-wrap" }}>
-              {socratesLoading
-                ? "Give it a second — pulling a sharp take from your money mentor."
-                : socratesError || socratesReply}
-            </p>
+      <nav style={styles.tabBar} aria-label="Primary">
+        {TABS.map((tab) => {
+          const active = activeTab === tab.id;
+          return (
             <button
+              key={tab.id}
               type="button"
+              onClick={() => setActiveTab(tab.id)}
+              aria-current={active ? "page" : undefined}
               style={{
-                ...styles.primaryBtn,
-                opacity: socratesLoading ? 0.55 : 1,
+                ...styles.tabBtn,
+                ...(active ? styles.tabBtnActive : {}),
               }}
-              onClick={closeSocrates}
-              disabled={socratesLoading}
             >
-              {socratesLoading ? "Thinking..." : "Got it"}
+              <span style={styles.tabEmoji}>{tab.emoji}</span>
+              <span style={styles.tabLabel}>{tab.label}</span>
+              <span style={styles.tabCaption}>{tab.caption}</span>
             </button>
-          </div>
-        </div>
-      )}
+          );
+        })}
+      </nav>
 
       {lessonOpen && (
         <div style={styles.overlay} onClick={closeLesson} role="presentation">
@@ -532,7 +655,7 @@ const styles: Record<string, React.CSSProperties> = {
     color: "#F8FAFC",
     fontFamily:
       'Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif',
-    padding: "24px 16px 48px",
+    padding: "24px 16px 132px",
     boxSizing: "border-box",
   },
   shell: {
@@ -870,7 +993,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 16,
   },
   askHint: {
-    margin: "4px 0 12px",
+    margin: "4px 0 0",
     color: "#94A3B8",
     fontSize: 13,
   },
@@ -936,6 +1059,250 @@ const styles: Record<string, React.CSSProperties> = {
     color: "#64748B",
     fontSize: 12,
     marginTop: 8,
+  },
+  tabPanel: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 16,
+  },
+  chatWindow: {
+    display: "flex",
+    flexDirection: "column",
+    minHeight: "calc(100vh - 148px)",
+    background: "linear-gradient(180deg, #111827 0%, #0F172A 100%)",
+    border: "1px solid #1F2937",
+    borderRadius: 20,
+    overflow: "hidden",
+  },
+  chatHeader: {
+    display: "flex",
+    alignItems: "center",
+    gap: 12,
+    padding: "14px 16px",
+    borderBottom: "1px solid rgba(16, 185, 129, 0.22)",
+    background: "rgba(15, 23, 42, 0.72)",
+  },
+  chatLog: {
+    flex: 1,
+    overflowY: "auto",
+    padding: "16px 12px 12px",
+    display: "flex",
+    flexDirection: "column",
+    gap: 12,
+    minHeight: 280,
+  },
+  chatEmpty: {
+    margin: "auto",
+    textAlign: "center",
+    color: "#94A3B8",
+    fontSize: 14,
+    lineHeight: 1.5,
+    maxWidth: 280,
+  },
+  chatRow: {
+    display: "flex",
+    alignItems: "flex-end",
+    gap: 8,
+  },
+  bubbleUser: {
+    maxWidth: "78%",
+    background: "linear-gradient(180deg, #1C1917 0%, #0C0A09 100%)",
+    border: "1px solid #44403C",
+    color: "#F5F5F4",
+    borderRadius: "16px 16px 4px 16px",
+    padding: "10px 12px",
+    fontSize: 14,
+    lineHeight: 1.45,
+    whiteSpace: "pre-wrap",
+    boxShadow: "0 8px 20px rgba(0,0,0,0.28)",
+  },
+  bubbleSocrates: {
+    maxWidth: "78%",
+    background: "rgba(16, 185, 129, 0.12)",
+    border: "1px solid rgba(16, 185, 129, 0.38)",
+    color: "#ECFDF5",
+    borderRadius: "16px 16px 16px 4px",
+    padding: "10px 12px",
+    fontSize: 14,
+    lineHeight: 1.45,
+    whiteSpace: "pre-wrap",
+  },
+  thinkingBubble: {
+    background: "rgba(16, 185, 129, 0.08)",
+    border: "1px dashed rgba(16, 185, 129, 0.4)",
+    color: "#6EE7B7",
+    borderRadius: "16px 16px 16px 4px",
+    padding: "10px 12px",
+    fontSize: 13,
+    fontWeight: 650,
+    fontStyle: "italic",
+  },
+  socratesAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: "50%",
+    background: "linear-gradient(135deg, #10B981, #064E3B)",
+    display: "grid",
+    placeItems: "center",
+    flexShrink: 0,
+    fontSize: 18,
+    boxShadow: "0 0 0 3px rgba(16, 185, 129, 0.22)",
+  },
+  socratesAvatarSm: {
+    width: 28,
+    height: 28,
+    borderRadius: "50%",
+    background: "linear-gradient(135deg, #10B981, #064E3B)",
+    display: "grid",
+    placeItems: "center",
+    flexShrink: 0,
+    fontSize: 13,
+  },
+  chatComposer: {
+    display: "flex",
+    gap: 8,
+    padding: 12,
+    borderTop: "1px solid #1F2937",
+    background: "rgba(15, 23, 42, 0.9)",
+  },
+  tabBar: {
+    position: "fixed",
+    left: "50%",
+    bottom: 16,
+    transform: "translateX(-50%)",
+    width: "calc(100% - 24px)",
+    maxWidth: 480,
+    display: "grid",
+    gridTemplateColumns: "repeat(4, 1fr)",
+    gap: 4,
+    padding: 8,
+    borderRadius: 22,
+    background: "rgba(15, 23, 42, 0.62)",
+    border: "1px solid rgba(16, 185, 129, 0.28)",
+    boxShadow: "0 18px 40px rgba(2, 6, 23, 0.45), inset 0 1px 0 rgba(255,255,255,0.08)",
+    backdropFilter: "blur(18px)",
+    WebkitBackdropFilter: "blur(18px)",
+    zIndex: 30,
+  } as React.CSSProperties,
+  tabBtn: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 2,
+    minHeight: 72,
+    border: "none",
+    background: "transparent",
+    color: "#94A3B8",
+    borderRadius: 16,
+    cursor: "pointer",
+    padding: "8px 4px",
+    transition: "background 0.22s ease, color 0.22s ease, box-shadow 0.22s ease, transform 0.22s ease",
+  },
+  tabBtnActive: {
+    background: "rgba(16, 185, 129, 0.16)",
+    color: "#6EE7B7",
+    boxShadow: "inset 0 0 0 1px rgba(16, 185, 129, 0.45), 0 8px 18px rgba(16, 185, 129, 0.12)",
+    transform: "translateY(-1px)",
+  },
+  tabEmoji: {
+    fontSize: 16,
+    lineHeight: 1,
+  },
+  tabLabel: {
+    fontSize: 10,
+    fontWeight: 800,
+    letterSpacing: "-0.02em",
+    textAlign: "center",
+    lineHeight: 1.2,
+  },
+  tabCaption: {
+    fontSize: 8,
+    fontWeight: 600,
+    color: "inherit",
+    opacity: 0.78,
+    textAlign: "center",
+    lineHeight: 1.2,
+  },
+  lessonsHero: {
+    background: "linear-gradient(180deg, rgba(16,185,129,0.14), #1E293B)",
+    border: "1px solid rgba(16, 185, 129, 0.28)",
+    borderRadius: 20,
+    padding: 20,
+  },
+  lessonsHeroTop: {
+    display: "flex",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  lessonsTitle: {
+    margin: 0,
+    fontSize: 22,
+    fontWeight: 800,
+    letterSpacing: "-0.03em",
+  },
+  lessonsSubtitle: {
+    margin: "8px 0 0",
+    color: "#CBD5E1",
+    fontSize: 14,
+    lineHeight: 1.5,
+  },
+  moduleHint: {
+    margin: "12px 0 0",
+    fontSize: 12,
+    fontWeight: 700,
+    color: "#6EE7B7",
+    letterSpacing: "0.04em",
+    textTransform: "uppercase",
+  },
+  comingSoonBadge: {
+    flexShrink: 0,
+    background: "rgba(16, 185, 129, 0.16)",
+    border: "1px solid rgba(16, 185, 129, 0.4)",
+    color: "#A7F3D0",
+    borderRadius: 999,
+    padding: "6px 10px",
+    fontSize: 11,
+    fontWeight: 800,
+    whiteSpace: "nowrap",
+  },
+  lockedCard: {
+    background: "#1E293B",
+    border: "1px solid #334155",
+    borderRadius: 16,
+    padding: 16,
+    opacity: 0.88,
+    position: "relative",
+  },
+  lockedCardTop: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  lockedEmoji: {
+    fontSize: 22,
+  },
+  lockChip: {
+    background: "#0F172A",
+    border: "1px solid #334155",
+    color: "#94A3B8",
+    borderRadius: 999,
+    padding: "4px 8px",
+    fontSize: 11,
+    fontWeight: 700,
+  },
+  lockedTitle: {
+    margin: "0 0 6px",
+    fontSize: 16,
+    fontWeight: 800,
+  },
+  lockedBlurb: {
+    margin: 0,
+    color: "#94A3B8",
+    fontSize: 13,
+    lineHeight: 1.45,
   },
   overlay: {
     position: "fixed",
@@ -1049,6 +1416,7 @@ const css = `
     from { transform: translateY(12px) scale(0.98); opacity: 0; }
     to { transform: translateY(0) scale(1); opacity: 1; }
   }
+  .matter-tab-panel { animation: matterPop 0.22s ease-out; }
   .matter-slide-up { animation: matterSlideUp 0.28s ease-out; }
   .matter-pop { animation: matterPop 0.24s ease-out; }
   input::placeholder { color: #64748B; }
