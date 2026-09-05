@@ -1,3 +1,4 @@
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import React, { useMemo, useState } from "react";
 
 type LessonStep = {
@@ -25,25 +26,20 @@ const LESSON_STEPS: LessonStep[] = [
 ];
 
 const GEMINI_API_KEY = "AQ.Ab8RN6LVBGK2nK4hRt3tLM01jc1i7r3CWL7paFYfl8QdYO4Rjg";
-const GEMINI_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
 const SOCRATES_PERSONA =
   "You are Socrates, a witty, sharp, and highly encouraging financial mentor for US Gen Z. Keep answers under 3 short sentences. Use concise language with relatable analogies.";
+const SOCRATES_MOCK_REPLY =
+  "No API key yet, so I'll keep it analog: pay the high-interest debt first, keep stacking that emergency fund, then automate a broad ETF. Add VITE_GEMINI_API_KEY to unlock the live Socrates chat.";
 
-type GeminiPart = { text?: string };
-type GeminiResponse = {
-  candidates?: Array<{
-    content?: { parts?: GeminiPart[] };
-  }>;
-  error?: { message?: string };
-};
-
-function extractGeminiText(data: GeminiResponse): string {
-  const parts = data.candidates?.[0]?.content?.parts ?? [];
-  const text = parts
-    .map((part) => part.text ?? "")
-    .join("\n")
-    .trim();
-  return text;
+function getGeminiApiKey() {
+  const envKey = import.meta.env.VITE_GEMINI_API_KEY;
+  if (typeof envKey === "string" && envKey.trim()) {
+    return envKey.trim();
+  }
+  if (typeof GEMINI_API_KEY === "string" && GEMINI_API_KEY.trim()) {
+    return GEMINI_API_KEY.trim();
+  }
+  return "";
 }
 
 const SNOWBALL_APR = 0.2199;
@@ -143,32 +139,18 @@ const App: React.FC = () => {
     setSocratesError("");
 
     try {
-      const response = await fetch(GEMINI_ENDPOINT, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          systemInstruction: {
-            parts: [{ text: SOCRATES_PERSONA }],
-          },
-          contents: [
-            {
-              role: "user",
-              parts: [
-                {
-                  text: `Enes's snapshot: remaining debt $1,250, emergency fund $${emergencyFund} / $1,000, financial health score 785 / 1000, Debt Snowball Active, 5-day streak.\n\nQuestion: ${prompt}`,
-                },
-              ],
-            },
-          ],
-        }),
-      });
+      const apiKey = getGeminiApiKey();
+      const userPrompt = `Enes's snapshot: remaining debt $1,250, emergency fund $${emergencyFund} / $1,000, financial health score 785 / 1000, Debt Snowball Active, 5-day streak.\n\nQuestion: ${prompt}`;
 
-      const data = (await response.json()) as GeminiResponse;
-      if (!response.ok) {
-        throw new Error(data.error?.message || "Socrates could not reach Gemini.");
+      if (!apiKey) {
+        setSocratesReply(SOCRATES_MOCK_REPLY);
+        return;
       }
 
-      const text = extractGeminiText(data);
+      const genAI = new GoogleGenerativeAI(apiKey);
+      const model = genAI.getGenerativeModel({ model: "gemini-3.6-flash" });
+      const result = await model.generateContent(`${SOCRATES_PERSONA}\n\n${userPrompt}`);
+      const text = result.response.text().trim();
       if (!text) {
         throw new Error("Socrates came back blank. Try that question again.");
       }
@@ -176,6 +158,9 @@ const App: React.FC = () => {
       setSocratesReply(text);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Something glitched. Try again.";
+      setSocratesReply(
+        "Couldn't reach Gemini just now, so here's the analog take: crush high-interest debt, keep the emergency fund growing, then automate investing. Try again in a minute."
+      );
       setSocratesError(message);
     } finally {
       setSocratesLoading(false);
