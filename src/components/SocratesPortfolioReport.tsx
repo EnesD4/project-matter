@@ -48,7 +48,7 @@ export default function SocratesPortfolioReport({ onConsultSocrates }: SocratesP
 
   return (
     <div
-      className="relative overflow-hidden rounded-2xl border border-emerald-500/30 bg-gradient-to-r from-emerald-500/10 via-[#111827] to-[#111827] p-4 shadow-[0_0_28px_rgba(16,185,129,0.16)]"
+      className="relative overflow-hidden rounded-2xl border border-emerald-500/30 bg-gradient-to-r from-emerald-500/10 via-[#0A0A0A] to-[#0A0A0A] p-4 shadow-[0_0_28px_rgba(16,185,129,0.16)]"
     >
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-3">
@@ -80,7 +80,7 @@ export default function SocratesPortfolioReport({ onConsultSocrates }: SocratesP
           role="presentation"
         >
           <div
-            className="matter-pop w-full max-w-sm rounded-2xl border border-emerald-500/30 bg-[#111827] p-5 shadow-[0_0_32px_rgba(16,185,129,0.18)]"
+            className="matter-pop w-full max-w-sm rounded-2xl border border-emerald-500/30 bg-[#0A0A0A] p-5 shadow-[0_0_32px_rgba(16,185,129,0.18)]"
             onClick={(e) => e.stopPropagation()}
             role="dialog"
             aria-modal="true"
@@ -114,7 +114,7 @@ export default function SocratesPortfolioReport({ onConsultSocrates }: SocratesP
                 return (
                   <div
                     key={insight.label}
-                    className="rounded-xl border border-[#1F2937] bg-black/20 p-3"
+                    className="rounded-xl border border-[#1F1F1F] bg-black/20 p-3"
                   >
                     <div className="flex items-center gap-2">
                       <span className="grid h-7 w-7 flex-shrink-0 place-items-center rounded-lg bg-emerald-500/15 text-emerald-400">

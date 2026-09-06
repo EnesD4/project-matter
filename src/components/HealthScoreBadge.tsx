@@ -32,7 +32,7 @@ export default function HealthScoreBadge({ score, scoreMax }: HealthScoreBadgePr
         type="button"
         onClick={() => setOpen(true)}
         aria-haspopup="dialog"
-        className="flex w-full items-center gap-3 rounded-xl border border-[#1F2937] bg-[#111827] px-4 py-3 text-left transition hover:border-emerald-500/40 active:scale-[0.99]"
+        className="flex w-full items-center gap-3 rounded-xl border border-[#1F1F1F] bg-[#0A0A0A] px-4 py-3 text-left transition hover:border-emerald-500/40 active:scale-[0.99]"
       >
         <span className="grid h-9 w-9 flex-shrink-0 place-items-center rounded-full bg-emerald-500/15 text-emerald-400">
           <Gauge size={17} />
@@ -57,7 +57,7 @@ export default function HealthScoreBadge({ score, scoreMax }: HealthScoreBadgePr
           role="presentation"
         >
           <div
-            className="matter-pop w-full max-w-sm rounded-2xl border border-[#1F2937] bg-[#111827] p-5"
+            className="matter-pop w-full max-w-sm rounded-2xl border border-[#1F1F1F] bg-[#0A0A0A] p-5"
             onClick={(e) => e.stopPropagation()}
             role="dialog"
             aria-modal="true"
@@ -97,7 +97,7 @@ export default function HealthScoreBadge({ score, scoreMax }: HealthScoreBadgePr
                 const Icon = factor.icon;
                 const factorPct = Math.round((factor.score / factor.max) * 100);
                 return (
-                  <div key={factor.label} className="rounded-xl border border-[#1F2937] bg-black/20 p-3">
+                  <div key={factor.label} className="rounded-xl border border-[#1F1F1F] bg-black/20 p-3">
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-2">
                         <span className="grid h-7 w-7 flex-shrink-0 place-items-center rounded-lg bg-[#3B82F6]/15 text-[#60A5FA]">

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   Calendar,
   Check,
@@ -165,11 +165,17 @@ const EMPTY_FORM: FormState = { title: "", balance: "", minPayment: "", apr: "" 
 type DebtSnowballManagerProps = {
   /** Called when the user wants to jump over to the Lessons tab (investing tips / course). */
   onOpenLessons?: () => void;
+  /** Mirrors the live debt list up to the parent (e.g. so Socrates AI can reference it). */
+  onDebtsChange?: (debts: Debt[]) => void;
 };
 
-export default function DebtSnowballManager({ onOpenLessons }: DebtSnowballManagerProps) {
+export default function DebtSnowballManager({ onOpenLessons, onDebtsChange }: DebtSnowballManagerProps) {
   const [debts, setDebts] = useState<Debt[]>([]);
   const [debtStatus, setDebtStatus] = useState<DebtStatus>("unanswered");
+
+  useEffect(() => {
+    onDebtsChange?.(debts);
+  }, [debts, onDebtsChange]);
   const [extraPayment, setExtraPayment] = useState(50);
   const [formOpen, setFormOpen] = useState(false);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
@@ -289,7 +295,7 @@ export default function DebtSnowballManager({ onOpenLessons }: DebtSnowballManag
   };
 
   return (
-    <div className="rounded-2xl border border-white/10 bg-[#090D16] p-4 sm:p-5 space-y-5 shadow-[0_12px_40px_rgba(0,0,0,0.35)]">
+    <div className="rounded-2xl border border-white/10 bg-[#0A0A0A] p-4 sm:p-5 space-y-5 shadow-[0_12px_40px_rgba(0,0,0,0.35)]">
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-3">
           <div className="grid h-11 w-11 flex-shrink-0 place-items-center rounded-xl bg-emerald-500/15 text-emerald-400">
@@ -322,7 +328,7 @@ export default function DebtSnowballManager({ onOpenLessons }: DebtSnowballManag
       </button>
 
       {showOnboarding && (
-        <div className="matter-pop rounded-xl border border-slate-700 bg-[#0F172A] p-5 text-center">
+        <div className="matter-pop rounded-xl border border-white/10 bg-[#121212] p-5 text-center">
           <p className="text-base font-extrabold text-white">Do you currently have any debt?</p>
           <p className="mt-1 text-xs text-slate-400">We'll set up your plan based on your answer.</p>
           <div className="mt-4 flex items-center justify-center gap-3">
@@ -336,7 +342,7 @@ export default function DebtSnowballManager({ onOpenLessons }: DebtSnowballManag
             <button
               type="button"
               onClick={() => answerHasDebt(false)}
-              className="flex-1 rounded-xl border border-slate-600 px-4 py-3 text-sm font-bold text-slate-200 transition hover:border-slate-400 active:scale-95"
+              className="flex-1 rounded-xl border border-white/15 px-4 py-3 text-sm font-bold text-slate-200 transition hover:border-white/30 active:scale-95"
             >
               No
             </button>
@@ -369,7 +375,7 @@ export default function DebtSnowballManager({ onOpenLessons }: DebtSnowballManag
                 setDebtStatus("has-debt");
                 openForm();
               }}
-              className="rounded-xl border border-slate-600 px-4 py-2.5 text-sm font-bold text-slate-300 transition hover:border-slate-400"
+              className="rounded-xl border border-white/15 px-4 py-2.5 text-sm font-bold text-slate-300 transition hover:border-white/30"
             >
               Actually, I do have debt
             </button>
@@ -401,7 +407,7 @@ export default function DebtSnowballManager({ onOpenLessons }: DebtSnowballManag
                 value={form.title}
                 onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
                 placeholder="e.g. Visa Credit Card"
-                className="rounded-lg border border-slate-700 bg-[#0F172A] px-3 py-2 text-sm font-medium text-white outline-none placeholder:text-slate-500 focus:border-emerald-500"
+                className="rounded-lg border border-white/10 bg-[#121212] px-3 py-2 text-sm font-medium text-white outline-none placeholder:text-slate-500 focus:border-emerald-500"
               />
             </label>
 
@@ -412,7 +418,7 @@ export default function DebtSnowballManager({ onOpenLessons }: DebtSnowballManag
                 value={form.balance}
                 onChange={(e) => setForm((f) => ({ ...f, balance: e.target.value.replace(/[^0-9.]/g, "") }))}
                 placeholder="1200"
-                className="rounded-lg border border-slate-700 bg-[#0F172A] px-3 py-2 text-sm font-medium text-white outline-none placeholder:text-slate-500 focus:border-emerald-500"
+                className="rounded-lg border border-white/10 bg-[#121212] px-3 py-2 text-sm font-medium text-white outline-none placeholder:text-slate-500 focus:border-emerald-500"
               />
             </label>
 
@@ -423,7 +429,7 @@ export default function DebtSnowballManager({ onOpenLessons }: DebtSnowballManag
                 value={form.minPayment}
                 onChange={(e) => setForm((f) => ({ ...f, minPayment: e.target.value.replace(/[^0-9.]/g, "") }))}
                 placeholder="45"
-                className="rounded-lg border border-slate-700 bg-[#0F172A] px-3 py-2 text-sm font-medium text-white outline-none placeholder:text-slate-500 focus:border-emerald-500"
+                className="rounded-lg border border-white/10 bg-[#121212] px-3 py-2 text-sm font-medium text-white outline-none placeholder:text-slate-500 focus:border-emerald-500"
               />
             </label>
 
@@ -434,7 +440,7 @@ export default function DebtSnowballManager({ onOpenLessons }: DebtSnowballManag
                 value={form.apr}
                 onChange={(e) => setForm((f) => ({ ...f, apr: e.target.value.replace(/[^0-9.]/g, "") }))}
                 placeholder="22.99"
-                className="rounded-lg border border-slate-700 bg-[#0F172A] px-3 py-2 text-sm font-medium text-white outline-none placeholder:text-slate-500 focus:border-emerald-500"
+                className="rounded-lg border border-white/10 bg-[#121212] px-3 py-2 text-sm font-medium text-white outline-none placeholder:text-slate-500 focus:border-emerald-500"
               />
             </label>
           </div>
@@ -452,7 +458,7 @@ export default function DebtSnowballManager({ onOpenLessons }: DebtSnowballManag
       )}
 
       {!hasDebts && !showOnboarding && !showCongrats && (
-        <div className="rounded-xl border border-dashed border-slate-700 p-6 text-center text-sm text-slate-400">
+        <div className="rounded-xl border border-dashed border-white/10 p-6 text-center text-sm text-slate-400">
           No debts yet. Add your first one above to build your plan.
         </div>
       )}
@@ -475,7 +481,7 @@ export default function DebtSnowballManager({ onOpenLessons }: DebtSnowballManag
             <SummaryStat icon={<PiggyBank size={16} />} label="Months Saved" value={`${monthsSaved} mo`} accent />
           </div>
 
-          <div className="rounded-xl border border-slate-700 bg-[#0F172A] p-4">
+          <div className="rounded-xl border border-white/10 bg-[#121212] p-4">
             <div className="flex items-center justify-between">
               <p className="text-xs font-semibold text-slate-400">Pay extra each month</p>
               <span className="text-lg font-extrabold text-emerald-400">${extraPayment}</span>
@@ -510,18 +516,18 @@ export default function DebtSnowballManager({ onOpenLessons }: DebtSnowballManag
                 return (
                   <div
                     key={debt.id}
-                    className="flex items-center gap-3 rounded-lg border border-slate-800 bg-[#0F172A] px-3 py-2.5"
+                    className="flex items-center gap-3 rounded-lg border border-white/10 bg-[#121212] px-3 py-2.5"
                   >
                     <span
                       className={`grid h-6 w-6 flex-shrink-0 place-items-center rounded-full text-[11px] font-bold ${
-                        isPaid ? "bg-emerald-500 text-[#042F2E]" : "bg-slate-700 text-slate-300"
+                        isPaid ? "bg-emerald-500 text-[#042F2E]" : "bg-white/10 text-slate-300"
                       }`}
                     >
                       {index + 1}
                     </span>
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-semibold text-white">{debt.title}</p>
-                      <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+                      <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-white/10">
                         <div
                           className={`h-full rounded-full transition-all duration-500 ${
                             isPaid ? "bg-emerald-500" : "bg-emerald-500/50"
@@ -553,12 +559,12 @@ export default function DebtSnowballManager({ onOpenLessons }: DebtSnowballManag
                   <article
                     key={debt.id}
                     className={`relative rounded-xl border p-4 transition ${
-                      isTarget ? "border-emerald-500/50 bg-emerald-500/[0.08]" : "border-slate-700 bg-[#0F172A]"
+                      isTarget ? "border-emerald-500/50 bg-emerald-500/[0.08]" : "border-white/10 bg-[#121212]"
                     }`}
                   >
                     <div className="flex items-start justify-between gap-2">
                       <div className="flex items-center gap-2">
-                        <span className="grid h-8 w-8 flex-shrink-0 place-items-center rounded-lg bg-slate-800 text-slate-300">
+                        <span className="grid h-8 w-8 flex-shrink-0 place-items-center rounded-lg bg-white/5 text-slate-300">
                           <CreditCard size={15} />
                         </span>
                         <div>
@@ -585,7 +591,7 @@ export default function DebtSnowballManager({ onOpenLessons }: DebtSnowballManag
                       </p>
                     </div>
 
-                    <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-800">
+                    <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-white/10">
                       <div
                         className={`h-full rounded-full transition-all duration-500 ${
                           isPaid ? "bg-emerald-500" : "bg-emerald-500/70"
@@ -643,7 +649,7 @@ export default function DebtSnowballManager({ onOpenLessons }: DebtSnowballManag
           role="presentation"
         >
           <div
-            className="matter-pop w-full max-w-sm rounded-2xl border border-slate-700 bg-[#0F172A] p-5"
+            className="matter-pop w-full max-w-sm rounded-2xl border border-white/10 bg-[#121212] p-5"
             onClick={(e) => e.stopPropagation()}
             role="dialog"
             aria-modal="true"
@@ -718,7 +724,7 @@ function SummaryStat({
   accent?: boolean;
 }) {
   return (
-    <div className="rounded-xl border border-slate-700 bg-[#0F172A] p-3">
+    <div className="rounded-xl border border-white/10 bg-[#121212] p-3">
       <div className={`mb-1.5 flex items-center gap-1.5 ${accent ? "text-emerald-400" : "text-slate-400"}`}>
         {icon}
         <span className="text-[10px] font-bold uppercase tracking-wide">{label}</span>

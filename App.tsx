@@ -1,8 +1,8 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import DebtSnowballManager from "./src/components/DebtSnowballManager";
+import DebtSnowballManager, { type Debt } from "./src/components/DebtSnowballManager";
 import HealthScoreBadge from "./src/components/HealthScoreBadge";
-import InvestmentPortfolioCard from "./src/components/InvestmentPortfolioCard";
+import InvestmentPortfolioCard, { type Holding } from "./src/components/InvestmentPortfolioCard";
 import LessonsPhase1 from "./src/components/LessonsPhase1";
 import SocratesPortfolioReport from "./src/components/SocratesPortfolioReport";
 
@@ -26,18 +26,36 @@ function createChatMessage(sender: ChatSender, text: string): ChatMessage {
   };
 }
 
-const TABS: Array<{ id: TabId; emoji: string; label: string; caption: string }> = [
-  { id: "dashboard", emoji: "📊", label: "Dashboard", caption: "50/30/20 Budget" },
-  { id: "snowball", emoji: "❄️", label: "Debt", caption: "Payoff plan" },
-  { id: "lessons", emoji: "🎓", label: "Lessons", caption: "Mastery" },
-  { id: "socrates", emoji: "🏛️", label: "Socrates AI", caption: "Mentor" },
+const TABS: Array<{ id: TabId; emoji: string; label: string }> = [
+  { id: "dashboard", emoji: "📊", label: "Investment" },
+  { id: "snowball", emoji: "❄️", label: "Debt" },
+  { id: "lessons", emoji: "🎓", label: "Lessons" },
+  { id: "socrates", emoji: "🏛️", label: "Socrates AI" },
 ];
 
 const GEMINI_API_KEY = "AQ.Ab8RN6LVBGK2nK4hRt3tLM01jc1i7r3CWL7paFYfl8QdYO4Rjg";
+const USER_NAME = "Enes";
 const SOCRATES_PERSONA =
-  "You are Socrates, a witty, sharp, and highly encouraging financial mentor for US Gen Z. Keep answers under 3 short sentences. Use concise language with relatable analogies.";
+  "You are Socrates, a warm, sharp, and encouraging personal finance and investment mentor for people of any age or background. Keep answers under 4 short sentences, use clear everyday language with relatable analogies, and sound like a supportive guide having a real conversation — never a lecture.";
 const SOCRATES_MOCK_REPLY =
   "No API key yet, so I'll keep it analog: pay the high-interest debt first, keep stacking that emergency fund, then automate a broad ETF. Add VITE_GEMINI_API_KEY to unlock the live Socrates chat.";
+
+const GREETING_WORDS = ["hi", "hello", "hey", "yo", "hiya", "howdy", "selam", "merhaba", "hola", "sup"];
+
+/** True for short, plain greetings ("Hi", "Hey there", "Selam") — not real questions. */
+function isSimpleGreeting(text: string): boolean {
+  const normalized = text.trim().toLowerCase().replace(/[!?.,]+$/g, "");
+  if (!normalized) return false;
+  const words = normalized.split(/\s+/);
+  if (words.length > 3) return false;
+  return GREETING_WORDS.includes(words[0]);
+}
+
+const GREETING_REPLIES = [
+  `Hi, ${USER_NAME}! How are you doing? What are we talking about today?`,
+  `Hey ${USER_NAME}! Good to see you — what's on your mind today?`,
+  `Hello, ${USER_NAME}! How's everything going? What would you like to dig into?`,
+];
 
 function getGeminiApiKey() {
   const envKey = import.meta.env.VITE_GEMINI_API_KEY;
@@ -66,6 +84,11 @@ const App: React.FC = () => {
   const [navVisible, setNavVisible] = useState(true);
   const lastScrollYRef = useRef(0);
 
+  // Live mirrors of child-owned state, kept in sync via callback props so Socrates AI
+  // can reference the user's real portfolio and debt data.
+  const [debts, setDebts] = useState<Debt[]>([]);
+  const [holdings, setHoldings] = useState<Holding[]>([]);
+
   const emergencyGoal = 1000;
   const score = 785;
   const scoreMax = 1000;
@@ -81,6 +104,33 @@ const App: React.FC = () => {
       savings: pay * 0.2,
     };
   }, [takeHome]);
+
+  // Live portfolio context — real holdings, so Socrates can answer "which stocks do I own?" accurately.
+  const portfolioContext = useMemo(() => {
+    if (holdings.length === 0) return "No investments or connected accounts yet.";
+    const totalValue = holdings.reduce(
+      (sum, h) => sum + (h.kind === "stock" ? h.quantity * h.currentPrice : h.balance),
+      0
+    );
+    const lines = holdings.map((h) =>
+      h.kind === "stock"
+        ? `${h.symbol} (${h.description}): ${h.quantity} shares @ $${h.currentPrice.toFixed(2)} = $${money(
+            h.quantity * h.currentPrice
+          )} (today ${h.dayChangePct >= 0 ? "+" : ""}${h.dayChangePct.toFixed(2)}%)`
+        : `${h.name} (connected account balance): $${money(h.balance)}`
+    );
+    return `Total portfolio value: $${money(totalValue)}. Holdings:\n- ${lines.join("\n- ")}`;
+  }, [holdings]);
+
+  // Live debt context — real debts, so Socrates can answer "how's my debt payoff going?" accurately.
+  const debtContext = useMemo(() => {
+    if (debts.length === 0) return "No active debts — currently debt-free.";
+    const totalDebt = debts.reduce((sum, d) => sum + d.balance, 0);
+    const lines = debts.map(
+      (d) => `${d.title}: $${money(d.balance)} remaining of $${money(d.originalBalance)}, ${d.apr}% APR, $${money(d.minPayment)}/mo minimum`
+    );
+    return `Total remaining debt: $${money(totalDebt)} across ${debts.length} debt(s):\n- ${lines.join("\n- ")}`;
+  }, [debts]);
 
   useEffect(() => {
     const log = chatLogRef.current;
@@ -132,13 +182,24 @@ const App: React.FC = () => {
     setQuestion("");
     setSocratesLoading(true);
 
+    // Simple greetings get a warm, direct reply instead of a full model round-trip —
+    // keeps the very first hello feeling natural rather than clinical.
+    if (isSimpleGreeting(prompt)) {
+      const reply = GREETING_REPLIES[Math.floor(Math.random() * GREETING_REPLIES.length)];
+      window.setTimeout(() => {
+        setMessages((prev) => [...prev, createChatMessage("socrates", reply)]);
+        setSocratesLoading(false);
+      }, 450);
+      return;
+    }
+
     try {
       const apiKey = getGeminiApiKey();
       const history = thread
         .slice(-12)
         .map((msg) => `${msg.sender === "user" ? "User" : "Socrates"}: ${msg.text}`)
         .join("\n");
-      const userPrompt = `Enes's snapshot: remaining debt $1,250, emergency fund $${emergencyFund} / $1,000, financial health score 785 / 1000, Debt Snowball Active, 5-day streak.\n\nConversation:\n${history}\n\nReply to the latest user message.`;
+      const userPrompt = `${USER_NAME}'s live snapshot:\n- Emergency fund: $${emergencyFund} / $1,000\n- Financial health score: ${score} / ${scoreMax}\n- Debt: ${debtContext}\n- Investment portfolio: ${portfolioContext}\n\nConversation:\n${history}\n\nReply to the latest user message. If ${USER_NAME} asks about their investments, debts, or portfolio balance, answer using the real snapshot data above.`;
 
       if (!apiKey) {
         setMessages((prev) => [...prev, createChatMessage("socrates", SOCRATES_MOCK_REPLY)]);
@@ -202,7 +263,7 @@ const App: React.FC = () => {
 
             <SocratesPortfolioReport onConsultSocrates={() => setActiveTab("socrates")} />
 
-            <InvestmentPortfolioCard />
+            <InvestmentPortfolioCard onHoldingsChange={setHoldings} />
 
             <article style={styles.statCard}>
               <div style={styles.fundHead}>
@@ -278,7 +339,7 @@ const App: React.FC = () => {
 
         {activeTab === "snowball" && (
           <div className="matter-tab-panel" style={styles.tabPanel}>
-            <DebtSnowballManager onOpenLessons={() => setActiveTab("lessons")} />
+            <DebtSnowballManager onOpenLessons={() => setActiveTab("lessons")} onDebtsChange={setDebts} />
           </div>
         )}
 
@@ -296,7 +357,7 @@ const App: React.FC = () => {
               </div>
               <div>
                 <p style={styles.askLabel}>Socrates AI</p>
-                <p style={styles.askHint}>Your Gen Z money mentor — no lecture, just plays.</p>
+                <p style={styles.askHint}>Your Personal Finance & Investment Guide</p>
               </div>
             </div>
 
@@ -387,7 +448,6 @@ const App: React.FC = () => {
             >
               <span style={styles.tabEmoji}>{tab.emoji}</span>
               <span style={styles.tabLabel}>{tab.label}</span>
-              <span style={styles.tabCaption}>{tab.caption}</span>
             </button>
           );
         })}
@@ -400,7 +460,7 @@ const styles: Record<string, React.CSSProperties> = {
   page: {
     minHeight: "100vh",
     margin: 0,
-    background: "#0B0F19",
+    background: "#000000",
     color: "#F8FAFC",
     fontFamily:
       'Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif',
@@ -471,8 +531,8 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 12,
   },
   toolCard: {
-    background: "#1E293B",
-    border: "1px solid #334155",
+    background: "#0A0A0A",
+    border: "1px solid #1F1F1F",
     borderRadius: 16,
     padding: 16,
   },
@@ -528,8 +588,8 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: "center",
     gap: 8,
     margin: "10px 0 14px",
-    background: "#0F172A",
-    border: "1px solid #334155",
+    background: "#121212",
+    border: "1px solid #1F1F1F",
     borderRadius: 12,
     padding: "0 12px",
   },
@@ -553,7 +613,7 @@ const styles: Record<string, React.CSSProperties> = {
     height: 12,
     borderRadius: 999,
     overflow: "hidden",
-    background: "#0F172A",
+    background: "#121212",
     marginBottom: 14,
   },
   splitNeeds: {
@@ -588,8 +648,8 @@ const styles: Record<string, React.CSSProperties> = {
     flexShrink: 0,
   },
   statCard: {
-    background: "#111827",
-    border: "1px solid #1F2937",
+    background: "#0A0A0A",
+    border: "1px solid #1F1F1F",
     borderRadius: 16,
     padding: 16,
   },
@@ -638,7 +698,7 @@ const styles: Record<string, React.CSSProperties> = {
   barTrack: {
     height: 6,
     borderRadius: 999,
-    background: "#0F172A",
+    background: "#121212",
     overflow: "hidden",
   },
   barFill: {
@@ -648,8 +708,8 @@ const styles: Record<string, React.CSSProperties> = {
     transition: "width 0.25s ease",
   },
   askCard: {
-    background: "#1E293B",
-    border: "1px solid #334155",
+    background: "#0A0A0A",
+    border: "1px solid #1F1F1F",
     borderRadius: 16,
     padding: 16,
   },
@@ -669,8 +729,8 @@ const styles: Record<string, React.CSSProperties> = {
   },
   askInput: {
     flex: 1,
-    background: "#0F172A",
-    border: "1px solid #334155",
+    background: "#121212",
+    border: "1px solid #1F1F1F",
     color: "#F8FAFC",
     borderRadius: 12,
     padding: "12px 14px",
@@ -701,8 +761,8 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     flexDirection: "column",
     minHeight: "calc(100vh - 148px)",
-    background: "linear-gradient(180deg, #111827 0%, #0F172A 100%)",
-    border: "1px solid #1F2937",
+    background: "linear-gradient(180deg, #0A0A0A 0%, #000000 100%)",
+    border: "1px solid #1F1F1F",
     borderRadius: 20,
     overflow: "hidden",
   },
@@ -712,7 +772,7 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 12,
     padding: "14px 16px",
     borderBottom: "1px solid rgba(16, 185, 129, 0.22)",
-    background: "rgba(15, 23, 42, 0.72)",
+    background: "rgba(0, 0, 0, 0.72)",
   },
   chatLog: {
     flex: 1,
@@ -794,8 +854,8 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     gap: 8,
     padding: 12,
-    borderTop: "1px solid #1F2937",
-    background: "rgba(15, 23, 42, 0.9)",
+    borderTop: "1px solid #1F1F1F",
+    background: "rgba(0, 0, 0, 0.85)",
   },
   tabBar: {
     position: "fixed",
@@ -808,7 +868,7 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 4,
     padding: 8,
     borderRadius: 22,
-    background: "rgba(15, 23, 42, 0.62)",
+    background: "rgba(0, 0, 0, 0.6)",
     border: "1px solid rgba(16, 185, 129, 0.28)",
     boxShadow: "0 18px 40px rgba(2, 6, 23, 0.45), inset 0 1px 0 rgba(255,255,255,0.08)",
     backdropFilter: "blur(18px)",
@@ -821,7 +881,7 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: "center",
     justifyContent: "center",
     gap: 2,
-    minHeight: 72,
+    minHeight: 58,
     border: "none",
     background: "transparent",
     color: "#94A3B8",
@@ -841,17 +901,9 @@ const styles: Record<string, React.CSSProperties> = {
     lineHeight: 1,
   },
   tabLabel: {
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: 800,
     letterSpacing: "-0.02em",
-    textAlign: "center",
-    lineHeight: 1.2,
-  },
-  tabCaption: {
-    fontSize: 8,
-    fontWeight: 600,
-    color: "inherit",
-    opacity: 0.78,
     textAlign: "center",
     lineHeight: 1.2,
   },
@@ -876,7 +928,7 @@ const css = `
     appearance: none;
     height: 6px;
     border-radius: 999px;
-    background: #0F172A;
+    background: #121212;
     outline: none;
   }
   .matter-slider::-webkit-slider-thumb {

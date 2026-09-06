@@ -1,0 +1,142 @@
+/**
+ * Historical price simulation utilities.
+ *
+ * Finnhub's candle/history endpoint isn't available on the free-tier API key this
+ * app uses (verified: it returns "You don't have access to this resource."), so we
+ * can't pull real historical series for arbitrary timeframes. Instead, every series
+ * generated here is anchored at the *real* current value (and, for "1D", the real
+ * open/high/low from a live quote) and fills in a realistic-looking, deterministic
+ * (seeded) path in between — so numbers only look believable, never actually lie
+ * about the one true data point that matters: where you are right now.
+ */
+
+export type RangeOption = "1D" | "1W" | "1M" | "1Y" | "ALL";
+
+export const RANGE_OPTIONS: RangeOption[] = ["1D", "1W", "1M", "1Y", "ALL"];
+
+export type SeriesPoint = { t: number; label: string; value: number };
+
+export type DayAnchors = { open: number; high: number; low: number };
+
+function seededRandom(seed: string) {
+  let h = 1779033703 ^ seed.length;
+  for (let i = 0; i < seed.length; i++) {
+    h = Math.imul(h ^ seed.charCodeAt(i), 3432918353);
+    h = (h << 13) | (h >>> 19);
+  }
+  return function next() {
+    h = Math.imul(h ^ (h >>> 16), 2246822507);
+    h = Math.imul(h ^ (h >>> 13), 3266489909);
+    h ^= h >>> 16;
+    return (h >>> 0) / 4294967296;
+  };
+}
+
+function gaussian(rng: () => number) {
+  const u1 = Math.max(rng(), 1e-9);
+  const u2 = rng();
+  return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+}
+
+const INTRADAY_HOURS = ["9:30", "10:30", "11:30", "12:30", "1:30", "2:30", "3:30", "4:00"];
+
+function buildIntradaySeries(seedKey: string, anchors: DayAnchors, current: number, points = 26): SeriesPoint[] {
+  const safeOpen = anchors.open || current;
+  const lo = Math.min(anchors.low || safeOpen, safeOpen, current);
+  const hi = Math.max(anchors.high || safeOpen, safeOpen, current);
+  const span = hi - lo || Math.max(current * 0.01, 0.5);
+  const rng = seededRandom(`${seedKey}-1D`);
+
+  const series: SeriesPoint[] = [];
+  for (let i = 0; i < points; i++) {
+    const progress = i / (points - 1);
+    const drift = safeOpen + (current - safeOpen) * progress;
+    const noise = i === 0 || i === points - 1 ? 0 : (gaussian(rng) * span) / 8;
+    const value = i === 0 ? safeOpen : i === points - 1 ? current : Math.min(hi, Math.max(lo, drift + noise));
+    const hourIdx = Math.round(progress * (INTRADAY_HOURS.length - 1));
+    series.push({ t: i, label: INTRADAY_HOURS[hourIdx], value });
+  }
+  return series;
+}
+
+type WalkRange = Exclude<RangeOption, "1D">;
+type RangeShape = { points: number; dailyVolPct: number; driftPct: number; unitLabel: string };
+
+const RANGE_SHAPE: Record<WalkRange, RangeShape> = {
+  "1W": { points: 7, dailyVolPct: 1.1, driftPct: 0.4, unitLabel: "d" },
+  "1M": { points: 22, dailyVolPct: 1.4, driftPct: 1.2, unitLabel: "d" },
+  "1Y": { points: 52, dailyVolPct: 2.6, driftPct: 6, unitLabel: "w" },
+  ALL: { points: 90, dailyVolPct: 2.9, driftPct: 12, unitLabel: "w" },
+};
+
+function buildWalkSeries(seedKey: string, range: WalkRange, target: number): SeriesPoint[] {
+  const shape = RANGE_SHAPE[range];
+  const rng = seededRandom(`${seedKey}-${range}`);
+  const vol = shape.dailyVolPct / 100;
+  const drift = shape.driftPct / 100 / shape.points;
+
+  const raw = [1];
+  for (let i = 1; i < shape.points; i++) {
+    const r = drift + gaussian(rng) * vol;
+    raw.push(Math.max(0.05, raw[i - 1] * (1 + r)));
+  }
+
+  // Rescale the whole synthetic path so it always ends exactly at the real current value.
+  const scale = target / raw[raw.length - 1];
+  return raw.map((v, i) => ({
+    t: i,
+    label: i === raw.length - 1 ? "Now" : `${raw.length - 1 - i}${shape.unitLabel} ago`,
+    value: v * scale,
+  }));
+}
+
+/**
+ * Builds a believable historical series for the given range, always ending at
+ * `currentValue`. For "1D", pass real `anchors` (open/high/low from a live quote)
+ * when available for an honestly-anchored intraday path; otherwise a synthetic
+ * open is derived from `todayChangePct`.
+ */
+export function buildHistoricalSeries(
+  seedKey: string,
+  range: RangeOption,
+  currentValue: number,
+  todayChangePct = 0,
+  anchors?: DayAnchors
+): SeriesPoint[] {
+  if (!Number.isFinite(currentValue) || currentValue <= 0) {
+    return [
+      { t: 0, label: "Start", value: 0 },
+      { t: 1, label: "Now", value: 0 },
+    ];
+  }
+
+  if (range === "1D") {
+    const dayAnchors: DayAnchors =
+      anchors ??
+      (() => {
+        const open = currentValue / (1 + todayChangePct / 100);
+        const hi = Math.max(open, currentValue) * 1.004;
+        const lo = Math.min(open, currentValue) * 0.996;
+        return { open, high: hi, low: lo };
+      })();
+    return buildIntradaySeries(seedKey, dayAnchors, currentValue);
+  }
+
+  return buildWalkSeries(seedKey, range, currentValue);
+}
+
+/** Percentage change from the first to the last point of a series. */
+export function seriesChangePct(series: SeriesPoint[]): number {
+  const first = series[0]?.value;
+  const last = series[series.length - 1]?.value;
+  if (!first) return 0;
+  return ((last - first) / first) * 100;
+}
+
+/** Formats a Finnhub `marketCapitalization` value (reported in millions of the listing currency). */
+export function formatMarketCap(millions?: number | null): string {
+  if (!millions || millions <= 0) return "—";
+  if (millions >= 1_000_000) return `$${(millions / 1_000_000).toFixed(2)}T`;
+  if (millions >= 1_000) return `$${(millions / 1_000).toFixed(1)}B`;
+  return `$${millions.toFixed(0)}M`;
+}

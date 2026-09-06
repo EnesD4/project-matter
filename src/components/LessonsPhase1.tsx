@@ -428,7 +428,7 @@ export default function LessonsPhase1() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between gap-3 rounded-2xl border border-[#1F2937] bg-[#111827] px-4 py-3">
+      <div className="flex items-center justify-between gap-3 rounded-2xl border border-[#1F1F1F] bg-[#0A0A0A] px-4 py-3">
         <div className="flex items-center gap-2.5">
           <span className="grid h-9 w-9 flex-shrink-0 place-items-center rounded-xl bg-amber-500/15 text-amber-400">
             <Star size={16} />
@@ -453,8 +453,8 @@ export default function LessonsPhase1() {
             key={phaseDef.id}
             className={`overflow-hidden rounded-2xl border transition-colors ${
               phaseDef.locked
-                ? "border-[#1F2937]/60 bg-[#111827]/50"
-                : "border-[#1F2937] bg-gradient-to-br from-orange-500/10 via-[#111827] to-[#111827]"
+                ? "border-[#1F1F1F]/60 bg-[#0A0A0A]/50"
+                : "border-[#1F1F1F] bg-gradient-to-br from-orange-500/10 via-[#0A0A0A] to-[#0A0A0A]"
             }`}
           >
             <button
@@ -527,7 +527,7 @@ export default function LessonsPhase1() {
                       <div
                         key={moduleDef.id}
                         className={`rounded-2xl border transition-colors ${
-                          unlocked ? "border-[#1F2937] bg-[#111827]" : "border-[#1F2937]/60 bg-[#111827]/50 opacity-60"
+                          unlocked ? "border-[#1F1F1F] bg-[#0A0A0A]" : "border-[#1F1F1F]/60 bg-[#0A0A0A]/50 opacity-60"
                         }`}
                       >
                         <button
@@ -584,7 +584,7 @@ export default function LessonsPhase1() {
                             expanded ? "max-h-[480px] opacity-100" : "max-h-0 opacity-0"
                           }`}
                         >
-                          <div className="space-y-3 border-t border-[#1F2937] px-4 py-3">
+                          <div className="space-y-3 border-t border-[#1F1F1F] px-4 py-3">
                             <div className="flex items-start gap-2">
                               <Lightbulb size={13} className="mt-0.5 flex-shrink-0 text-amber-400" />
                               <p className="text-[11px] leading-relaxed text-slate-400">{moduleDef.knowledge.title}</p>
@@ -627,7 +627,7 @@ export default function LessonsPhase1() {
           role="presentation"
         >
           <div
-            className="matter-pop w-full max-w-sm rounded-2xl border border-[#1F2937] bg-[#111827] p-5"
+            className="matter-pop w-full max-w-sm rounded-2xl border border-[#1F1F1F] bg-[#0A0A0A] p-5"
             onClick={(e) => e.stopPropagation()}
             role="dialog"
             aria-modal="true"
@@ -762,7 +762,7 @@ function QuestionStep({
 
   return (
     <div className="mt-4">
-      <div className="rounded-xl border border-[#1F2937] bg-black/20 p-3">
+      <div className="rounded-xl border border-[#1F1F1F] bg-black/20 p-3">
         <p className="text-xs leading-relaxed text-slate-300">{quiz.scenario}</p>
       </div>
       <p className="mt-3 text-sm font-bold text-white">{quiz.question}</p>
@@ -774,7 +774,7 @@ function QuestionStep({
               key={option.id}
               type="button"
               onClick={() => onSelect(option)}
-              className="w-full rounded-xl border border-[#1F2937] bg-black/20 px-3 py-2.5 text-left text-xs font-semibold text-slate-200 transition hover:border-emerald-500/40 hover:bg-emerald-500/5 active:scale-[0.99]"
+              className="w-full rounded-xl border border-[#1F1F1F] bg-black/20 px-3 py-2.5 text-left text-xs font-semibold text-slate-200 transition hover:border-emerald-500/40 hover:bg-emerald-500/5 active:scale-[0.99]"
             >
               {option.label}
             </button>
