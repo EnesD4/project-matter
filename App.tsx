@@ -1,11 +1,10 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import React, { useEffect, useMemo, useRef, useState } from "react";
-
-type LessonStep = {
-  emoji: string;
-  title: string;
-  body: string;
-};
+import DebtSnowballManager from "./src/components/DebtSnowballManager";
+import HealthScoreBadge from "./src/components/HealthScoreBadge";
+import InvestmentPortfolioCard from "./src/components/InvestmentPortfolioCard";
+import LessonsPhase1 from "./src/components/LessonsPhase1";
+import SocratesPortfolioReport from "./src/components/SocratesPortfolioReport";
 
 type TabId = "dashboard" | "snowball" | "lessons" | "socrates";
 
@@ -29,45 +28,9 @@ function createChatMessage(sender: ChatSender, text: string): ChatMessage {
 
 const TABS: Array<{ id: TabId; emoji: string; label: string; caption: string }> = [
   { id: "dashboard", emoji: "📊", label: "Dashboard", caption: "50/30/20 Budget" },
-  { id: "snowball", emoji: "❄️", label: "Debt Snowball", caption: "Payoff plan" },
+  { id: "snowball", emoji: "❄️", label: "Debt", caption: "Payoff plan" },
   { id: "lessons", emoji: "🎓", label: "Lessons", caption: "Mastery" },
   { id: "socrates", emoji: "🏛️", label: "Socrates AI", caption: "Mentor" },
-];
-
-const PREVIEW_LESSONS = [
-  {
-    emoji: "🧠",
-    title: "Lesson 1: The Psychology of Debt",
-    blurb: "Why balances linger — and how to flip the script.",
-  },
-  {
-    emoji: "❄️",
-    title: "Lesson 2: Snowball vs. Avalanche",
-    blurb: "Pick a payoff method you'll actually stick with.",
-  },
-  {
-    emoji: "📊",
-    title: "Lesson 3: The 50/30/20 Rule in Action",
-    blurb: "Turn take-home pay into a plan, not a vibe.",
-  },
-];
-
-const LESSON_STEPS: LessonStep[] = [
-  {
-    emoji: "📦",
-    title: "What’s an ETF, actually?",
-    body: "An ETF (exchange-traded fund) is a basket of stocks or bonds you can buy like a single share. Instead of picking one company, you get instant diversification — think a playlist, not one song.",
-  },
-  {
-    emoji: "⬛",
-    title: "iShares, in plain English",
-    body: "iShares ETFs are built and managed by BlackRock. You pick a theme (S&P 500, total US market, bonds), buy the ticker, and own a slice of that whole market. Low fees, trades all day, no stock-picking homework.",
-  },
-  {
-    emoji: "🚀",
-    title: "Why this matters at your age",
-    body: "Time is your unfair advantage. Parking even $50 a month into a broad iShares ETF can compound for decades. Pay down high-interest debt first, keep your emergency fund growing, then automate investing. That’s the whole game.",
-  },
 ];
 
 const GEMINI_API_KEY = "AQ.Ab8RN6LVBGK2nK4hRt3tLM01jc1i7r3CWL7paFYfl8QdYO4Rjg";
@@ -87,64 +50,28 @@ function getGeminiApiKey() {
   return "";
 }
 
-const SNOWBALL_APR = 0.2199;
-const SNOWBALL_MIN_PAYMENT = 40;
-
-function amortizeDebt(balance: number, apr: number, monthlyPayment: number) {
-  const rate = apr / 12;
-  if (monthlyPayment <= balance * rate) {
-    return { months: 999, interest: Number.POSITIVE_INFINITY };
-  }
-
-  const months = Math.ceil(
-    Math.log(monthlyPayment / (monthlyPayment - rate * balance)) / Math.log(1 + rate)
-  );
-  const interest = Math.max(0, monthlyPayment * months - balance);
-  return { months, interest };
-}
-
 function money(amount: number) {
   return Math.round(amount).toLocaleString("en-US");
 }
 
 const App: React.FC = () => {
   const [emergencyFund, setEmergencyFund] = useState(400);
-  const [points, setPoints] = useState(0);
   const [question, setQuestion] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [socratesLoading, setSocratesLoading] = useState(false);
   const chatLogRef = useRef<HTMLDivElement | null>(null);
-  const [lessonOpen, setLessonOpen] = useState(false);
-  const [lessonStep, setLessonStep] = useState(0);
-  const [lessonDone, setLessonDone] = useState(false);
   const [plusPulse, setPlusPulse] = useState(false);
-  const [extraPayment, setExtraPayment] = useState(50);
   const [takeHome, setTakeHome] = useState(2500);
   const [activeTab, setActiveTab] = useState<TabId>("dashboard");
+  const [navVisible, setNavVisible] = useState(true);
+  const lastScrollYRef = useRef(0);
 
   const emergencyGoal = 1000;
-  const remainingDebt = 1250;
   const score = 785;
   const scoreMax = 1000;
 
   const emergencyPct = Math.min(100, Math.round((emergencyFund / emergencyGoal) * 100));
   const fundComplete = emergencyFund >= emergencyGoal;
-
-  const snowballImpact = useMemo(() => {
-    const baseline = amortizeDebt(remainingDebt, SNOWBALL_APR, SNOWBALL_MIN_PAYMENT);
-    const boosted = amortizeDebt(
-      remainingDebt,
-      SNOWBALL_APR,
-      SNOWBALL_MIN_PAYMENT + extraPayment
-    );
-    const interestSaved = Math.max(0, Math.round(baseline.interest - boosted.interest));
-    const monthsSaved = Math.max(0, baseline.months - boosted.months);
-    return {
-      interestSaved,
-      monthsSaved,
-      payoffMonths: boosted.months,
-    };
-  }, [remainingDebt, extraPayment]);
 
   const budgetSplit = useMemo(() => {
     const pay = Math.max(0, takeHome);
@@ -155,23 +82,37 @@ const App: React.FC = () => {
     };
   }, [takeHome]);
 
-  const ring = useMemo(() => {
-    const radius = 54;
-    const circumference = 2 * Math.PI * radius;
-    const progress = score / scoreMax;
-    return {
-      radius,
-      circumference,
-      dashOffset: circumference * (1 - progress),
-    };
-  }, [score, scoreMax]);
-
   useEffect(() => {
     const log = chatLogRef.current;
     if (log) {
       log.scrollTop = log.scrollHeight;
     }
   }, [messages, socratesLoading, activeTab]);
+
+  useEffect(() => {
+    lastScrollYRef.current = window.scrollY;
+
+    const handleScroll = () => {
+      const currentY = window.scrollY;
+      const delta = currentY - lastScrollYRef.current;
+
+      // Ignore tiny jitters so the bar doesn't flicker on minor scroll noise.
+      if (Math.abs(delta) < 6) {
+        return;
+      }
+
+      if (delta > 0 && currentY > 80) {
+        setNavVisible(false); // scrolling down -> hide
+      } else {
+        setNavVisible(true); // scrolling up (or near top) -> show
+      }
+
+      lastScrollYRef.current = currentY;
+    };
+
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, []);
 
   const addEmergency = () => {
     setEmergencyFund((prev: number) => Math.min(emergencyGoal, prev + 50));
@@ -227,23 +168,6 @@ const App: React.FC = () => {
     }
   };
 
-  const openLesson = () => {
-    setLessonStep(0);
-    setLessonOpen(true);
-  };
-
-  const closeLesson = () => {
-    setLessonOpen(false);
-  };
-
-  const completeLesson = () => {
-    if (!lessonDone) {
-      setLessonDone(true);
-      setPoints((p: number) => p + 50);
-    }
-    setLessonOpen(false);
-  };
-
   const onAskKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (event.key === "Enter") {
       event.preventDefault();
@@ -272,90 +196,42 @@ const App: React.FC = () => {
         </header>
         )}
 
-        {points > 0 && activeTab !== "socrates" && (
-          <div style={styles.pointsToast}>+{points} pts earned today</div>
-        )}
-
         {activeTab === "dashboard" && (
           <div className="matter-tab-panel" style={styles.tabPanel}>
-            <section style={styles.scoreCard} aria-label="Financial Health Score">
-              <div style={styles.scoreRow}>
-                <div style={styles.ringWrap}>
-                  <svg width="140" height="140" viewBox="0 0 140 140">
-                    <circle
-                      cx="70"
-                      cy="70"
-                      r={ring.radius}
-                      fill="none"
-                      stroke="#1E293B"
-                      strokeWidth="10"
-                    />
-                    <circle
-                      cx="70"
-                      cy="70"
-                      r={ring.radius}
-                      fill="none"
-                      stroke="#10B981"
-                      strokeWidth="10"
-                      strokeLinecap="round"
-                      strokeDasharray={ring.circumference}
-                      strokeDashoffset={ring.dashOffset}
-                      transform="rotate(-90 70 70)"
-                      style={{ transition: "stroke-dashoffset 0.6s ease" }}
-                    />
-                  </svg>
-                  <div style={styles.ringLabel}>
-                    <span style={styles.scoreValue}>785</span>
-                    <span style={styles.scoreMax}>/ 1000</span>
-                  </div>
-                </div>
-                <div style={styles.scoreCopy}>
-                  <p style={styles.scoreKicker}>Financial Health Score</p>
-                  <h2 style={styles.scoreTitle}>You’re in a strong lane</h2>
-                  <p style={styles.scoreBody}>
-                    Debt plan on. Streak alive. Keep stacking the boring wins.
-                  </p>
-                  <span style={styles.snowballTag}>Debt Snowball Active ⛄</span>
-                </div>
+            <HealthScoreBadge score={score} scoreMax={scoreMax} />
+
+            <SocratesPortfolioReport onConsultSocrates={() => setActiveTab("socrates")} />
+
+            <InvestmentPortfolioCard />
+
+            <article style={styles.statCard}>
+              <div style={styles.fundHead}>
+                <p style={styles.statLabel}>Emergency Fund</p>
+                <button
+                  type="button"
+                  onClick={addEmergency}
+                  disabled={fundComplete}
+                  aria-label="Add 50 dollars to emergency fund"
+                  style={{
+                    ...styles.plusBtn,
+                    opacity: fundComplete ? 0.45 : 1,
+                    transform: plusPulse ? "scale(1.08)" : "scale(1)",
+                  }}
+                >
+                  +
+                </button>
               </div>
-            </section>
-
-            <section style={styles.dualGrid}>
-              <article style={styles.statCard}>
-                <p style={styles.statLabel}>Remaining Debt</p>
-                <p style={styles.statValue}>${remainingDebt.toLocaleString("en-US")}</p>
-                <p style={styles.statHint}>Snowball target · smallest first</p>
-              </article>
-
-              <article style={styles.statCard}>
-                <div style={styles.fundHead}>
-                  <p style={styles.statLabel}>Emergency Fund</p>
-                  <button
-                    type="button"
-                    onClick={addEmergency}
-                    disabled={fundComplete}
-                    aria-label="Add 50 dollars to emergency fund"
-                    style={{
-                      ...styles.plusBtn,
-                      opacity: fundComplete ? 0.45 : 1,
-                      transform: plusPulse ? "scale(1.08)" : "scale(1)",
-                    }}
-                  >
-                    +
-                  </button>
-                </div>
-                <p style={styles.statValue}>
-                  ${emergencyFund.toLocaleString("en-US")}{" "}
-                  <span style={styles.statMuted}>/ ${emergencyGoal.toLocaleString("en-US")}</span>
-                </p>
-                <div style={styles.barTrack}>
-                  <div style={{ ...styles.barFill, width: `${emergencyPct}%` }} />
-                </div>
-                <p style={styles.statHint}>
-                  {fundComplete ? "Starter fund locked in. Huge." : `+ $50 · ${emergencyPct}% to starter goal`}
-                </p>
-              </article>
-            </section>
+              <p style={styles.statValue}>
+                ${emergencyFund.toLocaleString("en-US")}{" "}
+                <span style={styles.statMuted}>/ ${emergencyGoal.toLocaleString("en-US")}</span>
+              </p>
+              <div style={styles.barTrack}>
+                <div style={{ ...styles.barFill, width: `${emergencyPct}%` }} />
+              </div>
+              <p style={styles.statHint}>
+                {fundComplete ? "Starter fund locked in. Huge." : `+ $50 · ${emergencyPct}% to starter goal`}
+              </p>
+            </article>
 
             <article style={styles.toolCard} aria-label="50/30/20 Smart Budget Splitter">
               <p style={styles.statLabel}>50/30/20 Smart Budget Splitter</p>
@@ -397,89 +273,18 @@ const App: React.FC = () => {
                 </li>
               </ul>
             </article>
-
-            <button type="button" style={styles.lessonBanner} onClick={openLesson}>
-              <span style={styles.lessonBadge}>3-MIN</span>
-              <span style={styles.lessonText}>
-                3-Min Lesson: ETF Basics with iShares (Powered by BlackRock)
-              </span>
-              <span style={styles.lessonCta}>{lessonDone ? "Review" : "Start"}</span>
-            </button>
           </div>
         )}
 
         {activeTab === "snowball" && (
           <div className="matter-tab-panel" style={styles.tabPanel}>
-            <article style={styles.statCard}>
-              <p style={styles.statLabel}>Remaining Debt</p>
-              <p style={styles.statValue}>${remainingDebt.toLocaleString("en-US")}</p>
-              <p style={styles.statHint}>Snowball target · smallest first</p>
-            </article>
-
-            <article style={styles.toolCard} aria-label="Debt Snowball Simulator">
-              <div style={styles.toolHead}>
-                <div>
-                  <p style={styles.statLabel}>Debt Snowball Simulator</p>
-                  <h3 style={styles.toolTitle}>Extra Monthly Payment</h3>
-                </div>
-                <span style={styles.snowballTag}>Debt Snowball Active ⛄</span>
-              </div>
-
-              <div style={styles.sliderValueRow}>
-                <span style={styles.sliderHint}>$25</span>
-                <span style={styles.sliderCurrent}>${extraPayment}</span>
-                <span style={styles.sliderHint}>$250</span>
-              </div>
-              <input
-                type="range"
-                min={25}
-                max={250}
-                step={5}
-                value={extraPayment}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                  setExtraPayment(Number(e.target.value))
-                }
-                aria-label="Extra monthly payment"
-                className="matter-slider"
-                style={styles.slider}
-              />
-
-              <div style={styles.impactBox}>
-                Saves ${money(snowballImpact.interestSaved)} in interest & cuts{" "}
-                {snowballImpact.monthsSaved}{" "}
-                {snowballImpact.monthsSaved === 1 ? "month" : "months"} off your debt!
-              </div>
-              <p style={styles.statHint}>
-                Min ${SNOWBALL_MIN_PAYMENT} + extra ${extraPayment} · paid off in{" "}
-                {snowballImpact.payoffMonths} months at {(SNOWBALL_APR * 100).toFixed(2)}% APR
-              </p>
-            </article>
+            <DebtSnowballManager onOpenLessons={() => setActiveTab("lessons")} />
           </div>
         )}
 
         {activeTab === "lessons" && (
           <div className="matter-tab-panel" style={styles.tabPanel}>
-            <section style={styles.lessonsHero}>
-              <div style={styles.lessonsHeroTop}>
-                <h2 style={styles.lessonsTitle}>Financial Mastery Lessons</h2>
-                <span style={styles.comingSoonBadge}>Coming Soon</span>
-              </div>
-              <p style={styles.lessonsSubtitle}>
-                Learn debt payoff strategies, investing fundamentals, and wealth building.
-              </p>
-              <p style={styles.moduleHint}>Module In Development</p>
-            </section>
-
-            {PREVIEW_LESSONS.map((lesson) => (
-              <article key={lesson.title} style={styles.lockedCard}>
-                <div style={styles.lockedCardTop}>
-                  <span style={styles.lockedEmoji}>{lesson.emoji}</span>
-                  <span style={styles.lockChip}>Locked</span>
-                </div>
-                <h3 style={styles.lockedTitle}>{lesson.title}</h3>
-                <p style={styles.lockedBlurb}>{lesson.blurb}</p>
-              </article>
-            ))}
+            <LessonsPhase1 />
           </div>
         )}
 
@@ -560,7 +365,13 @@ const App: React.FC = () => {
         )}
       </div>
 
-      <nav style={styles.tabBar} aria-label="Primary">
+      <nav
+        style={styles.tabBar}
+        aria-label="Primary"
+        className={`-translate-x-1/2 transition-transform duration-300 ease-in-out ${
+          navVisible ? "translate-y-0" : "translate-y-[calc(100%+32px)]"
+        }`}
+      >
         {TABS.map((tab) => {
           const active = activeTab === tab.id;
           return (
@@ -581,68 +392,6 @@ const App: React.FC = () => {
           );
         })}
       </nav>
-
-      {lessonOpen && (
-        <div style={styles.overlay} onClick={closeLesson} role="presentation">
-          <div
-            className="matter-pop"
-            style={styles.modal}
-            onClick={(e: React.MouseEvent<HTMLDivElement>) => e.stopPropagation()}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="lesson-title"
-          >
-            <p style={styles.sheetKicker}>Micro-learning · Step {lessonStep + 1} of 3</p>
-            <h3 id="lesson-title" style={styles.sheetTitle}>
-              {LESSON_STEPS[lessonStep].emoji} {LESSON_STEPS[lessonStep].title}
-            </h3>
-            <p style={styles.sheetBody}>{LESSON_STEPS[lessonStep].body}</p>
-
-            <div style={styles.stepDots}>
-              {LESSON_STEPS.map((_, i) => (
-                <span
-                  key={i}
-                  style={{
-                    ...styles.dot,
-                    background: i === lessonStep ? "#10B981" : "#334155",
-                    width: i === lessonStep ? 22 : 8,
-                  }}
-                />
-              ))}
-            </div>
-
-            <div style={styles.lessonNav}>
-              {lessonStep > 0 ? (
-                <button
-                  type="button"
-                  style={styles.ghostBtn}
-                  onClick={() => setLessonStep((s: number) => s - 1)}
-                >
-                  Back
-                </button>
-              ) : (
-                <button type="button" style={styles.ghostBtn} onClick={closeLesson}>
-                  Close
-                </button>
-              )}
-
-              {lessonStep < LESSON_STEPS.length - 1 ? (
-                <button
-                  type="button"
-                  style={styles.primaryBtn}
-                  onClick={() => setLessonStep((s: number) => s + 1)}
-                >
-                  Next
-                </button>
-              ) : (
-                <button type="button" style={styles.primaryBtn} onClick={completeLesson}>
-                  {lessonDone ? "Lesson complete" : "Complete Lesson (+50 Pts)"}
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };
@@ -651,7 +400,7 @@ const styles: Record<string, React.CSSProperties> = {
   page: {
     minHeight: "100vh",
     margin: 0,
-    background: "#0F172A",
+    background: "#0B0F19",
     color: "#F8FAFC",
     fontFamily:
       'Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif',
@@ -715,88 +464,6 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 18,
     color: "#042F2E",
     boxShadow: "0 0 0 3px rgba(16, 185, 129, 0.25)",
-  },
-  pointsToast: {
-    background: "#064E3B",
-    color: "#A7F3D0",
-    borderRadius: 12,
-    padding: "8px 12px",
-    fontSize: 13,
-    fontWeight: 600,
-    textAlign: "center",
-  },
-  scoreCard: {
-    background: "linear-gradient(180deg, #1E293B 0%, #162032 100%)",
-    border: "1px solid #334155",
-    borderRadius: 20,
-    padding: 20,
-    boxShadow: "0 12px 40px rgba(0,0,0,0.28)",
-  },
-  scoreRow: {
-    display: "flex",
-    gap: 16,
-    alignItems: "center",
-  },
-  ringWrap: {
-    position: "relative",
-    width: 140,
-    height: 140,
-    flexShrink: 0,
-  },
-  ringLabel: {
-    position: "absolute",
-    inset: 0,
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  scoreValue: {
-    fontSize: 28,
-    fontWeight: 800,
-    lineHeight: 1,
-    color: "#F8FAFC",
-  },
-  scoreMax: {
-    fontSize: 12,
-    color: "#94A3B8",
-    marginTop: 4,
-  },
-  scoreCopy: {
-    flex: 1,
-  },
-  scoreKicker: {
-    margin: 0,
-    fontSize: 12,
-    color: "#94A3B8",
-    fontWeight: 600,
-    textTransform: "uppercase",
-    letterSpacing: "0.08em",
-  },
-  scoreTitle: {
-    margin: "6px 0 8px",
-    fontSize: 20,
-    fontWeight: 800,
-  },
-  scoreBody: {
-    margin: "0 0 12px",
-    color: "#CBD5E1",
-    fontSize: 14,
-    lineHeight: 1.45,
-  },
-  snowballTag: {
-    display: "inline-block",
-    background: "rgba(16, 185, 129, 0.14)",
-    color: "#6EE7B7",
-    borderRadius: 999,
-    padding: "6px 10px",
-    fontSize: 12,
-    fontWeight: 700,
-  },
-  dualGrid: {
-    display: "grid",
-    gridTemplateColumns: "1fr 1fr",
-    gap: 12,
   },
   toolsGrid: {
     display: "grid",
@@ -921,11 +588,10 @@ const styles: Record<string, React.CSSProperties> = {
     flexShrink: 0,
   },
   statCard: {
-    background: "#1E293B",
-    border: "1px solid #334155",
+    background: "#111827",
+    border: "1px solid #1F2937",
     borderRadius: 16,
     padding: 16,
-    minHeight: 148,
   },
   fundHead: {
     display: "flex",
@@ -1019,40 +685,6 @@ const styles: Record<string, React.CSSProperties> = {
     padding: "0 16px",
     fontWeight: 800,
     cursor: "pointer",
-  },
-  lessonBanner: {
-    display: "flex",
-    alignItems: "center",
-    gap: 10,
-    width: "100%",
-    textAlign: "left",
-    background: "linear-gradient(90deg, rgba(16,185,129,0.16), #1E293B)",
-    border: "1px solid rgba(16, 185, 129, 0.35)",
-    borderRadius: 16,
-    padding: 14,
-    color: "#F8FAFC",
-    cursor: "pointer",
-  },
-  lessonBadge: {
-    background: "#10B981",
-    color: "#042F2E",
-    fontSize: 10,
-    fontWeight: 800,
-    borderRadius: 8,
-    padding: "4px 6px",
-    flexShrink: 0,
-  },
-  lessonText: {
-    flex: 1,
-    fontSize: 13,
-    fontWeight: 650,
-    lineHeight: 1.35,
-  },
-  lessonCta: {
-    color: "#6EE7B7",
-    fontWeight: 800,
-    fontSize: 13,
-    flexShrink: 0,
   },
   footer: {
     textAlign: "center",
@@ -1169,7 +801,6 @@ const styles: Record<string, React.CSSProperties> = {
     position: "fixed",
     left: "50%",
     bottom: 16,
-    transform: "translateX(-50%)",
     width: "calc(100% - 24px)",
     maxWidth: 480,
     display: "grid",
@@ -1223,187 +854,6 @@ const styles: Record<string, React.CSSProperties> = {
     opacity: 0.78,
     textAlign: "center",
     lineHeight: 1.2,
-  },
-  lessonsHero: {
-    background: "linear-gradient(180deg, rgba(16,185,129,0.14), #1E293B)",
-    border: "1px solid rgba(16, 185, 129, 0.28)",
-    borderRadius: 20,
-    padding: 20,
-  },
-  lessonsHeroTop: {
-    display: "flex",
-    alignItems: "flex-start",
-    justifyContent: "space-between",
-    gap: 10,
-  },
-  lessonsTitle: {
-    margin: 0,
-    fontSize: 22,
-    fontWeight: 800,
-    letterSpacing: "-0.03em",
-  },
-  lessonsSubtitle: {
-    margin: "8px 0 0",
-    color: "#CBD5E1",
-    fontSize: 14,
-    lineHeight: 1.5,
-  },
-  moduleHint: {
-    margin: "12px 0 0",
-    fontSize: 12,
-    fontWeight: 700,
-    color: "#6EE7B7",
-    letterSpacing: "0.04em",
-    textTransform: "uppercase",
-  },
-  comingSoonBadge: {
-    flexShrink: 0,
-    background: "rgba(16, 185, 129, 0.16)",
-    border: "1px solid rgba(16, 185, 129, 0.4)",
-    color: "#A7F3D0",
-    borderRadius: 999,
-    padding: "6px 10px",
-    fontSize: 11,
-    fontWeight: 800,
-    whiteSpace: "nowrap",
-  },
-  lockedCard: {
-    background: "#1E293B",
-    border: "1px solid #334155",
-    borderRadius: 16,
-    padding: 16,
-    opacity: 0.88,
-    position: "relative",
-  },
-  lockedCardTop: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 10,
-  },
-  lockedEmoji: {
-    fontSize: 22,
-  },
-  lockChip: {
-    background: "#0F172A",
-    border: "1px solid #334155",
-    color: "#94A3B8",
-    borderRadius: 999,
-    padding: "4px 8px",
-    fontSize: 11,
-    fontWeight: 700,
-  },
-  lockedTitle: {
-    margin: "0 0 6px",
-    fontSize: 16,
-    fontWeight: 800,
-  },
-  lockedBlurb: {
-    margin: 0,
-    color: "#94A3B8",
-    fontSize: 13,
-    lineHeight: 1.45,
-  },
-  overlay: {
-    position: "fixed",
-    inset: 0,
-    background: "rgba(2, 6, 23, 0.72)",
-    display: "flex",
-    alignItems: "flex-end",
-    justifyContent: "center",
-    zIndex: 40,
-    padding: 16,
-  },
-  sheet: {
-    width: "100%",
-    maxWidth: 480,
-    background: "#1E293B",
-    border: "1px solid #334155",
-    borderRadius: "24px 24px 16px 16px",
-    padding: 20,
-  },
-  modal: {
-    width: "100%",
-    maxWidth: 480,
-    background: "#1E293B",
-    border: "1px solid #334155",
-    borderRadius: 20,
-    padding: 20,
-    margin: "auto",
-  },
-  sheetHandle: {
-    width: 44,
-    height: 4,
-    borderRadius: 999,
-    background: "#475569",
-    margin: "0 auto 14px",
-  },
-  sheetKicker: {
-    margin: 0,
-    color: "#10B981",
-    fontSize: 12,
-    fontWeight: 700,
-    letterSpacing: "0.06em",
-    textTransform: "uppercase",
-  },
-  sheetTitle: {
-    margin: "8px 0 10px",
-    fontSize: 22,
-    fontWeight: 800,
-  },
-  sheetBody: {
-    margin: 0,
-    color: "#CBD5E1",
-    fontSize: 15,
-    lineHeight: 1.55,
-  },
-  tipBox: {
-    marginTop: 14,
-    background: "#0F172A",
-    borderRadius: 12,
-    padding: 12,
-    fontSize: 13,
-    color: "#E2E8F0",
-    lineHeight: 1.45,
-  },
-  primaryBtn: {
-    width: "100%",
-    marginTop: 16,
-    background: "#10B981",
-    color: "#042F2E",
-    border: "none",
-    borderRadius: 12,
-    padding: "12px 16px",
-    fontWeight: 800,
-    fontSize: 15,
-    cursor: "pointer",
-  },
-  ghostBtn: {
-    flex: 1,
-    marginTop: 16,
-    background: "transparent",
-    color: "#CBD5E1",
-    border: "1px solid #475569",
-    borderRadius: 12,
-    padding: "12px 16px",
-    fontWeight: 700,
-    cursor: "pointer",
-  },
-  lessonNav: {
-    display: "flex",
-    gap: 8,
-  },
-  stepDots: {
-    display: "flex",
-    gap: 6,
-    marginTop: 18,
-    alignItems: "center",
-  },
-  dot: {
-    height: 8,
-    borderRadius: 999,
-    display: "inline-block",
-    transition: "all 0.2s ease",
   },
 };
 
