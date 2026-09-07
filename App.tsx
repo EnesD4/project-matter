@@ -1,12 +1,40 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import {
+  Bell,
+  Check,
+  CircleDollarSign,
+  CreditCard,
+  Home,
+  Landmark,
+  Plus,
+  Receipt,
+  Repeat,
+  ShieldCheck,
+  ShoppingCart,
+  Trash2,
+  TrendingDown,
+  TrendingUp,
+  Wallet,
+  X,
+  Zap,
+} from "lucide-react";
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import DebtSnowballManager, { type Debt } from "./src/components/DebtSnowballManager";
+import { type Debt } from "./src/components/DebtSnowballManager";
+import AuthScreen from "./src/components/AuthScreen";
 import HealthScoreBadge from "./src/components/HealthScoreBadge";
 import InvestmentPortfolioCard, { type Holding } from "./src/components/InvestmentPortfolioCard";
 import LessonsPhase1 from "./src/components/LessonsPhase1";
-import SocratesPortfolioReport from "./src/components/SocratesPortfolioReport";
+import ProfileScreen from "./src/components/ProfileScreen";
+import {
+  clearSession,
+  fetchMe,
+  getStoredUser,
+  getToken,
+  saveSession,
+  type AuthUser,
+} from "./src/lib/auth";
 
-type TabId = "dashboard" | "snowball" | "lessons" | "socrates";
+type TabId = "dashboard" | "snowball" | "lessons" | "socrates" | "profile";
 
 type ChatSender = "user" | "socrates";
 
@@ -27,14 +55,14 @@ function createChatMessage(sender: ChatSender, text: string): ChatMessage {
 }
 
 const TABS: Array<{ id: TabId; emoji: string; label: string }> = [
-  { id: "dashboard", emoji: "📊", label: "Investment" },
-  { id: "snowball", emoji: "❄️", label: "Debt" },
+  { id: "dashboard", emoji: "📊", label: "Investments" },
+  { id: "snowball", emoji: "💸", label: "Cash Flow &\nDebt" },
   { id: "lessons", emoji: "🎓", label: "Lessons" },
-  { id: "socrates", emoji: "🏛️", label: "Socrates AI" },
+  { id: "socrates", emoji: "🏛️", label: "Matter AI" },
+  { id: "profile", emoji: "👤", label: "Profile" },
 ];
 
 const GEMINI_API_KEY = "AQ.Ab8RN6LVBGK2nK4hRt3tLM01jc1i7r3CWL7paFYfl8QdYO4Rjg";
-const USER_NAME = "Enes";
 const SOCRATES_PERSONA =
   "You are Socrates, a warm, sharp, and encouraging personal finance and investment mentor for people of any age or background. Keep answers under 4 short sentences, use clear everyday language with relatable analogies, and sound like a supportive guide having a real conversation — never a lecture.";
 const SOCRATES_MOCK_REPLY =
@@ -51,11 +79,13 @@ function isSimpleGreeting(text: string): boolean {
   return GREETING_WORDS.includes(words[0]);
 }
 
-const GREETING_REPLIES = [
-  `Hi, ${USER_NAME}! How are you doing? What are we talking about today?`,
-  `Hey ${USER_NAME}! Good to see you — what's on your mind today?`,
-  `Hello, ${USER_NAME}! How's everything going? What would you like to dig into?`,
-];
+function greetingReplies(userName: string) {
+  return [
+    `Hi, ${userName}! How are you doing? What are we talking about today?`,
+    `Hey ${userName}! Good to see you — what's on your mind today?`,
+    `Hello, ${userName}! How's everything going? What would you like to dig into?`,
+  ];
+}
 
 function getGeminiApiKey() {
   const envKey = import.meta.env.VITE_GEMINI_API_KEY;
@@ -72,22 +102,199 @@ function money(amount: number) {
   return Math.round(amount).toLocaleString("en-US");
 }
 
+/** Months of spending the emergency fund should eventually cover. */
+const EMERGENCY_MONTHS = 3;
+const MAX_PAYOFF_MONTHS = 600;
+
+/** Money in is emerald, money out is crimson — used everywhere in the cash flow module. */
+const INCOME_GREEN = "#10B981";
+const EXPENSE_RED = "#F43F5E";
+
+const SURPLUS_TONE = {
+  value: "#10B981",
+  text: "#6EE7B7",
+  bg: "rgba(16, 185, 129, 0.10)",
+  border: "rgba(16, 185, 129, 0.35)",
+};
+const DEFICIT_TONE = {
+  value: "#F43F5E",
+  text: "#FDA4AF",
+  bg: "rgba(244, 63, 94, 0.10)",
+  border: "rgba(244, 63, 94, 0.35)",
+};
+
+const SEED_DEBTS: Debt[] = [
+  {
+    id: "debt-credit-card",
+    title: "Credit Card Balance",
+    originalBalance: 2400,
+    balance: 1680,
+    minPayment: 65,
+    apr: 22.99,
+  },
+  {
+    id: "debt-personal-loan",
+    title: "Personal Loan",
+    originalBalance: 6000,
+    balance: 4200,
+    minPayment: 145,
+    apr: 9.5,
+  },
+];
+
+type DebtFormState = { title: string; balance: string; minPayment: string; apr: string };
+const EMPTY_DEBT_FORM: DebtFormState = { title: "", balance: "", minPayment: "", apr: "" };
+
+/** One editable line in the monthly spending breakdown. */
+type ExpenseItem = { id: string; label: string; amount: number };
+
+const SEED_EXPENSES: ExpenseItem[] = [
+  { id: "expense-rent", label: "Rent", amount: 950 },
+  { id: "expense-groceries", label: "Groceries", amount: 420 },
+  { id: "expense-utilities", label: "Utilities", amount: 180 },
+  { id: "expense-subscriptions", label: "Subscriptions", amount: 90 },
+];
+
+type ExpenseFormState = { label: string; amount: string };
+const EMPTY_EXPENSE_FORM: ExpenseFormState = { label: "", amount: "" };
+
+/** Icon guessed from the category name so user-added rows get a fitting glyph too. */
+function expenseIcon(label: string) {
+  if (/rent|housing|mortgage|home|apartment/i.test(label)) return <Home size={15} />;
+  if (/food|grocer|dining|eat|meal/i.test(label)) return <ShoppingCart size={15} />;
+  if (/util|electric|water|internet|phone|heat/i.test(label)) return <Zap size={15} />;
+  if (/debt|loan|credit|card|payment/i.test(label)) return <CreditCard size={15} />;
+  if (/sub|stream|member|plan/i.test(label)) return <Repeat size={15} />;
+  return <Receipt size={15} />;
+}
+
+let expenseIdSeed = 0;
+function nextExpenseId() {
+  expenseIdSeed += 1;
+  return `expense-${Date.now()}-${expenseIdSeed}`;
+}
+
+/** Closed-form payoff length for one debt paid at a fixed monthly amount. */
+function monthsToPayoff(balance: number, apr: number, payment: number) {
+  if (balance <= 0) return 0;
+  if (payment <= 0) return MAX_PAYOFF_MONTHS;
+  const rate = apr / 100 / 12;
+  if (rate === 0) return Math.ceil(balance / payment);
+  // Payment never outpaces the interest — the balance would never clear.
+  if (payment <= balance * rate) return MAX_PAYOFF_MONTHS;
+  return Math.min(
+    MAX_PAYOFF_MONTHS,
+    Math.ceil(Math.log(payment / (payment - rate * balance)) / Math.log(1 + rate))
+  );
+}
+
+function formatMonths(totalMonths: number) {
+  if (totalMonths <= 0) return "Paid off";
+  if (totalMonths >= MAX_PAYOFF_MONTHS) return "Never at this rate";
+  const years = Math.floor(totalMonths / 12);
+  const months = totalMonths % 12;
+  if (years === 0) return `${months} mo`;
+  if (months === 0) return `${years} yr`;
+  return `${years} yr ${months} mo`;
+}
+
+/** APR badge colouring so expensive debt reads as urgent at a glance. */
+function aprTone(apr: number) {
+  if (apr >= 18) {
+    return { color: "#FDA4AF", bg: "rgba(244, 63, 94, 0.12)", border: "rgba(244, 63, 94, 0.35)" };
+  }
+  if (apr >= 8) {
+    return { color: "#FCD34D", bg: "rgba(245, 158, 11, 0.12)", border: "rgba(245, 158, 11, 0.32)" };
+  }
+  return { color: "#6EE7B7", bg: "rgba(16, 185, 129, 0.12)", border: "rgba(16, 185, 129, 0.32)" };
+}
+
+function debtIcon(title: string) {
+  if (/card|visa|master|amex|credit/i.test(title)) return <CreditCard size={15} />;
+  if (/loan|auto|car|student|mortgage/i.test(title)) return <Landmark size={15} />;
+  return <Wallet size={15} />;
+}
+
+let debtIdSeed = 0;
+function nextDebtId() {
+  debtIdSeed += 1;
+  return `debt-${Date.now()}-${debtIdSeed}`;
+}
+
 const App: React.FC = () => {
+  const [authUser, setAuthUser] = useState<AuthUser | null>(() => getStoredUser());
+  const [authChecking, setAuthChecking] = useState(() => Boolean(getToken()));
   const [emergencyFund, setEmergencyFund] = useState(400);
   const [question, setQuestion] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [socratesLoading, setSocratesLoading] = useState(false);
   const chatLogRef = useRef<HTMLDivElement | null>(null);
   const [plusPulse, setPlusPulse] = useState(false);
-  const [takeHome, setTakeHome] = useState(2500);
+  const [monthlyIncome, setMonthlyIncome] = useState(2500);
   const [activeTab, setActiveTab] = useState<TabId>("dashboard");
   const [navVisible, setNavVisible] = useState(true);
   const lastScrollYRef = useRef(0);
 
-  // Live mirrors of child-owned state, kept in sync via callback props so Socrates AI
-  // can reference the user's real portfolio and debt data.
-  const [debts, setDebts] = useState<Debt[]>([]);
+  // Cash Flow & Debt Management module state.
+  const [expenses, setExpenses] = useState<ExpenseItem[]>(SEED_EXPENSES);
+  const [spendingModalOpen, setSpendingModalOpen] = useState(false);
+  const [expenseFormOpen, setExpenseFormOpen] = useState(false);
+  const [expenseForm, setExpenseForm] = useState<ExpenseFormState>(EMPTY_EXPENSE_FORM);
+  const [expenseFormError, setExpenseFormError] = useState("");
+  const [extraPayoff, setExtraPayoff] = useState(100);
+  const [debts, setDebts] = useState<Debt[]>(SEED_DEBTS);
+  const [debtFormOpen, setDebtFormOpen] = useState(false);
+  const [debtForm, setDebtForm] = useState<DebtFormState>(EMPTY_DEBT_FORM);
+  const [debtFormError, setDebtFormError] = useState("");
+
+  // Live mirror of child-owned portfolio state, kept in sync via a callback prop so
+  // Socrates AI can reference the user's real holdings.
   const [holdings, setHoldings] = useState<Holding[]>([]);
+
+  const userName = authUser?.name?.trim() || "Investor";
+
+  useEffect(() => {
+    const token = getToken();
+    if (!token) {
+      setAuthChecking(false);
+      setAuthUser(null);
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const user = await fetchMe();
+        if (cancelled) return;
+        saveSession(token, user);
+        setAuthUser(user);
+      } catch {
+        if (cancelled) return;
+        clearSession();
+        setAuthUser(null);
+        setHoldings([]);
+      } finally {
+        if (!cancelled) setAuthChecking(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleAuthenticated = (user: AuthUser) => {
+    setAuthUser(user);
+    setActiveTab("dashboard");
+  };
+
+  const handleLogout = () => {
+    clearSession();
+    setAuthUser(null);
+    setHoldings([]);
+    setMessages([]);
+    setActiveTab("dashboard");
+  };
 
   const emergencyGoal = 1000;
   const score = 785;
@@ -97,13 +304,49 @@ const App: React.FC = () => {
   const fundComplete = emergencyFund >= emergencyGoal;
 
   const budgetSplit = useMemo(() => {
-    const pay = Math.max(0, takeHome);
+    const pay = Math.max(0, monthlyIncome);
     return {
       needs: pay * 0.5,
       wants: pay * 0.3,
       savings: pay * 0.2,
     };
-  }, [takeHome]);
+  }, [monthlyIncome]);
+
+  // Total spendings is always the sum of the itemized categories, so every keystroke
+  // in the breakdown flows straight through to net cash flow.
+  const monthlyExpenses = useMemo(
+    () => expenses.reduce((sum, item) => sum + item.amount, 0),
+    [expenses]
+  );
+
+  const netCashFlow = monthlyIncome - monthlyExpenses;
+  const isSurplus = netCashFlow >= 0;
+  const flowTone = isSurplus ? SURPLUS_TONE : DEFICIT_TONE;
+  const spendRatio = monthlyIncome > 0 ? Math.min(100, (monthlyExpenses / monthlyIncome) * 100) : 0;
+
+  const emergencyTarget = monthlyExpenses * EMERGENCY_MONTHS;
+  const emergencyTargetPct =
+    emergencyTarget > 0 ? Math.min(100, Math.round((emergencyFund / emergencyTarget) * 100)) : 0;
+  const monthsCovered = monthlyExpenses > 0 ? emergencyFund / monthlyExpenses : 0;
+
+  const totalDebt = useMemo(() => debts.reduce((sum, d) => sum + d.balance, 0), [debts]);
+  const totalMinPayment = useMemo(
+    () => debts.reduce((sum, d) => (d.balance > 0 ? sum + d.minPayment : sum), 0),
+    [debts]
+  );
+  const monthlyInterest = useMemo(
+    () => debts.reduce((sum, d) => sum + (d.balance * d.apr) / 100 / 12, 0),
+    [debts]
+  );
+
+  // Snowball focus: every extra dollar lands on the smallest remaining balance.
+  const focusDebt = useMemo(
+    () =>
+      debts
+        .filter((d) => d.balance > 0)
+        .sort((a, b) => a.balance - b.balance || b.apr - a.apr)[0] ?? null,
+    [debts]
+  );
 
   // Live portfolio context — real holdings, so Socrates can answer "which stocks do I own?" accurately.
   const portfolioContext = useMemo(() => {
@@ -125,12 +368,26 @@ const App: React.FC = () => {
   // Live debt context — real debts, so Socrates can answer "how's my debt payoff going?" accurately.
   const debtContext = useMemo(() => {
     if (debts.length === 0) return "No active debts — currently debt-free.";
-    const totalDebt = debts.reduce((sum, d) => sum + d.balance, 0);
     const lines = debts.map(
       (d) => `${d.title}: $${money(d.balance)} remaining of $${money(d.originalBalance)}, ${d.apr}% APR, $${money(d.minPayment)}/mo minimum`
     );
     return `Total remaining debt: $${money(totalDebt)} across ${debts.length} debt(s):\n- ${lines.join("\n- ")}`;
-  }, [debts]);
+  }, [debts, totalDebt]);
+
+  // Live cash-flow context from the Cash Flow & Debt Management module.
+  const cashFlowContext = useMemo(() => {
+    const breakdown =
+      expenses.length === 0
+        ? "No spending categories tracked yet."
+        : `Spending breakdown: ${expenses
+            .map((item) => `${item.label} $${money(item.amount)}/mo`)
+            .join(", ")}.`;
+    return `Monthly income $${money(monthlyIncome)}, total monthly spending $${money(
+      monthlyExpenses
+    )}, net cash flow ${isSurplus ? "+" : "-"}$${money(Math.abs(netCashFlow))} (${
+      isSurplus ? "surplus" : "deficit"
+    }). ${breakdown}`;
+  }, [expenses, monthlyIncome, monthlyExpenses, isSurplus, netCashFlow]);
 
   useEffect(() => {
     const log = chatLogRef.current;
@@ -164,10 +421,114 @@ const App: React.FC = () => {
     return () => window.removeEventListener("scroll", handleScroll);
   }, []);
 
+  const contributeEmergency = (amount: number, cap: number) => {
+    setEmergencyFund((prev: number) => Math.max(prev, Math.min(cap, prev + amount)));
+  };
+
   const addEmergency = () => {
-    setEmergencyFund((prev: number) => Math.min(emergencyGoal, prev + 50));
+    contributeEmergency(50, emergencyGoal);
     setPlusPulse(true);
     window.setTimeout(() => setPlusPulse(false), 280);
+  };
+
+  const setExpenseAmount = (id: string, amount: number) => {
+    setExpenses((prev) => prev.map((item) => (item.id === id ? { ...item, amount } : item)));
+  };
+
+  const removeExpense = (id: string) => {
+    setExpenses((prev) => prev.filter((item) => item.id !== id));
+  };
+
+  const openSpendingModal = () => {
+    setSpendingModalOpen(true);
+  };
+
+  const closeSpendingModal = () => {
+    setSpendingModalOpen(false);
+    setExpenseFormOpen(false);
+    setExpenseForm(EMPTY_EXPENSE_FORM);
+    setExpenseFormError("");
+  };
+
+  const openExpenseForm = () => {
+    setExpenseForm(EMPTY_EXPENSE_FORM);
+    setExpenseFormError("");
+    setExpenseFormOpen(true);
+  };
+
+  const submitExpense = (event: React.FormEvent) => {
+    event.preventDefault();
+    const label = expenseForm.label.trim();
+    const amount = expenseForm.amount.trim() === "" ? 0 : Number(expenseForm.amount);
+
+    if (!label) {
+      setExpenseFormError("Give the category a name.");
+      return;
+    }
+    if (!Number.isFinite(amount) || amount < 0) {
+      setExpenseFormError("Enter a monthly amount of $0 or more.");
+      return;
+    }
+
+    setExpenses((prev) => [...prev, { id: nextExpenseId(), label, amount }]);
+    setExpenseFormOpen(false);
+    setExpenseForm(EMPTY_EXPENSE_FORM);
+    setExpenseFormError("");
+  };
+
+  const logDebtPayment = (id: string) => {
+    setDebts((prev) =>
+      prev.map((debt) => {
+        if (debt.id !== id) return debt;
+        const boost = debt.id === focusDebt?.id ? extraPayoff : 0;
+        return { ...debt, balance: Math.max(0, debt.balance - debt.minPayment - boost) };
+      })
+    );
+  };
+
+  const removeDebt = (id: string) => {
+    setDebts((prev) => prev.filter((debt) => debt.id !== id));
+  };
+
+  const openDebtForm = () => {
+    setDebtForm(EMPTY_DEBT_FORM);
+    setDebtFormError("");
+    setDebtFormOpen(true);
+  };
+
+  const submitDebt = (event: React.FormEvent) => {
+    event.preventDefault();
+    const balance = Number(debtForm.balance);
+    const minPayment = Number(debtForm.minPayment);
+    const apr = debtForm.apr.trim() === "" ? 0 : Number(debtForm.apr);
+
+    if (!Number.isFinite(balance) || balance <= 0) {
+      setDebtFormError("Enter a balance greater than $0.");
+      return;
+    }
+    if (!Number.isFinite(minPayment) || minPayment <= 0) {
+      setDebtFormError("Enter a minimum monthly payment greater than $0.");
+      return;
+    }
+    if (!Number.isFinite(apr) || apr < 0) {
+      setDebtFormError("Enter a valid interest rate, or leave it blank.");
+      return;
+    }
+
+    setDebts((prev) => [
+      ...prev,
+      {
+        id: nextDebtId(),
+        title: debtForm.title.trim() || "Untitled Debt",
+        originalBalance: balance,
+        balance,
+        minPayment,
+        apr,
+      },
+    ]);
+    setDebtFormOpen(false);
+    setDebtForm(EMPTY_DEBT_FORM);
+    setDebtFormError("");
   };
 
   const askSocrates = async () => {
@@ -185,7 +546,8 @@ const App: React.FC = () => {
     // Simple greetings get a warm, direct reply instead of a full model round-trip —
     // keeps the very first hello feeling natural rather than clinical.
     if (isSimpleGreeting(prompt)) {
-      const reply = GREETING_REPLIES[Math.floor(Math.random() * GREETING_REPLIES.length)];
+      const replies = greetingReplies(userName);
+      const reply = replies[Math.floor(Math.random() * replies.length)];
       window.setTimeout(() => {
         setMessages((prev) => [...prev, createChatMessage("socrates", reply)]);
         setSocratesLoading(false);
@@ -199,7 +561,9 @@ const App: React.FC = () => {
         .slice(-12)
         .map((msg) => `${msg.sender === "user" ? "User" : "Socrates"}: ${msg.text}`)
         .join("\n");
-      const userPrompt = `${USER_NAME}'s live snapshot:\n- Emergency fund: $${emergencyFund} / $1,000\n- Financial health score: ${score} / ${scoreMax}\n- Debt: ${debtContext}\n- Investment portfolio: ${portfolioContext}\n\nConversation:\n${history}\n\nReply to the latest user message. If ${USER_NAME} asks about their investments, debts, or portfolio balance, answer using the real snapshot data above.`;
+      const userPrompt = `${userName}'s live snapshot:\n- Emergency fund: $${money(emergencyFund)} (starter goal $${money(
+        emergencyGoal
+      )}; full ${EMERGENCY_MONTHS}-month goal $${money(emergencyTarget)})\n- Financial health score: ${score} / ${scoreMax}\n- Cash flow: ${cashFlowContext}\n- Debt: ${debtContext}\n- Investment portfolio: ${portfolioContext}\n\nConversation:\n${history}\n\nReply to the latest user message. If ${userName} asks about their income, spending, budget, debts, or portfolio balance, answer using the real snapshot data above.`;
 
       if (!apiKey) {
         setMessages((prev) => [...prev, createChatMessage("socrates", SOCRATES_MOCK_REPLY)]);
@@ -236,34 +600,52 @@ const App: React.FC = () => {
     }
   };
 
+  if (authChecking) {
+    return (
+      <div style={{ ...styles.page, display: "grid", placeItems: "center", minHeight: "100vh" }}>
+        <p style={{ color: "#9CA3AF", fontWeight: 700, fontSize: 14 }}>Checking your session…</p>
+      </div>
+    );
+  }
+
+  if (!authUser) {
+    return <AuthScreen onAuthenticated={handleAuthenticated} />;
+  }
+
   return (
     <div style={styles.page}>
       <style>{css}</style>
 
       <div style={styles.shell}>
-        {activeTab !== "socrates" && (
-        <header style={styles.header}>
-          <div>
-            <p style={styles.brand}>MATTER</p>
-            <h1 style={styles.hello}>Hey, Enes 👋</h1>
-            <p style={styles.subhead}>Your money. Your move.</p>
-          </div>
-          <div style={styles.headerRight}>
-            <div style={styles.streak}>🔥 5-Day Streak</div>
-            <div style={styles.avatar} aria-label="Enes avatar">
-              E
+        {activeTab === "dashboard" && (
+          <header style={styles.investHeader}>
+            <p style={styles.brandLogo}>MatterPro</p>
+            <button type="button" style={styles.notifBtn} aria-label="Notifications">
+              <Bell size={20} strokeWidth={1.75} />
+            </button>
+          </header>
+        )}
+
+        {(activeTab === "snowball" || activeTab === "lessons") && (
+          <header style={styles.header}>
+            <div>
+              <p style={styles.brand}>MATTER</p>
+              <h1 style={styles.hello}>Hey, {userName} 👋</h1>
+              <p style={styles.subhead}>Your money. Your move.</p>
             </div>
-          </div>
-        </header>
+            <div style={styles.streak}>🔥 5-Day Streak</div>
+          </header>
         )}
 
         {activeTab === "dashboard" && (
           <div className="matter-tab-panel" style={styles.tabPanel}>
             <HealthScoreBadge score={score} scoreMax={scoreMax} />
 
-            <SocratesPortfolioReport onConsultSocrates={() => setActiveTab("socrates")} />
-
-            <InvestmentPortfolioCard onHoldingsChange={setHoldings} />
+            <InvestmentPortfolioCard
+              key={authUser.id}
+              onHoldingsChange={setHoldings}
+              onConsultSocrates={() => setActiveTab("socrates")}
+            />
 
             <article style={styles.statCard}>
               <div style={styles.fundHead}>
@@ -303,11 +685,11 @@ const App: React.FC = () => {
                   style={styles.payInput}
                   type="text"
                   inputMode="decimal"
-                  value={takeHome}
+                  value={monthlyIncome}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
                     const raw = e.target.value.replace(/[^0-9.]/g, "");
                     const next = Number(raw);
-                    setTakeHome(Number.isFinite(next) ? next : 0);
+                    setMonthlyIncome(Number.isFinite(next) ? next : 0);
                   }}
                   aria-label="Monthly take-home pay"
                 />
@@ -339,7 +721,429 @@ const App: React.FC = () => {
 
         {activeTab === "snowball" && (
           <div className="matter-tab-panel" style={styles.tabPanel}>
-            <DebtSnowballManager onOpenLessons={() => setActiveTab("lessons")} onDebtsChange={setDebts} />
+            <div style={styles.moduleHead}>
+              <p style={styles.brand}>CASH FLOW &amp; DEBT</p>
+              <h2 style={styles.moduleTitle}>Cash Flow &amp; Debt Management</h2>
+              <p style={styles.moduleSub}>
+                What comes in, what goes out, and what you owe — all in one place.
+              </p>
+            </div>
+
+            {/* 1. One panel: earnings in, spendings out, net result. */}
+            <article
+              style={{ ...styles.flowPanel, borderColor: flowTone.border }}
+              aria-label="Monthly cash flow"
+            >
+              <div style={styles.flowPanelHead}>
+                <p style={styles.sectionLabel}>Monthly Cash Flow</p>
+                <span
+                  style={{
+                    ...styles.netChip,
+                    color: flowTone.text,
+                    background: flowTone.bg,
+                    border: `1px solid ${flowTone.border}`,
+                  }}
+                >
+                  {isSurplus ? "Surplus" : "Deficit"}
+                </span>
+              </div>
+
+              <div style={styles.flowSplit}>
+                <div style={styles.flowCell}>
+                  <div style={styles.flowCellHead}>
+                    <span style={{ ...styles.flowCellIcon, color: INCOME_GREEN }}>
+                      <TrendingUp size={13} />
+                    </span>
+                    <p style={styles.flowCellLabel}>Earnings</p>
+                  </div>
+                  <div style={styles.flowInputRow}>
+                    <span style={{ ...styles.flowPrefix, color: INCOME_GREEN }}>$</span>
+                    <input
+                      style={styles.flowInput}
+                      type="text"
+                      inputMode="decimal"
+                      value={monthlyIncome === 0 ? "" : monthlyIncome}
+                      placeholder="0"
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                        const next = Number(e.target.value.replace(/[^0-9.]/g, ""));
+                        setMonthlyIncome(Number.isFinite(next) ? next : 0);
+                      }}
+                      aria-label="Monthly earnings"
+                    />
+                  </div>
+                  <p style={styles.flowCellHint}>Monthly take-home pay</p>
+                </div>
+
+                <div style={styles.flowCellDivider} aria-hidden="true" />
+
+                <div style={styles.flowCell}>
+                  <div style={styles.flowCellHead}>
+                    <span style={{ ...styles.flowCellIcon, color: EXPENSE_RED }}>
+                      <TrendingDown size={13} />
+                    </span>
+                    <p style={styles.flowCellLabel}>Total Spendings</p>
+                  </div>
+                  <p style={{ ...styles.flowAmount, color: EXPENSE_RED }}>${money(monthlyExpenses)}</p>
+                  <button
+                    type="button"
+                    onClick={openSpendingModal}
+                    style={styles.detailBtn}
+                    aria-haspopup="dialog"
+                    aria-expanded={spendingModalOpen}
+                  >
+                    Detaylandır
+                  </button>
+                  <p style={styles.flowCellHint}>
+                    {expenses.length === 0
+                      ? "No categories yet"
+                      : `Across ${expenses.length} ${expenses.length === 1 ? "category" : "categories"}`}
+                  </p>
+                </div>
+              </div>
+
+              <div style={styles.flowRule} aria-hidden="true" />
+
+              <p style={styles.statLabel}>Net Cash Flow</p>
+              <p style={{ ...styles.netValue, color: flowTone.value }}>
+                {isSurplus ? "+" : "−"}${money(Math.abs(netCashFlow))}
+                <span style={styles.netPer}>/mo</span>
+              </p>
+              <div style={styles.barTrack}>
+                <div
+                  style={{
+                    ...styles.barFill,
+                    width: `${spendRatio}%`,
+                    background: flowTone.value,
+                  }}
+                />
+              </div>
+              <p style={styles.statHint}>
+                {monthlyIncome > 0
+                  ? `Spending ${Math.round(spendRatio)}% of your income. ${
+                      isSurplus
+                        ? `$${money(netCashFlow)} left to save or attack debt.`
+                        : `You're short $${money(Math.abs(netCashFlow))} — trim a category or add income.`
+                    }`
+                  : "Add your monthly earnings to see your net cash flow."}
+              </p>
+            </article>
+
+            {/* 2. Spending breakdown lives in a modal opened from Total Spendings. */}
+            {spendingModalOpen && (
+              <div
+                style={styles.modalOverlay}
+                onClick={closeSpendingModal}
+                role="presentation"
+              >
+                <div
+                  className="matter-pop"
+                  style={styles.spendingModal}
+                  onClick={(e) => e.stopPropagation()}
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="spending-modal-title"
+                >
+                  <div style={styles.spendingModalHead}>
+                    <div style={styles.spendingModalTitleRow}>
+                      <span style={styles.spendingModalIcon}>
+                        <Receipt size={17} />
+                      </span>
+                      <div>
+                        <h3 id="spending-modal-title" style={styles.spendingModalTitle}>
+                          Spending Breakdown
+                        </h3>
+                        <p style={styles.spendingModalSub}>
+                          Edit categories — totals update cash flow live.
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={closeSpendingModal}
+                      aria-label="Close spending breakdown"
+                      style={styles.iconBtn}
+                    >
+                      <X size={15} />
+                    </button>
+                  </div>
+
+                  <div style={styles.spendingModalBody}>
+                    {expenses.length === 0 ? (
+                      <div style={styles.emptyExpenses}>
+                        Nothing tracked yet. Add rent, groceries, utilities, subscriptions — anything
+                        that leaves your account each month.
+                      </div>
+                    ) : (
+                      <ul style={styles.expenseList}>
+                        {expenses.map((item) => (
+                          <ExpenseRow
+                            key={item.id}
+                            item={item}
+                            share={monthlyExpenses > 0 ? (item.amount / monthlyExpenses) * 100 : 0}
+                            onAmountChange={(next) => setExpenseAmount(item.id, next)}
+                            onRemove={() => removeExpense(item.id)}
+                          />
+                        ))}
+                      </ul>
+                    )}
+
+                    <div style={styles.expenseTotalRow}>
+                      <p style={styles.expenseTotalLabel}>Total Spendings</p>
+                      <p style={{ ...styles.expenseTotalValue, color: EXPENSE_RED }}>
+                        ${money(monthlyExpenses)}
+                        <span style={styles.netPer}>/mo</span>
+                      </p>
+                    </div>
+
+                    <div style={styles.modalNetRow}>
+                      <p style={styles.expenseTotalLabel}>Net Cash Flow</p>
+                      <p style={{ ...styles.modalNetValue, color: flowTone.value }}>
+                        {isSurplus ? "+" : "−"}${money(Math.abs(netCashFlow))}
+                        <span style={styles.netPer}>/mo</span>
+                      </p>
+                    </div>
+                  </div>
+
+                  {!expenseFormOpen ? (
+                    <button type="button" onClick={openExpenseForm} style={styles.addChip}>
+                      <Plus size={13} />
+                      Add Category
+                    </button>
+                  ) : (
+                    <form className="matter-pop" onSubmit={submitExpense} style={styles.expenseForm}>
+                      <div style={styles.debtFormHead}>
+                        <p style={styles.expenseFormTitle}>Add a Spending Category</p>
+                        <button
+                          type="button"
+                          onClick={() => setExpenseFormOpen(false)}
+                          aria-label="Cancel add category"
+                          style={styles.iconBtn}
+                        >
+                          <X size={15} />
+                        </button>
+                      </div>
+
+                      <div style={styles.debtFormGrid}>
+                        <label style={{ ...styles.debtFormLabel, gridColumn: "1 / -1" }}>
+                          Category
+                          <input
+                            style={styles.debtFormInput}
+                            value={expenseForm.label}
+                            onChange={(e) => setExpenseForm((f) => ({ ...f, label: e.target.value }))}
+                            placeholder="e.g. Transport"
+                            autoFocus
+                          />
+                        </label>
+                        <label style={{ ...styles.debtFormLabel, gridColumn: "1 / -1" }}>
+                          Monthly Amount ($)
+                          <input
+                            style={styles.debtFormInput}
+                            inputMode="decimal"
+                            value={expenseForm.amount}
+                            onChange={(e) =>
+                              setExpenseForm((f) => ({
+                                ...f,
+                                amount: e.target.value.replace(/[^0-9.]/g, ""),
+                              }))
+                            }
+                            placeholder="120"
+                          />
+                        </label>
+                      </div>
+
+                      {expenseFormError && <p style={styles.debtFormError}>{expenseFormError}</p>}
+
+                      <button type="submit" style={styles.saveExpenseBtn}>
+                        <Check size={15} />
+                        Add Category
+                      </button>
+                    </form>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* 3. Active debt payoff list */}
+            <section style={styles.moduleSection}>
+              <div style={styles.sectionHeadRow}>
+                <p style={styles.sectionLabel}>Active Debt Payoff</p>
+                <button type="button" onClick={openDebtForm} style={styles.addChip}>
+                  <Plus size={13} />
+                  Add Debt
+                </button>
+              </div>
+
+              <div style={styles.statTiles}>
+                <StatTile label="Total Debt" value={`$${money(totalDebt)}`} />
+                <StatTile label="Minimums" value={`$${money(totalMinPayment)}/mo`} />
+                <StatTile label="Interest" value={`$${money(monthlyInterest)}/mo`} tone="#FDA4AF" />
+              </div>
+
+              <article style={styles.toolCard} aria-label="Extra monthly payoff amount">
+                <div style={styles.extraHead}>
+                  <p style={styles.statLabel}>Extra payment each month</p>
+                  <span style={styles.extraValue}>${extraPayoff}</span>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={500}
+                  step={5}
+                  value={extraPayoff}
+                  onChange={(e) => setExtraPayoff(Number(e.target.value))}
+                  aria-label="Extra monthly payoff amount"
+                  className="matter-slider"
+                  style={styles.extraSlider}
+                />
+                <p style={styles.statHint}>
+                  {isSurplus && netCashFlow > 0
+                    ? `Your $${money(netCashFlow)}/mo surplus can cover this. `
+                    : "You're spending everything you earn — trim a category above to free this up. "}
+                  {focusDebt
+                    ? `Extra dollars go to ${focusDebt.title} first, then roll onto the next balance.`
+                    : "No active debt — send it all to savings and investing."}
+                </p>
+              </article>
+
+              {debtFormOpen && (
+                <form className="matter-pop" onSubmit={submitDebt} style={styles.debtForm}>
+                  <div style={styles.debtFormHead}>
+                    <p style={styles.debtFormTitle}>Add a Debt</p>
+                    <button
+                      type="button"
+                      onClick={() => setDebtFormOpen(false)}
+                      aria-label="Cancel add debt"
+                      style={styles.iconBtn}
+                    >
+                      <X size={15} />
+                    </button>
+                  </div>
+
+                  <div style={styles.debtFormGrid}>
+                    <label style={{ ...styles.debtFormLabel, gridColumn: "1 / -1" }}>
+                      Title
+                      <input
+                        style={styles.debtFormInput}
+                        value={debtForm.title}
+                        onChange={(e) => setDebtForm((f) => ({ ...f, title: e.target.value }))}
+                        placeholder="e.g. Car Loan"
+                      />
+                    </label>
+                    <label style={styles.debtFormLabel}>
+                      Balance ($)
+                      <input
+                        style={styles.debtFormInput}
+                        inputMode="decimal"
+                        value={debtForm.balance}
+                        onChange={(e) =>
+                          setDebtForm((f) => ({ ...f, balance: e.target.value.replace(/[^0-9.]/g, "") }))
+                        }
+                        placeholder="1200"
+                      />
+                    </label>
+                    <label style={styles.debtFormLabel}>
+                      Min. Payment ($/mo)
+                      <input
+                        style={styles.debtFormInput}
+                        inputMode="decimal"
+                        value={debtForm.minPayment}
+                        onChange={(e) =>
+                          setDebtForm((f) => ({ ...f, minPayment: e.target.value.replace(/[^0-9.]/g, "") }))
+                        }
+                        placeholder="45"
+                      />
+                    </label>
+                    <label style={{ ...styles.debtFormLabel, gridColumn: "1 / -1" }}>
+                      Interest Rate — optional (APR %)
+                      <input
+                        style={styles.debtFormInput}
+                        inputMode="decimal"
+                        value={debtForm.apr}
+                        onChange={(e) =>
+                          setDebtForm((f) => ({ ...f, apr: e.target.value.replace(/[^0-9.]/g, "") }))
+                        }
+                        placeholder="22.99"
+                      />
+                    </label>
+                  </div>
+
+                  {debtFormError && <p style={styles.debtFormError}>{debtFormError}</p>}
+
+                  <button type="submit" style={styles.saveDebtBtn}>
+                    <Check size={15} />
+                    Save Debt
+                  </button>
+                </form>
+              )}
+
+              {debts.length === 0 ? (
+                <div style={styles.emptyDebts}>
+                  No debts tracked. Add one above, or keep every extra dollar compounding.
+                </div>
+              ) : (
+                <div style={styles.debtList}>
+                  {debts.map((debt) => (
+                    <DebtPayoffCard
+                      key={debt.id}
+                      debt={debt}
+                      isFocus={debt.id === focusDebt?.id}
+                      extraPayoff={extraPayoff}
+                      onLogPayment={() => logDebtPayment(debt.id)}
+                      onRemove={() => removeDebt(debt.id)}
+                    />
+                  ))}
+                </div>
+              )}
+
+              <button type="button" onClick={() => setActiveTab("lessons")} style={styles.lessonsLink}>
+                Learn the payoff playbook →
+              </button>
+            </section>
+
+            {/* 4. Safety net, sized off the real spending total. */}
+            <section style={styles.moduleSection}>
+              <p style={styles.sectionLabel}>Safety Net</p>
+
+              <article style={styles.toolCard} aria-label="Emergency fund progress">
+                <div style={styles.cardHeadRow}>
+                  <div style={styles.cardHeadIcon}>
+                    <ShieldCheck size={16} />
+                  </div>
+                  <div style={styles.cardHeadGrow}>
+                    <h3 style={styles.cardTitle}>Emergency Fund</h3>
+                    <p style={styles.cardSub}>
+                      Target: {EMERGENCY_MONTHS} months of spending (${money(monthlyExpenses)}/mo)
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => contributeEmergency(100, Math.max(emergencyTarget, emergencyFund))}
+                    aria-label="Add 100 dollars to emergency fund"
+                    style={styles.addChip}
+                  >
+                    <Plus size={13} />
+                    $100
+                  </button>
+                </div>
+
+                <p style={styles.statValue}>
+                  ${money(emergencyFund)}{" "}
+                  <span style={styles.statMuted}>/ ${money(emergencyTarget)}</span>
+                </p>
+                <div style={styles.barTrack}>
+                  <div style={{ ...styles.barFill, width: `${emergencyTargetPct}%` }} />
+                </div>
+                <p style={styles.statHint}>
+                  {emergencyTarget <= 0
+                    ? "Add your spending categories above to set a target."
+                    : emergencyFund >= emergencyTarget
+                    ? `Fully funded — ${EMERGENCY_MONTHS} months of spending covered. 🎉`
+                    : `${emergencyTargetPct}% funded · covers ${monthsCovered.toFixed(1)} months · $${money(
+                        emergencyTarget - emergencyFund
+                      )} to go`}
+                </p>
+              </article>
+            </section>
           </div>
         )}
 
@@ -356,7 +1160,7 @@ const App: React.FC = () => {
                 🏛️
               </div>
               <div>
-                <p style={styles.askLabel}>Socrates AI</p>
+                <p style={styles.askLabel}>Matter AI</p>
                 <p style={styles.askHint}>Your Personal Finance & Investment Guide</p>
               </div>
             </div>
@@ -421,7 +1225,19 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {activeTab !== "socrates" && (
+        {/* Keep Profile mounted so toggles/settings survive tab switches. */}
+        <div
+          className={activeTab === "profile" ? "matter-tab-panel" : undefined}
+          style={{
+            ...styles.tabPanel,
+            display: activeTab === "profile" ? undefined : "none",
+          }}
+          aria-hidden={activeTab !== "profile"}
+        >
+          <ProfileScreen user={authUser} onLogout={handleLogout} />
+        </div>
+
+        {activeTab !== "socrates" && activeTab !== "profile" && (
         <footer style={styles.footer}>Matter · Built for the US · Stay consistent</footer>
         )}
       </div>
@@ -456,6 +1272,162 @@ const App: React.FC = () => {
   );
 };
 
+/** One editable spending category. Typing here recomputes the whole cash flow panel. */
+function ExpenseRow({
+  item,
+  share,
+  onAmountChange,
+  onRemove,
+}: {
+  item: ExpenseItem;
+  share: number;
+  onAmountChange: (next: number) => void;
+  onRemove: () => void;
+}) {
+  return (
+    <li style={styles.expenseRow}>
+      <span style={styles.expenseIcon}>{expenseIcon(item.label)}</span>
+
+      <div style={styles.expenseMain}>
+        <p style={styles.expenseLabel}>{item.label}</p>
+        <div style={styles.expenseShareTrack}>
+          <div style={{ ...styles.expenseShareFill, width: `${Math.min(100, share)}%` }} />
+        </div>
+        <p style={styles.expenseShareNote}>{Math.round(share)}% of spending</p>
+      </div>
+
+      <div style={styles.expenseInputRow}>
+        <span style={styles.expensePrefix}>$</span>
+        <input
+          style={styles.expenseInput}
+          type="text"
+          inputMode="decimal"
+          value={item.amount === 0 ? "" : item.amount}
+          placeholder="0"
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+            const next = Number(e.target.value.replace(/[^0-9.]/g, ""));
+            onAmountChange(Number.isFinite(next) ? next : 0);
+          }}
+          aria-label={`${item.label} monthly amount`}
+        />
+      </div>
+
+      <button
+        type="button"
+        onClick={onRemove}
+        aria-label={`Remove ${item.label}`}
+        style={styles.iconBtn}
+      >
+        <Trash2 size={14} />
+      </button>
+    </li>
+  );
+}
+
+function StatTile({ label, value, tone }: { label: string; value: string; tone?: string }) {
+  return (
+    <div style={styles.statTile}>
+      <p style={styles.statTileLabel}>{label}</p>
+      <p style={{ ...styles.statTileValue, color: tone ?? "#F8FAFC" }}>{value}</p>
+    </div>
+  );
+}
+
+function DebtPayoffCard({
+  debt,
+  isFocus,
+  extraPayoff,
+  onLogPayment,
+  onRemove,
+}: {
+  debt: Debt;
+  isFocus: boolean;
+  extraPayoff: number;
+  onLogPayment: () => void;
+  onRemove: () => void;
+}) {
+  const isPaid = debt.balance <= 0;
+  const paidPct =
+    debt.originalBalance > 0
+      ? Math.min(100, Math.round(((debt.originalBalance - debt.balance) / debt.originalBalance) * 100))
+      : 0;
+  const monthlyPayment = debt.minPayment + (isFocus && !isPaid ? extraPayoff : 0);
+  const payoffMonths = monthsToPayoff(debt.balance, debt.apr, monthlyPayment);
+  const interestPerMonth = (debt.balance * debt.apr) / 100 / 12;
+  const tone = aprTone(debt.apr);
+
+  return (
+    <article
+      style={{
+        ...styles.debtCard,
+        ...(isFocus && !isPaid ? styles.debtCardFocus : {}),
+        ...(isPaid ? styles.debtCardPaid : {}),
+      }}
+    >
+      <div style={styles.debtCardTop}>
+        <span style={styles.debtIconBox}>{debtIcon(debt.title)}</span>
+        <div style={styles.debtHeadGrow}>
+          <p style={styles.debtTitle}>{debt.title}</p>
+          <div style={styles.debtChipRow}>
+            <span
+              style={{
+                ...styles.chip,
+                color: tone.color,
+                background: tone.bg,
+                border: `1px solid ${tone.border}`,
+              }}
+            >
+              {debt.apr > 0 ? `${debt.apr}% APR` : "0% APR"}
+            </span>
+            {isFocus && !isPaid && <span style={styles.focusChip}>Paying now</span>}
+            {isPaid && <span style={styles.paidChip}>Paid off 🎉</span>}
+          </div>
+        </div>
+        <button type="button" onClick={onRemove} aria-label={`Remove ${debt.title}`} style={styles.iconBtn}>
+          <Trash2 size={15} />
+        </button>
+      </div>
+
+      <div style={styles.debtBalanceRow}>
+        <p style={styles.debtBalance}>${money(debt.balance)}</p>
+        <p style={styles.debtOriginal}>of ${money(debt.originalBalance)}</p>
+      </div>
+
+      <div style={styles.debtBar}>
+        <div style={{ ...styles.debtBarFill, width: `${paidPct}%` }} />
+      </div>
+      <p style={styles.debtProgressNote}>{paidPct}% paid off</p>
+
+      <div style={styles.debtMetrics}>
+        <div style={styles.metricBox}>
+          <p style={styles.metricLabel}>Paying</p>
+          <p style={styles.metricValue}>${money(monthlyPayment)}/mo</p>
+        </div>
+        <div style={styles.metricBox}>
+          <p style={styles.metricLabel}>Payoff in</p>
+          <p style={styles.metricValue}>{formatMonths(payoffMonths)}</p>
+        </div>
+        <div style={styles.metricBox}>
+          <p style={styles.metricLabel}>Interest</p>
+          <p style={{ ...styles.metricValue, color: interestPerMonth > 0 ? "#FDA4AF" : "#F8FAFC" }}>
+            ${money(interestPerMonth)}/mo
+          </p>
+        </div>
+      </div>
+
+      <button
+        type="button"
+        onClick={onLogPayment}
+        disabled={isPaid}
+        style={{ ...styles.payBtn, opacity: isPaid ? 0.4 : 1 }}
+      >
+        <CircleDollarSign size={14} />
+        {isPaid ? "Cleared" : `Log Payment (+$${money(monthlyPayment)})`}
+      </button>
+    </article>
+  );
+}
+
 const styles: Record<string, React.CSSProperties> = {
   page: {
     minHeight: "100vh",
@@ -479,6 +1451,33 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: "space-between",
     alignItems: "flex-start",
     gap: 12,
+  },
+  investHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+    minHeight: 40,
+  },
+  brandLogo: {
+    margin: 0,
+    fontSize: 22,
+    fontWeight: 800,
+    letterSpacing: "-0.03em",
+    color: "#FFFFFF",
+  },
+  notifBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    border: "1px solid #1F1F1F",
+    background: "#0A0A0A",
+    color: "#FFFFFF",
+    display: "grid",
+    placeItems: "center",
+    cursor: "pointer",
+    padding: 0,
+    flexShrink: 0,
   },
   brand: {
     margin: 0,
@@ -707,6 +1706,738 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 999,
     transition: "width 0.25s ease",
   },
+  // --- Cash Flow & Debt Management module ---
+  moduleHead: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 2,
+  },
+  moduleTitle: {
+    margin: "6px 0 0",
+    fontSize: 22,
+    fontWeight: 800,
+    letterSpacing: "-0.03em",
+  },
+  moduleSub: {
+    margin: "4px 0 0",
+    color: "#94A3B8",
+    fontSize: 13,
+    lineHeight: 1.45,
+  },
+  moduleSection: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 12,
+  },
+  sectionLabel: {
+    margin: 0,
+    fontSize: 11,
+    fontWeight: 800,
+    letterSpacing: "0.12em",
+    textTransform: "uppercase",
+    color: "#64748B",
+  },
+  sectionHeadRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 10,
+  },
+  // Unified cash flow panel: earnings, total spendings and net result in one container.
+  flowPanel: {
+    background: "linear-gradient(180deg, #0A0A0A 0%, #000000 100%)",
+    border: "1px solid",
+    borderRadius: 20,
+    padding: 18,
+  },
+  flowPanelHead: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 14,
+  },
+  flowSplit: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1px 1fr",
+    gap: 14,
+    alignItems: "start",
+  },
+  flowCell: {
+    minWidth: 0,
+  },
+  flowCellHead: {
+    display: "flex",
+    alignItems: "center",
+    gap: 7,
+  },
+  flowCellIcon: {
+    display: "grid",
+    placeItems: "center",
+    width: 22,
+    height: 22,
+    borderRadius: 7,
+    background: "rgba(255, 255, 255, 0.05)",
+    flexShrink: 0,
+  },
+  flowCellLabel: {
+    margin: 0,
+    fontSize: 12,
+    fontWeight: 700,
+    color: "#E2E8F0",
+  },
+  flowCellDivider: {
+    alignSelf: "stretch",
+    background: "#1F1F1F",
+  },
+  flowInputRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 3,
+    marginTop: 9,
+    background: "#121212",
+    border: "1px solid #1F1F1F",
+    borderRadius: 12,
+    padding: "0 9px",
+  },
+  flowPrefix: {
+    fontWeight: 800,
+    fontSize: 17,
+  },
+  flowInput: {
+    flex: 1,
+    minWidth: 0,
+    background: "transparent",
+    border: "none",
+    color: "#F8FAFC",
+    fontSize: 20,
+    fontWeight: 800,
+    letterSpacing: "-0.03em",
+    padding: "9px 0",
+    outline: "none",
+  },
+  flowAmount: {
+    margin: "9px 0 0",
+    fontSize: 24,
+    fontWeight: 800,
+    letterSpacing: "-0.03em",
+    padding: "9px 0",
+    lineHeight: 1,
+  },
+  flowCellHint: {
+    margin: "8px 0 0",
+    fontSize: 11,
+    color: "#64748B",
+    fontWeight: 600,
+  },
+  detailBtn: {
+    display: "inline-flex",
+    alignItems: "center",
+    marginTop: 8,
+    background: "rgba(16, 185, 129, 0.12)",
+    color: "#6EE7B7",
+    border: "1px solid rgba(16, 185, 129, 0.4)",
+    borderRadius: 8,
+    padding: "5px 10px",
+    fontSize: 11,
+    fontWeight: 800,
+    letterSpacing: "0.02em",
+    cursor: "pointer",
+  },
+  modalOverlay: {
+    position: "fixed",
+    inset: 0,
+    zIndex: 50,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    background: "#000000",
+    padding: 16,
+  },
+  spendingModal: {
+    width: "100%",
+    maxWidth: 420,
+    maxHeight: "88vh",
+    overflowY: "auto",
+    background: "#0A0A0A",
+    border: "1px solid #1F1F1F",
+    borderRadius: 20,
+    padding: 18,
+    display: "flex",
+    flexDirection: "column",
+    gap: 16,
+  },
+  spendingModalHead: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 10,
+  },
+  spendingModalTitleRow: {
+    display: "flex",
+    alignItems: "flex-start",
+    gap: 10,
+    minWidth: 0,
+  },
+  spendingModalIcon: {
+    display: "grid",
+    placeItems: "center",
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    background: "rgba(16, 185, 129, 0.14)",
+    color: "#10B981",
+    flexShrink: 0,
+  },
+  spendingModalTitle: {
+    margin: 0,
+    fontSize: 16,
+    fontWeight: 800,
+    letterSpacing: "-0.02em",
+    color: "#F8FAFC",
+  },
+  spendingModalSub: {
+    margin: "3px 0 0",
+    fontSize: 11,
+    color: "#64748B",
+    fontWeight: 600,
+    lineHeight: 1.4,
+  },
+  spendingModalBody: {
+    background: "#000000",
+    border: "1px solid #1F1F1F",
+    borderRadius: 16,
+    padding: 14,
+  },
+  flowRule: {
+    height: 1,
+    background: "#1F1F1F",
+    margin: "16px 0 14px",
+  },
+  netChip: {
+    borderRadius: 999,
+    padding: "4px 10px",
+    fontSize: 11,
+    fontWeight: 800,
+    letterSpacing: "-0.01em",
+  },
+  netValue: {
+    margin: "10px 0 10px",
+    fontSize: 32,
+    fontWeight: 800,
+    letterSpacing: "-0.04em",
+  },
+  netPer: {
+    fontSize: 14,
+    fontWeight: 700,
+    color: "#64748B",
+    marginLeft: 4,
+  },
+  cardHeadRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 14,
+  },
+  cardHeadIcon: {
+    display: "grid",
+    placeItems: "center",
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    background: "rgba(16, 185, 129, 0.14)",
+    color: "#10B981",
+    flexShrink: 0,
+  },
+  cardHeadGrow: {
+    flex: 1,
+    minWidth: 0,
+  },
+  cardTitle: {
+    margin: 0,
+    fontSize: 15,
+    fontWeight: 800,
+    letterSpacing: "-0.02em",
+  },
+  cardSub: {
+    margin: "2px 0 0",
+    fontSize: 11,
+    color: "#94A3B8",
+    fontWeight: 600,
+  },
+  // Itemized spending manager.
+  expenseList: {
+    listStyle: "none",
+    margin: 0,
+    padding: 0,
+    display: "flex",
+    flexDirection: "column",
+    gap: 14,
+  },
+  expenseRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+  },
+  expenseIcon: {
+    display: "grid",
+    placeItems: "center",
+    width: 30,
+    height: 30,
+    borderRadius: 10,
+    background: "rgba(244, 63, 94, 0.10)",
+    border: "1px solid rgba(244, 63, 94, 0.22)",
+    color: "#FDA4AF",
+    flexShrink: 0,
+  },
+  expenseMain: {
+    flex: 1,
+    minWidth: 0,
+  },
+  expenseLabel: {
+    margin: 0,
+    fontSize: 13,
+    fontWeight: 700,
+    color: "#E2E8F0",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
+  expenseShareTrack: {
+    height: 4,
+    borderRadius: 999,
+    background: "#121212",
+    overflow: "hidden",
+    marginTop: 6,
+  },
+  expenseShareFill: {
+    height: "100%",
+    borderRadius: 999,
+    background: "#F43F5E",
+    transition: "width 0.25s ease",
+  },
+  expenseShareNote: {
+    margin: "5px 0 0",
+    fontSize: 10,
+    fontWeight: 700,
+    color: "#64748B",
+  },
+  expenseInputRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 2,
+    width: 96,
+    background: "#121212",
+    border: "1px solid #1F1F1F",
+    borderRadius: 10,
+    padding: "0 8px",
+    flexShrink: 0,
+  },
+  expensePrefix: {
+    fontSize: 13,
+    fontWeight: 800,
+    color: "#F43F5E",
+  },
+  expenseInput: {
+    flex: 1,
+    minWidth: 0,
+    background: "transparent",
+    border: "none",
+    color: "#F8FAFC",
+    fontSize: 15,
+    fontWeight: 800,
+    letterSpacing: "-0.02em",
+    padding: "9px 0",
+    outline: "none",
+    textAlign: "right",
+  },
+  expenseTotalRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "baseline",
+    gap: 8,
+    marginTop: 16,
+    paddingTop: 14,
+    borderTop: "1px solid #1F1F1F",
+  },
+  expenseTotalLabel: {
+    margin: 0,
+    fontSize: 11,
+    fontWeight: 800,
+    letterSpacing: "0.12em",
+    textTransform: "uppercase",
+    color: "#64748B",
+  },
+  expenseTotalValue: {
+    margin: 0,
+    fontSize: 20,
+    fontWeight: 800,
+    letterSpacing: "-0.03em",
+  },
+  modalNetRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "baseline",
+    gap: 8,
+    marginTop: 10,
+  },
+  modalNetValue: {
+    margin: 0,
+    fontSize: 16,
+    fontWeight: 800,
+    letterSpacing: "-0.02em",
+  },
+  emptyExpenses: {
+    border: "1px dashed #1F1F1F",
+    borderRadius: 12,
+    padding: 18,
+    textAlign: "center",
+    fontSize: 13,
+    color: "#64748B",
+    lineHeight: 1.5,
+  },
+  expenseForm: {
+    background: "rgba(16, 185, 129, 0.06)",
+    border: "1px solid rgba(16, 185, 129, 0.3)",
+    borderRadius: 16,
+    padding: 14,
+    display: "flex",
+    flexDirection: "column",
+    gap: 12,
+  },
+  expenseFormTitle: {
+    margin: 0,
+    fontSize: 13,
+    fontWeight: 800,
+    color: "#6EE7B7",
+  },
+  saveExpenseBtn: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    background: "#10B981",
+    color: "#042F2E",
+    border: "none",
+    borderRadius: 10,
+    padding: "10px 12px",
+    fontSize: 13,
+    fontWeight: 800,
+    cursor: "pointer",
+  },
+  addChipRed: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 4,
+    background: "rgba(244, 63, 94, 0.12)",
+    color: "#FDA4AF",
+    border: "1px solid rgba(244, 63, 94, 0.4)",
+    borderRadius: 10,
+    padding: "7px 11px",
+    fontSize: 12,
+    fontWeight: 800,
+    cursor: "pointer",
+    flexShrink: 0,
+  },
+  addChip: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 4,
+    background: "#10B981",
+    color: "#042F2E",
+    border: "none",
+    borderRadius: 10,
+    padding: "7px 11px",
+    fontSize: 12,
+    fontWeight: 800,
+    cursor: "pointer",
+    flexShrink: 0,
+  },
+  statTiles: {
+    display: "grid",
+    gridTemplateColumns: "repeat(3, 1fr)",
+    gap: 8,
+  },
+  statTile: {
+    background: "#0A0A0A",
+    border: "1px solid #1F1F1F",
+    borderRadius: 14,
+    padding: "10px 11px",
+  },
+  statTileLabel: {
+    margin: 0,
+    fontSize: 10,
+    fontWeight: 800,
+    letterSpacing: "0.06em",
+    textTransform: "uppercase",
+    color: "#64748B",
+  },
+  statTileValue: {
+    margin: "5px 0 0",
+    fontSize: 14,
+    fontWeight: 800,
+    letterSpacing: "-0.02em",
+  },
+  extraHead: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 8,
+  },
+  extraValue: {
+    fontSize: 18,
+    fontWeight: 800,
+    color: "#10B981",
+    letterSpacing: "-0.03em",
+  },
+  extraSlider: {
+    width: "100%",
+    margin: "12px 0 4px",
+  },
+  debtForm: {
+    background: "rgba(16, 185, 129, 0.06)",
+    border: "1px solid rgba(16, 185, 129, 0.3)",
+    borderRadius: 16,
+    padding: 14,
+    display: "flex",
+    flexDirection: "column",
+    gap: 12,
+  },
+  debtFormHead: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  debtFormTitle: {
+    margin: 0,
+    fontSize: 13,
+    fontWeight: 800,
+    color: "#6EE7B7",
+  },
+  debtFormGrid: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: 10,
+  },
+  debtFormLabel: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 5,
+    fontSize: 11,
+    fontWeight: 700,
+    color: "#94A3B8",
+  },
+  debtFormInput: {
+    background: "#121212",
+    border: "1px solid #1F1F1F",
+    borderRadius: 10,
+    color: "#F8FAFC",
+    fontSize: 13,
+    fontWeight: 600,
+    padding: "9px 10px",
+    outline: "none",
+    width: "100%",
+    boxSizing: "border-box",
+  },
+  debtFormError: {
+    margin: 0,
+    fontSize: 11,
+    fontWeight: 700,
+    color: "#FDA4AF",
+  },
+  saveDebtBtn: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    background: "#10B981",
+    color: "#042F2E",
+    border: "none",
+    borderRadius: 10,
+    padding: "10px 12px",
+    fontSize: 13,
+    fontWeight: 800,
+    cursor: "pointer",
+  },
+  iconBtn: {
+    background: "transparent",
+    border: "none",
+    color: "#475569",
+    cursor: "pointer",
+    padding: 2,
+    display: "grid",
+    placeItems: "center",
+    flexShrink: 0,
+  },
+  emptyDebts: {
+    border: "1px dashed #1F1F1F",
+    borderRadius: 16,
+    padding: 22,
+    textAlign: "center",
+    fontSize: 13,
+    color: "#64748B",
+    lineHeight: 1.5,
+  },
+  debtList: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 12,
+  },
+  debtCard: {
+    background: "#0A0A0A",
+    border: "1px solid #1F1F1F",
+    borderRadius: 16,
+    padding: 14,
+  },
+  debtCardFocus: {
+    border: "1px solid rgba(16, 185, 129, 0.45)",
+    background: "linear-gradient(180deg, rgba(16, 185, 129, 0.07) 0%, #0A0A0A 60%)",
+  },
+  debtCardPaid: {
+    opacity: 0.72,
+  },
+  debtCardTop: {
+    display: "flex",
+    alignItems: "flex-start",
+    gap: 10,
+  },
+  debtIconBox: {
+    display: "grid",
+    placeItems: "center",
+    width: 30,
+    height: 30,
+    borderRadius: 10,
+    background: "rgba(255, 255, 255, 0.05)",
+    color: "#CBD5E1",
+    flexShrink: 0,
+  },
+  debtHeadGrow: {
+    flex: 1,
+    minWidth: 0,
+  },
+  debtTitle: {
+    margin: 0,
+    fontSize: 14,
+    fontWeight: 800,
+    letterSpacing: "-0.02em",
+  },
+  debtChipRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 5,
+    flexWrap: "wrap",
+  },
+  chip: {
+    borderRadius: 999,
+    padding: "2px 8px",
+    fontSize: 10,
+    fontWeight: 800,
+  },
+  focusChip: {
+    borderRadius: 999,
+    padding: "2px 8px",
+    fontSize: 10,
+    fontWeight: 800,
+    color: "#042F2E",
+    background: "#10B981",
+  },
+  paidChip: {
+    borderRadius: 999,
+    padding: "2px 8px",
+    fontSize: 10,
+    fontWeight: 800,
+    color: "#6EE7B7",
+    background: "rgba(16, 185, 129, 0.15)",
+  },
+  debtBalanceRow: {
+    display: "flex",
+    alignItems: "baseline",
+    justifyContent: "space-between",
+    gap: 8,
+    margin: "14px 0 8px",
+  },
+  debtBalance: {
+    margin: 0,
+    fontSize: 22,
+    fontWeight: 800,
+    letterSpacing: "-0.03em",
+  },
+  debtOriginal: {
+    margin: 0,
+    fontSize: 11,
+    fontWeight: 700,
+    color: "#64748B",
+  },
+  debtBar: {
+    height: 8,
+    borderRadius: 999,
+    background: "#121212",
+    overflow: "hidden",
+  },
+  debtBarFill: {
+    height: "100%",
+    borderRadius: 999,
+    background: "linear-gradient(90deg, #047857, #10B981)",
+    transition: "width 0.35s ease",
+  },
+  debtProgressNote: {
+    margin: "6px 0 0",
+    fontSize: 11,
+    fontWeight: 700,
+    color: "#6EE7B7",
+  },
+  debtMetrics: {
+    display: "grid",
+    gridTemplateColumns: "repeat(3, 1fr)",
+    gap: 8,
+    margin: "12px 0",
+  },
+  metricBox: {
+    background: "#121212",
+    border: "1px solid #1F1F1F",
+    borderRadius: 10,
+    padding: "8px 9px",
+  },
+  metricLabel: {
+    margin: 0,
+    fontSize: 9,
+    fontWeight: 800,
+    letterSpacing: "0.06em",
+    textTransform: "uppercase",
+    color: "#64748B",
+  },
+  metricValue: {
+    margin: "4px 0 0",
+    fontSize: 12,
+    fontWeight: 800,
+    letterSpacing: "-0.02em",
+  },
+  payBtn: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    width: "100%",
+    background: "rgba(16, 185, 129, 0.12)",
+    border: "1px solid rgba(16, 185, 129, 0.4)",
+    color: "#6EE7B7",
+    borderRadius: 10,
+    padding: "9px 12px",
+    fontSize: 12,
+    fontWeight: 800,
+    cursor: "pointer",
+  },
+  lessonsLink: {
+    background: "transparent",
+    border: "none",
+    color: "#10B981",
+    fontSize: 12,
+    fontWeight: 800,
+    cursor: "pointer",
+    padding: 0,
+    alignSelf: "flex-start",
+  },
   askCard: {
     background: "#0A0A0A",
     border: "1px solid #1F1F1F",
@@ -864,7 +2595,7 @@ const styles: Record<string, React.CSSProperties> = {
     width: "calc(100% - 24px)",
     maxWidth: 480,
     display: "grid",
-    gridTemplateColumns: "repeat(4, 1fr)",
+    gridTemplateColumns: "repeat(5, 1fr)",
     gap: 4,
     padding: 8,
     borderRadius: 22,
@@ -901,11 +2632,12 @@ const styles: Record<string, React.CSSProperties> = {
     lineHeight: 1,
   },
   tabLabel: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: 800,
     letterSpacing: "-0.02em",
     textAlign: "center",
-    lineHeight: 1.2,
+    lineHeight: 1.15,
+    whiteSpace: "pre-line",
   },
 };
 

@@ -38,7 +38,11 @@ function gaussian(rng: () => number) {
   return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
 }
 
+/** Market-hours labels for 1D intraday axis (sparse unique ticks). */
 const INTRADAY_HOURS = ["9:30", "10:30", "11:30", "12:30", "1:30", "2:30", "3:30", "4:00"];
+
+const WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 function buildIntradaySeries(seedKey: string, anchors: DayAnchors, current: number, points = 26): SeriesPoint[] {
   const safeOpen = anchors.open || current;
@@ -60,14 +64,47 @@ function buildIntradaySeries(seedKey: string, anchors: DayAnchors, current: numb
 }
 
 type WalkRange = Exclude<RangeOption, "1D">;
-type RangeShape = { points: number; dailyVolPct: number; driftPct: number; unitLabel: string };
+type RangeShape = { points: number; dailyVolPct: number; driftPct: number };
 
 const RANGE_SHAPE: Record<WalkRange, RangeShape> = {
-  "1W": { points: 7, dailyVolPct: 1.1, driftPct: 0.4, unitLabel: "d" },
-  "1M": { points: 22, dailyVolPct: 1.4, driftPct: 1.2, unitLabel: "d" },
-  "1Y": { points: 52, dailyVolPct: 2.6, driftPct: 6, unitLabel: "w" },
-  ALL: { points: 90, dailyVolPct: 2.9, driftPct: 12, unitLabel: "w" },
+  "1W": { points: 7, dailyVolPct: 1.1, driftPct: 0.4 },
+  "1M": { points: 22, dailyVolPct: 1.4, driftPct: 1.2 },
+  "1Y": { points: 52, dailyVolPct: 2.6, driftPct: 6 },
+  ALL: { points: 90, dailyVolPct: 2.9, driftPct: 12 },
 };
+
+function labelForWalkPoint(range: WalkRange, index: number, total: number): string {
+  const last = total - 1;
+  if (index === last) return "Now";
+
+  if (range === "1W") {
+    // Trading-week style: Mon → Sun ending at Now
+    return WEEKDAY_LABELS[index % 7];
+  }
+
+  if (range === "1M") {
+    const daysAgo = last - index;
+    if (daysAgo === 0) return "Now";
+    const d = new Date();
+    d.setDate(d.getDate() - daysAgo);
+    return `${MONTH_LABELS[d.getMonth()]} ${d.getDate()}`;
+  }
+
+  if (range === "1Y") {
+    // Weekly points across ~12 months
+    const weeksAgo = last - index;
+    const d = new Date();
+    d.setDate(d.getDate() - weeksAgo * 7);
+    return MONTH_LABELS[d.getMonth()];
+  }
+
+  // ALL — longer arc labeled by year + month
+  const weeksAgo = last - index;
+  const d = new Date();
+  d.setDate(d.getDate() - weeksAgo * 7);
+  const yy = String(d.getFullYear()).slice(2);
+  return `${MONTH_LABELS[d.getMonth()]} '${yy}`;
+}
 
 function buildWalkSeries(seedKey: string, range: WalkRange, target: number): SeriesPoint[] {
   const shape = RANGE_SHAPE[range];
@@ -85,7 +122,7 @@ function buildWalkSeries(seedKey: string, range: WalkRange, target: number): Ser
   const scale = target / raw[raw.length - 1];
   return raw.map((v, i) => ({
     t: i,
-    label: i === raw.length - 1 ? "Now" : `${raw.length - 1 - i}${shape.unitLabel} ago`,
+    label: labelForWalkPoint(range, i, raw.length),
     value: v * scale,
   }));
 }
@@ -131,6 +168,13 @@ export function seriesChangePct(series: SeriesPoint[]): number {
   const last = series[series.length - 1]?.value;
   if (!first) return 0;
   return ((last - first) / first) * 100;
+}
+
+/** Absolute change from the first to the last point of a series. */
+export function seriesChangeAbs(series: SeriesPoint[]): number {
+  const first = series[0]?.value ?? 0;
+  const last = series[series.length - 1]?.value ?? 0;
+  return last - first;
 }
 
 /** Formats a Finnhub `marketCapitalization` value (reported in millions of the listing currency). */

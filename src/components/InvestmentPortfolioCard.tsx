@@ -11,18 +11,32 @@ import {
   Layers,
   Loader2,
   LucideIcon,
-  Minus,
   Plus,
   Search,
   ShieldCheck,
   Sparkles,
-  TrendingDown,
   TrendingUp,
   Wallet,
   X,
 } from "lucide-react";
-import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis } from "recharts";
-import { buildHistoricalSeries, RANGE_OPTIONS, RangeOption, seriesChangePct } from "../lib/priceSimulation";
+import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import {
+  buildHistoricalSeries,
+  RANGE_OPTIONS,
+  RangeOption,
+  SeriesPoint,
+  seriesChangeAbs,
+  seriesChangePct,
+} from "../lib/priceSimulation";
+import {
+  createPortfolioItem,
+  deletePortfolioItem,
+  fetchPortfolio,
+  getApiBaseUrl,
+  type PortfolioApiItem,
+} from "../lib/auth";
+import DailyReportScreen from "./DailyReportScreen";
+import SocratesPortfolioReport from "./SocratesPortfolioReport";
 import StockDetailPage from "./StockDetailPage";
 import StockLogo from "./StockLogo";
 
@@ -76,7 +90,7 @@ const BROKER_PLATFORMS: BrokerPlatform[] = [
 ];
 
 /** Base URL of our Express backend (see /server). Override with VITE_API_BASE_URL if needed. */
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() || "http://localhost:5000";
+const API_BASE_URL = getApiBaseUrl();
 
 const SEARCH_DEBOUNCE_MS = 350;
 
@@ -113,9 +127,22 @@ type SelectedStock = {
   description: string;
 };
 
-function formatMoney(amount: number) {
-  return Math.round(amount).toLocaleString("en-US");
+function formatMoney(amount: number, digits = 2) {
+  return amount.toLocaleString("en-US", {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
 }
+
+function formatAxisMoney(amount: number) {
+  if (amount >= 1_000_000) return `$${(amount / 1_000_000).toFixed(1)}M`;
+  if (amount >= 10_000) return `$${(amount / 1_000).toFixed(1)}k`;
+  if (amount >= 1_000) return `$${formatMoney(amount, 0)}`;
+  return `$${formatMoney(amount, 0)}`;
+}
+
+const GAIN_GREEN = "#10B981";
+const LOSS_RED = "#EF4444";
 
 function randomMockBalance() {
   return Math.round(500 + Math.random() * 4500);
@@ -131,19 +158,66 @@ function extractDomain(url?: string): string | undefined {
 }
 
 type InvestmentPortfolioCardProps = {
-  /** Mirrors the live holdings list up to the parent (e.g. so Socrates AI can reference it). */
+  /** Mirrors the live holdings list up to the parent (e.g. so Matter AI can reference it). */
   onHoldingsChange?: (holdings: Holding[]) => void;
+  /** Opens the Matter AI chat tab from the insights card. */
+  onConsultSocrates?: () => void;
 };
 
-export default function InvestmentPortfolioCard({ onHoldingsChange }: InvestmentPortfolioCardProps) {
+async function enrichStockHolding(item: PortfolioApiItem): Promise<StockHolding> {
+  const [quoteResult, profileResult] = await Promise.allSettled([
+    fetch(`${API_BASE_URL}/api/stocks/quote?symbol=${encodeURIComponent(item.symbol)}`).then((r) => {
+      if (!r.ok) throw new Error(`Quote request failed (${r.status})`);
+      return r.json() as Promise<StockQuote>;
+    }),
+    fetch(`${API_BASE_URL}/api/stocks/profile?symbol=${encodeURIComponent(item.symbol)}`).then((r) => {
+      if (!r.ok) throw new Error(`Profile request failed (${r.status})`);
+      return r.json() as Promise<StockProfile>;
+    }),
+  ]);
+
+  const quote = quoteResult.status === "fulfilled" ? quoteResult.value : null;
+  const profile = profileResult.status === "fulfilled" ? profileResult.value : null;
+  const currentPrice = quote && quote.c > 0 ? quote.c : item.buyPrice;
+
+  return {
+    id: item.id,
+    kind: "stock",
+    symbol: item.symbol,
+    description: profile?.name || item.symbol,
+    quantity: item.shares,
+    avgCost: item.buyPrice,
+    currentPrice,
+    dayChangePct: quote?.dp ?? 0,
+    dayChangeAbs: quote?.d ?? 0,
+    open: quote?.o ?? currentPrice,
+    high: quote?.h ?? currentPrice,
+    low: quote?.l ?? currentPrice,
+    prevClose: quote?.pc ?? currentPrice,
+    logo: profile?.logo,
+    domain: extractDomain(profile?.weburl),
+    marketCap: profile?.marketCapitalization,
+  };
+}
+
+export default function InvestmentPortfolioCard({
+  onHoldingsChange,
+  onConsultSocrates,
+}: InvestmentPortfolioCardProps) {
   const [range, setRange] = useState<RangeOption>("1D");
   const [holdings, setHoldings] = useState<Holding[]>([]);
+  const [hoverPoint, setHoverPoint] = useState<SeriesPoint | null>(null);
+  const [portfolioLoading, setPortfolioLoading] = useState(true);
+  const [portfolioError, setPortfolioError] = useState<string | null>(null);
+  const [savingAsset, setSavingAsset] = useState(false);
+  const [removingId, setRemovingId] = useState<string | null>(null);
 
   useEffect(() => {
     onHoldingsChange?.(holdings);
   }, [holdings, onHoldingsChange]);
   const [holdingsExpanded, setHoldingsExpanded] = useState(true);
   const [selectedHolding, setSelectedHolding] = useState<StockHolding | null>(null);
+  const [dailyReportOpen, setDailyReportOpen] = useState(false);
 
   const [modalOpen, setModalOpen] = useState(false);
   const [modalTab, setModalTab] = useState<"connect" | "manual">("connect");
@@ -163,6 +237,35 @@ export default function InvestmentPortfolioCard({ onHoldingsChange }: Investment
 
   const [quantity, setQuantity] = useState("");
   const [purchasePrice, setPurchasePrice] = useState("");
+
+  // Load persisted portfolio for the authenticated user, then enrich with live quotes.
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      setPortfolioLoading(true);
+      setPortfolioError(null);
+      try {
+        const items = await fetchPortfolio();
+        const stocks = await Promise.all(items.map((item) => enrichStockHolding(item)));
+        if (cancelled) return;
+        setHoldings((prev) => {
+          const brokers = prev.filter((h): h is BrokerHolding => h.kind === "broker");
+          return [...stocks, ...brokers];
+        });
+      } catch (err) {
+        if (!cancelled) {
+          setPortfolioError(err instanceof Error ? err.message : "Couldn't load portfolio");
+        }
+      } finally {
+        if (!cancelled) setPortfolioLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Live stock search — debounced fetch against our Express backend as the user types.
   useEffect(() => {
@@ -229,8 +332,42 @@ export default function InvestmentPortfolioCard({ onHoldingsChange }: Investment
   );
 
   const gainPct = useMemo(() => seriesChangePct(chartData), [chartData]);
+  const gainAbs = useMemo(() => seriesChangeAbs(chartData), [chartData]);
   const isPositive = gainPct > 0;
   const isNegative = gainPct < 0;
+  const gainColor = isNegative ? LOSS_RED : GAIN_GREEN;
+
+  const yDomain = useMemo(() => {
+    const values = chartData.map((p) => p.value);
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const pad = Math.max((max - min) * 0.08, (max || 1) * 0.01);
+    return [Math.max(0, min - pad), max + pad] as [number, number];
+  }, [chartData]);
+
+  const displayValue = hoverPoint?.value ?? totalValue;
+  const displayGainAbs = hoverPoint
+    ? hoverPoint.value - (chartData[0]?.value ?? 0)
+    : gainAbs;
+  const displayGainPct = hoverPoint
+    ? chartData[0]?.value
+      ? ((hoverPoint.value - chartData[0].value) / chartData[0].value) * 100
+      : 0
+    : gainPct;
+  const displayPositive = displayGainPct > 0;
+  const displayNegative = displayGainPct < 0;
+  const displayGainColor = displayNegative ? LOSS_RED : GAIN_GREEN;
+
+  const xTickIndexes = useMemo(() => {
+    const n = chartData.length;
+    if (n <= 1) return [0];
+    if (range === "1W") {
+      // Mon, Wed, Fri, Now — sparse weekday labels
+      return [0, 2, 4, n - 1].filter((i, idx, arr) => arr.indexOf(i) === idx && i < n);
+    }
+    if (range === "1D") return [0, Math.floor(n / 3), Math.floor((2 * n) / 3), n - 1];
+    return [0, Math.floor(n / 3), Math.floor((2 * n) / 3), n - 1];
+  }, [chartData.length, range]);
 
   const allocation = useMemo(
     () =>
@@ -340,20 +477,25 @@ export default function InvestmentPortfolioCard({ onHoldingsChange }: Investment
     Number.isFinite(parsedQuantity) && Number.isFinite(parsedPrice) ? parsedQuantity * parsedPrice : 0;
   const canSubmitManual = !!selectedTicker && parsedQuantity > 0 && parsedPrice > 0;
 
-  const submitManualAsset = (e: React.FormEvent) => {
+  const submitManualAsset = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!canSubmitManual || !selectedTicker) return;
+    if (!canSubmitManual || !selectedTicker || savingAsset) return;
 
-    const id = `manual-${Date.now()}`;
-    const currentPrice = selectedQuote && selectedQuote.c > 0 ? selectedQuote.c : parsedPrice;
+    setSavingAsset(true);
+    setQuoteError(null);
+    try {
+      const saved = await createPortfolioItem({
+        symbol: selectedTicker.symbol,
+        shares: parsedQuantity,
+        buyPrice: parsedPrice,
+      });
 
-    setHoldings((prev) => [
-      ...prev,
-      {
-        id,
+      const currentPrice = selectedQuote && selectedQuote.c > 0 ? selectedQuote.c : parsedPrice;
+      const holding: StockHolding = {
+        id: saved.id,
         kind: "stock",
         symbol: selectedTicker.symbol,
-        description: selectedTicker.description,
+        description: selectedTicker.description || selectedProfile?.name || selectedTicker.symbol,
         quantity: parsedQuantity,
         avgCost: parsedPrice,
         currentPrice,
@@ -366,80 +508,104 @@ export default function InvestmentPortfolioCard({ onHoldingsChange }: Investment
         logo: selectedProfile?.logo,
         domain: extractDomain(selectedProfile?.weburl),
         marketCap: selectedProfile?.marketCapitalization,
-      },
-    ]);
-    resetManualForm();
-    setJustAddedId(id);
-    setModalOpen(false);
-    setHoldingsExpanded(true);
-    window.setTimeout(() => setJustAddedId(null), 2000);
+      };
+
+      setHoldings((prev) => [holding, ...prev]);
+      resetManualForm();
+      setJustAddedId(holding.id);
+      setModalOpen(false);
+      setHoldingsExpanded(true);
+      window.setTimeout(() => setJustAddedId(null), 2000);
+    } catch (err) {
+      setQuoteError(err instanceof Error ? err.message : "Couldn't save this asset");
+    } finally {
+      setSavingAsset(false);
+    }
+  };
+
+  const removeHolding = async (id: string) => {
+    const target = holdings.find((h) => h.id === id);
+    if (!target || removingId) return;
+
+    if (target.kind === "broker") {
+      setHoldings((prev) => prev.filter((h) => h.id !== id));
+      if (selectedHolding?.id === id) setSelectedHolding(null);
+      return;
+    }
+
+    setRemovingId(id);
+    try {
+      await deletePortfolioItem(id);
+      setHoldings((prev) => prev.filter((h) => h.id !== id));
+      if (selectedHolding?.id === id) setSelectedHolding(null);
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : "Couldn't remove this asset");
+    } finally {
+      setRemovingId(null);
+    }
   };
 
   return (
-    <article className="rounded-2xl border border-[#1F1F1F] bg-[#0A0A0A] p-4 sm:p-5 shadow-[0_12px_40px_rgba(0,0,0,0.35)]">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <div className="grid h-10 w-10 flex-shrink-0 place-items-center rounded-xl bg-emerald-500/15 text-emerald-400">
-            <Layers size={18} />
-          </div>
-          <div>
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-              Investment Portfolio
-            </p>
-            <p className="text-[11px] text-slate-500">
-              {hasHoldings ? `${holdings.length} holdings` : "No accounts connected yet"}
-            </p>
-          </div>
-        </div>
-      </div>
-
-      {hasHoldings && (
-        <div className="mt-3 flex gap-1 overflow-x-auto rounded-lg bg-black/30 p-1">
-          {RANGE_OPTIONS.map((opt) => (
-            <button
-              key={opt}
-              type="button"
-              onClick={() => setRange(opt)}
-              className={`flex-1 rounded-md px-2 py-1 text-[10px] font-bold transition ${
-                range === opt ? "bg-emerald-500 text-[#042F2E]" : "text-slate-400 hover:text-slate-200"
-              }`}
-            >
-              {opt}
-            </button>
-          ))}
+    <article className="rounded-2xl border border-[#1F2937] bg-[#000000] p-4 sm:p-5 shadow-[0_12px_40px_rgba(0,0,0,0.35)]">
+      {portfolioLoading && (
+        <div className="mb-3 flex items-center gap-2 rounded-xl border border-[#1F2937] bg-[#0A0A0A] px-3 py-2 text-xs font-semibold text-[#9CA3AF]">
+          <Loader2 size={14} className="animate-spin text-emerald-400" />
+          Loading your saved portfolio…
         </div>
       )}
-
-      <div className="mt-4 flex items-end justify-between">
-        <p className="text-3xl font-extrabold tracking-tight text-white">
-          {hasHoldings ? `$${formatMoney(totalValue)}` : "$0.00"}
-        </p>
-        {hasHoldings && (
-          <span
-            className={`flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-bold ${
-              isPositive
-                ? "bg-emerald-500/15 text-emerald-400"
-                : isNegative
-                ? "bg-rose-500/15 text-rose-400"
-                : "bg-slate-500/15 text-slate-400"
-            }`}
-          >
-            {isPositive ? <TrendingUp size={13} /> : isNegative ? <TrendingDown size={13} /> : <Minus size={13} />}
-            {isPositive ? "+" : ""}
-            {gainPct.toFixed(1)}%
-          </span>
-        )}
+      {portfolioError && (
+        <div className="mb-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-300">
+          {portfolioError}
+        </div>
+      )}
+      {/* Portfolio hero */}
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-[#9CA3AF]">
+            Portfolio Value
+          </p>
+          <p className="mt-1 text-3xl font-extrabold tracking-tight text-white tabular-nums">
+            ${formatMoney(displayValue)}
+          </p>
+          {hasHoldings && (
+            <p
+              className="mt-1.5 text-sm font-bold tabular-nums"
+              style={{ color: displayGainColor }}
+            >
+              {displayPositive ? "+" : displayNegative ? "-" : ""}
+              ${formatMoney(Math.abs(displayGainAbs))} ({displayPositive ? "+" : ""}
+              {displayGainPct.toFixed(2)}%)
+              {hoverPoint ? (
+                <span className="ml-1.5 text-[11px] font-semibold text-[#9CA3AF]">
+                  · {hoverPoint.label}
+                </span>
+              ) : (
+                <span className="ml-1.5 text-[11px] font-semibold text-[#9CA3AF]">· {range}</span>
+              )}
+            </p>
+          )}
+          {!hasHoldings && (
+            <p className="mt-1 text-[11px] text-[#9CA3AF]">No accounts connected yet</p>
+          )}
+        </div>
+        <div className="grid h-10 w-10 flex-shrink-0 place-items-center rounded-xl bg-emerald-500/15 text-emerald-400">
+          <Layers size={18} />
+        </div>
       </div>
-      {hasHoldings && <p className="mt-0.5 text-[11px] text-slate-500">Performance · {range}</p>}
+
+      {/* AI daily report — above chart (below portfolio value) */}
+      <div className="mt-4">
+        <SocratesPortfolioReport onOpenReport={() => setDailyReportOpen(true)} />
+      </div>
 
       {!hasHoldings ? (
-        <div className="mt-4 flex flex-col items-center gap-3 rounded-2xl border border-dashed border-[#1F1F1F] bg-black/10 px-4 py-10 text-center">
+        <div className="mt-4 flex flex-col items-center gap-3 rounded-2xl border border-dashed border-[#1F2937] bg-black/10 px-4 py-10 text-center">
           <div className="grid h-12 w-12 place-items-center rounded-full bg-emerald-500/10 text-emerald-400">
             <Layers size={22} />
           </div>
           <div>
-            <p className="text-sm font-bold text-white">You didn't add any stock yet.</p>
-            <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
+            <p className="text-sm font-bold text-white">You didn&apos;t add any stock yet.</p>
+            <p className="mt-1 text-[11px] leading-relaxed text-[#9CA3AF]">
               Connect a broker or add your first investment to start tracking your portfolio.
             </p>
           </div>
@@ -454,43 +620,92 @@ export default function InvestmentPortfolioCard({ onHoldingsChange }: Investment
         </div>
       ) : (
         <>
-          {/* Total portfolio value chart (Recharts) */}
-          <div className="mt-3 -mx-1 h-32">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={chartData} margin={{ top: 6, right: 6, bottom: 0, left: 6 }}>
-                <defs>
-                  <linearGradient id="portfolioAreaGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#10B981" stopOpacity={0.35} />
-                    <stop offset="100%" stopColor="#10B981" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <XAxis dataKey="label" hide />
-                <Tooltip
-                  cursor={{ stroke: "#1F1F1F", strokeWidth: 1 }}
-                  contentStyle={{
-                    background: "#0A0A0A",
-                    border: "1px solid #1F1F1F",
-                    borderRadius: 12,
-                    fontSize: 11,
-                    padding: "6px 10px",
+          {/* Chart + timeframe (Google Finance / Midas style) */}
+          <div className="mt-4">
+            <div className="mb-2 flex items-center justify-end">
+              <div className="flex gap-0.5 rounded-lg border border-[#1F2937] bg-black/40 p-0.5">
+                {RANGE_OPTIONS.map((opt) => (
+                  <button
+                    key={opt}
+                    type="button"
+                    onClick={() => {
+                      setRange(opt);
+                      setHoverPoint(null);
+                    }}
+                    className={`rounded-md px-2.5 py-1 text-[10px] font-bold transition ${
+                      range === opt
+                        ? "bg-emerald-500 text-[#042F2E]"
+                        : "text-[#9CA3AF] hover:text-white"
+                    }`}
+                  >
+                    {opt}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="h-44 -mx-1 sm:h-48">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart
+                  data={chartData}
+                  margin={{ top: 8, right: 8, bottom: 4, left: 0 }}
+                  onMouseMove={(state) => {
+                    const payload = (
+                      state as { activePayload?: Array<{ payload?: SeriesPoint }> }
+                    )?.activePayload?.[0]?.payload;
+                    if (payload) setHoverPoint(payload);
                   }}
-                  labelStyle={{ color: "#94A3B8", marginBottom: 2 }}
-                  itemStyle={{ color: "#10B981", fontWeight: 700 }}
-                  formatter={(value) => [`$${formatMoney(Number(value))}`, "Value"]}
-                />
-                <Area
-                  type="monotone"
-                  dataKey="value"
-                  stroke="#10B981"
-                  strokeWidth={2.5}
-                  fill="url(#portfolioAreaGradient)"
-                  isAnimationActive={true}
-                  animationDuration={400}
-                />
-              </AreaChart>
-            </ResponsiveContainer>
+                  onMouseLeave={() => setHoverPoint(null)}
+                >
+                  <defs>
+                    <linearGradient id="portfolioAreaGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={gainColor} stopOpacity={0.35} />
+                      <stop offset="100%" stopColor={gainColor} stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <YAxis
+                    domain={yDomain}
+                    width={46}
+                    tickFormatter={formatAxisMoney}
+                    tick={{ fill: "#9CA3AF", fontSize: 10 }}
+                    axisLine={false}
+                    tickLine={false}
+                    tickCount={4}
+                  />
+                  <XAxis
+                    dataKey="t"
+                    tick={{ fill: "#9CA3AF", fontSize: 10 }}
+                    axisLine={false}
+                    tickLine={false}
+                    ticks={xTickIndexes}
+                    tickFormatter={(t) => chartData[Number(t)]?.label ?? ""}
+                    minTickGap={20}
+                  />
+                  <Tooltip
+                    cursor={{ stroke: "#FFFFFF", strokeWidth: 1, strokeDasharray: "4 4", opacity: 0.45 }}
+                    content={() => null}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="value"
+                    stroke={gainColor}
+                    strokeWidth={2.5}
+                    fill="url(#portfolioAreaGradient)"
+                    isAnimationActive={true}
+                    animationDuration={400}
+                    activeDot={{
+                      r: 5,
+                      fill: gainColor,
+                      stroke: "#000000",
+                      strokeWidth: 2,
+                    }}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
           </div>
 
+          {/* Allocation bar */}
           <div className="mt-4 space-y-2">
             <div className="flex h-2 w-full overflow-hidden rounded-full bg-black/30">
               {allocation.map((a) => (
@@ -499,45 +714,56 @@ export default function InvestmentPortfolioCard({ onHoldingsChange }: Investment
             </div>
             <div className="flex flex-wrap gap-x-4 gap-y-1.5">
               {allocation.map((a) => (
-                <div key={a.id} className="flex max-w-full items-center gap-1.5 text-[11px] font-semibold text-slate-300">
+                <div
+                  key={a.id}
+                  className="flex max-w-full items-center gap-1.5 text-[11px] font-semibold text-[#9CA3AF]"
+                >
                   <span className="h-2 w-2 flex-shrink-0 rounded-full" style={{ background: a.color }} />
-                  <span className="truncate">{a.label}</span> {a.pct.toFixed(0)}%
+                  <span className="truncate text-white/90">{a.label}</span> {a.pct.toFixed(0)}%
                 </div>
               ))}
             </div>
           </div>
 
-          {/* Collapsible vertical holdings list */}
-          <div className="mt-4 overflow-hidden rounded-xl border border-[#1F1F1F] bg-black/10">
+          {/* Asset list — Midas style */}
+          <div className="mt-5">
             <button
               type="button"
               onClick={() => setHoldingsExpanded((v) => !v)}
               aria-expanded={holdingsExpanded}
-              className="flex w-full items-center justify-between gap-2 px-3.5 py-3 text-left"
+              className="flex w-full items-center justify-between gap-2 text-left"
             >
               <div className="flex items-center gap-2">
-                <span className="text-[11px] font-bold uppercase tracking-wide text-slate-400">Holdings</span>
-                <span className="rounded-full bg-black/30 px-2 py-0.5 text-[10px] font-bold text-slate-500">
+                <span className="text-[11px] font-bold uppercase tracking-wide text-[#9CA3AF]">
+                  Assets
+                </span>
+                <span className="rounded-full bg-[#1F2937] px-2 py-0.5 text-[10px] font-bold text-[#9CA3AF]">
                   {holdings.length}
                 </span>
               </div>
               {holdingsExpanded ? (
-                <ChevronUp size={16} className="text-slate-500 transition-transform duration-300" />
+                <ChevronUp size={16} className="text-[#9CA3AF]" />
               ) : (
-                <ChevronDown size={16} className="text-slate-500 transition-transform duration-300" />
+                <ChevronDown size={16} className="text-[#9CA3AF]" />
               )}
             </button>
 
             <div
               className={`overflow-hidden transition-all duration-300 ease-in-out ${
-                holdingsExpanded ? "max-h-[2000px] opacity-100" : "max-h-0 opacity-0"
+                holdingsExpanded ? "mt-2 max-h-[2000px] opacity-100" : "max-h-0 opacity-0"
               }`}
             >
-              <div className="space-y-2 px-3 pb-3">
+              <div className="divide-y divide-[#1F2937]">
                 {holdings.map((h) => {
                   const highlight = h.id === justAddedId;
                   const value = holdingValue(h);
                   const isStock = h.kind === "stock";
+                  const dayAbs =
+                    isStock ? h.quantity * h.dayChangeAbs : 0;
+                  const dayPct = isStock ? h.dayChangePct : 0;
+                  const dayUp = dayPct > 0;
+                  const dayDown = dayPct < 0;
+                  const dayColor = dayDown ? LOSS_RED : dayUp ? GAIN_GREEN : "#9CA3AF";
 
                   return (
                     <button
@@ -545,41 +771,45 @@ export default function InvestmentPortfolioCard({ onHoldingsChange }: Investment
                       type="button"
                       onClick={() => isStock && setSelectedHolding(h)}
                       disabled={!isStock}
-                      className={`flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition-all duration-500 ${
-                        highlight ? "border-emerald-500/60 bg-emerald-500/10" : "border-[#1F1F1F] bg-black/20"
-                      } ${isStock ? "hover:border-emerald-500/40 hover:bg-emerald-500/5 active:scale-[0.99]" : "cursor-default"}`}
+                      className={`flex w-full items-center gap-3 py-3.5 text-left transition ${
+                        highlight ? "bg-emerald-500/10" : ""
+                      } ${isStock ? "hover:bg-white/[0.03] active:scale-[0.995]" : "cursor-default"}`}
                     >
                       {isStock ? (
-                        <StockLogo symbol={h.symbol} finnhubLogo={h.logo} domain={h.domain} size={32} />
+                        <StockLogo symbol={h.symbol} finnhubLogo={h.logo} domain={h.domain} size={40} />
                       ) : (
-                        <span className="grid h-8 w-8 flex-shrink-0 place-items-center rounded-lg bg-[#3B82F6]/15 text-[#60A5FA]">
-                          <h.icon size={15} />
+                        <span className="grid h-10 w-10 flex-shrink-0 place-items-center rounded-full bg-[#3B82F6]/15 text-[#60A5FA]">
+                          <h.icon size={18} />
                         </span>
                       )}
                       <div className="min-w-0 flex-1">
-                        <p className="truncate text-xs font-bold text-white">{holdingLabel(h)}</p>
-                        <p className="text-[10px] text-slate-500">
-                          {isStock ? `${h.quantity} sh · $${h.avgCost.toFixed(2)} avg cost` : "Connected account"}
-                        </p>
+                        {isStock ? (
+                          <>
+                            <p className="truncate text-sm font-bold text-white">{h.symbol}</p>
+                            <p className="truncate text-[11px] text-[#9CA3AF]">
+                              {h.description} · {h.quantity} sh
+                            </p>
+                          </>
+                        ) : (
+                          <>
+                            <p className="truncate text-sm font-bold text-white">{h.name}</p>
+                            <p className="text-[11px] text-[#9CA3AF]">Connected account</p>
+                          </>
+                        )}
                       </div>
                       <div className="flex-shrink-0 text-right">
-                        <p className="text-xs font-bold text-white">${formatMoney(value)}</p>
+                        <p className="text-sm font-bold tabular-nums text-white">
+                          ${formatMoney(value)}
+                        </p>
                         {isStock && (
-                          <p
-                            className={`text-[10px] font-bold ${
-                              h.dayChangePct > 0
-                                ? "text-emerald-400"
-                                : h.dayChangePct < 0
-                                ? "text-rose-400"
-                                : "text-slate-500"
-                            }`}
-                          >
-                            {h.dayChangePct > 0 ? "+" : ""}
-                            {h.dayChangePct.toFixed(2)}%
+                          <p className="text-[11px] font-bold tabular-nums" style={{ color: dayColor }}>
+                            {dayUp ? "+" : dayDown ? "-" : ""}
+                            ${formatMoney(Math.abs(dayAbs))} ({dayUp ? "+" : ""}
+                            {dayPct.toFixed(2)}%)
                           </p>
                         )}
                       </div>
-                      {isStock && <ChevronRight size={14} className="flex-shrink-0 text-slate-500" />}
+                      {isStock && <ChevronRight size={14} className="flex-shrink-0 text-[#9CA3AF]" />}
                     </button>
                   );
                 })}
@@ -843,15 +1073,15 @@ export default function InvestmentPortfolioCard({ onHoldingsChange }: Investment
 
                 <button
                   type="submit"
-                  disabled={!canSubmitManual}
+                  disabled={!canSubmitManual || savingAsset}
                   className={`flex w-full items-center justify-center gap-1.5 rounded-xl px-4 py-2.5 text-sm font-bold transition active:scale-[0.99] ${
-                    canSubmitManual
+                    canSubmitManual && !savingAsset
                       ? "bg-emerald-500 text-[#042F2E] hover:bg-emerald-400"
                       : "cursor-not-allowed bg-black/30 text-slate-600"
                   }`}
                 >
-                  <Plus size={15} />
-                  Add to Portfolio
+                  {savingAsset ? <Loader2 size={15} className="animate-spin" /> : <Plus size={15} />}
+                  {savingAsset ? "Saving…" : "Add to Portfolio"}
                 </button>
               </form>
             )}
@@ -859,7 +1089,21 @@ export default function InvestmentPortfolioCard({ onHoldingsChange }: Investment
         </div>
       )}
 
-      {selectedHolding && <StockDetailPage holding={selectedHolding} onBack={() => setSelectedHolding(null)} />}
+      {selectedHolding && (
+        <StockDetailPage
+          holding={selectedHolding}
+          onBack={() => setSelectedHolding(null)}
+          onRemove={removeHolding}
+          removing={removingId === selectedHolding.id}
+        />
+      )}
+
+      {dailyReportOpen && (
+        <DailyReportScreen
+          onBack={() => setDailyReportOpen(false)}
+          onConsultSocrates={onConsultSocrates}
+        />
+      )}
     </article>
   );
 }

@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { ArrowLeft, TrendingDown, TrendingUp } from "lucide-react";
+import { ArrowLeft, Loader2, Trash2, TrendingDown, TrendingUp } from "lucide-react";
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis } from "recharts";
 import { buildHistoricalSeries, formatMarketCap, RANGE_OPTIONS, RangeOption, seriesChangePct } from "../lib/priceSimulation";
 import type { StockHolding } from "./InvestmentPortfolioCard";
@@ -8,13 +8,15 @@ import StockLogo from "./StockLogo";
 type StockDetailPageProps = {
   holding: StockHolding;
   onBack: () => void;
+  onRemove?: (id: string) => void | Promise<void>;
+  removing?: boolean;
 };
 
 function formatMoney(amount: number) {
   return Math.round(amount).toLocaleString("en-US");
 }
 
-export default function StockDetailPage({ holding, onBack }: StockDetailPageProps) {
+export default function StockDetailPage({ holding, onBack, onRemove, removing }: StockDetailPageProps) {
   const [range, setRange] = useState<RangeOption>("1D");
 
   const series = useMemo(
@@ -225,6 +227,18 @@ export default function StockDetailPage({ holding, onBack }: StockDetailPageProp
             </div>
           </div>
         </section>
+
+        {onRemove ? (
+          <button
+            type="button"
+            disabled={removing}
+            onClick={() => void onRemove(holding.id)}
+            className="mt-8 flex w-full items-center justify-center gap-2 rounded-xl border border-rose-500/35 bg-rose-500/10 px-4 py-3.5 text-sm font-bold text-rose-300 transition hover:bg-rose-500/15 disabled:opacity-50"
+          >
+            {removing ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
+            {removing ? "Removing…" : "Remove from Portfolio"}
+          </button>
+        ) : null}
       </div>
     </div>
   );
