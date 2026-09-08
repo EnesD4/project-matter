@@ -4,7 +4,6 @@ import {
   Check,
   ChevronRight,
   CircleDollarSign,
-  CreditCard,
   HelpCircle,
   PartyPopper,
   PiggyBank,
@@ -16,6 +15,8 @@ import {
   Wallet,
   X,
 } from "lucide-react";
+import { categoryIcon } from "../lib/categoryIcons";
+import { formatCurrencyInput, parseCurrency } from "../lib/money";
 
 export type Debt = {
   id: string;
@@ -239,8 +240,8 @@ export default function DebtSnowballManager({ onOpenLessons, onDebtsChange }: De
   const addDebt = (e: React.FormEvent) => {
     e.preventDefault();
     const title = form.title.trim() || "Untitled Debt";
-    const balance = Number(form.balance);
-    const minPayment = Number(form.minPayment);
+    const balance = parseCurrency(form.balance);
+    const minPayment = parseCurrency(form.minPayment);
     const apr = form.apr.trim() === "" ? DEFAULT_APR : Number(form.apr);
 
     if (!Number.isFinite(balance) || balance <= 0) {
@@ -412,23 +413,33 @@ export default function DebtSnowballManager({ onOpenLessons, onDebtsChange }: De
             </label>
 
             <label className="flex flex-col gap-1 text-xs font-semibold text-slate-400">
-              Balance ($)
+              Balance
               <input
                 inputMode="decimal"
                 value={form.balance}
-                onChange={(e) => setForm((f) => ({ ...f, balance: e.target.value.replace(/[^0-9.]/g, "") }))}
-                placeholder="1200"
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    balance: formatCurrencyInput(e.target.value, { symbol: true }),
+                  }))
+                }
+                placeholder="$1,200"
                 className="rounded-lg border border-white/10 bg-[#121212] px-3 py-2 text-sm font-medium text-white outline-none placeholder:text-slate-500 focus:border-emerald-500"
               />
             </label>
 
             <label className="flex flex-col gap-1 text-xs font-semibold text-slate-400">
-              Min. Payment ($/mo)
+              Min. Payment /mo
               <input
                 inputMode="decimal"
                 value={form.minPayment}
-                onChange={(e) => setForm((f) => ({ ...f, minPayment: e.target.value.replace(/[^0-9.]/g, "") }))}
-                placeholder="45"
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    minPayment: formatCurrencyInput(e.target.value, { symbol: true }),
+                  }))
+                }
+                placeholder="$45"
                 className="rounded-lg border border-white/10 bg-[#121212] px-3 py-2 text-sm font-medium text-white outline-none placeholder:text-slate-500 focus:border-emerald-500"
               />
             </label>
@@ -564,9 +575,9 @@ export default function DebtSnowballManager({ onOpenLessons, onDebtsChange }: De
                   >
                     <div className="flex items-start justify-between gap-2">
                       <div className="flex items-center gap-2">
-                        <span className="grid h-8 w-8 flex-shrink-0 place-items-center rounded-lg bg-white/5 text-slate-300">
-                          <CreditCard size={15} />
-                        </span>
+                          <span className="grid h-8 w-8 flex-shrink-0 place-items-center rounded-lg bg-white/5 text-slate-300">
+                            {categoryIcon(debt.title)}
+                          </span>
                         <div>
                           <p className="text-sm font-bold text-white">{debt.title}</p>
                           <p className="text-[11px] text-slate-500">
@@ -644,7 +655,7 @@ export default function DebtSnowballManager({ onOpenLessons, onDebtsChange }: De
 
       {infoOpen && (
         <div
-          className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/75 p-4 sm:items-center"
+          className="fixed inset-0 z-[60] flex items-end justify-center bg-slate-950/75 p-4 sm:items-center"
           onClick={() => !courseStarted && setInfoOpen(false)}
           role="presentation"
         >

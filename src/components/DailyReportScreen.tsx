@@ -86,7 +86,7 @@ export default function DailyReportScreen({
   const marketOpen = report?.marketOpen ?? localStatus.marketOpen;
 
   return (
-    <div className="fixed inset-0 z-50 min-h-screen overflow-y-auto bg-[#000000]">
+    <div className="fixed inset-0 z-[60] min-h-screen overflow-y-auto bg-[#000000]">
       <div className="sticky top-0 z-10 flex items-center gap-3 border-b border-[#1F2937] bg-[#000000]/95 px-4 py-3 backdrop-blur-md sm:px-6">
         <button
           type="button"

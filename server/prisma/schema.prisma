@@ -10,10 +10,13 @@ datasource db {
 model User {
   id           String         @id @default(uuid())
   email        String         @unique
-  password     String
+  password     String?
   name         String
+  avatarUrl    String?
+  googleId     String?        @unique
   createdAt    DateTime       @default(now())
   portfolio    PortfolioItem[]
+  watchlists   Watchlist[]
   settings     UserSettings?
 }
 
@@ -29,11 +32,39 @@ model PortfolioItem {
   @@index([userId])
 }
 
+model Watchlist {
+  id        String          @id @default(uuid())
+  userId    String
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  createdAt DateTime        @default(now())
+  items     WatchlistItem[]
+
+  @@index([userId])
+}
+
+model WatchlistItem {
+  id          String    @id @default(uuid())
+  watchlistId String
+  watchlist   Watchlist @relation(fields: [watchlistId], references: [id], onDelete: Cascade)
+  symbol      String
+  name        String    @default("")
+  createdAt   DateTime  @default(now())
+
+  @@unique([watchlistId, symbol])
+  @@index([watchlistId])
+}
+
 model UserSettings {
-  id              String @id @default(uuid())
-  userId          String @unique
-  user            User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  riskTolerance   String @default("moderate")
-  investmentGoal  String @default("growth")
-  experienceLevel String @default("beginner")
+  id                      String  @id @default(uuid())
+  userId                  String  @unique
+  user                    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  riskTolerance           String  @default("moderate")
+  investmentGoal          String  @default("growth")
+  experienceLevel         String  @default("beginner")
+  hasCompletedOnboarding  Boolean @default(false)
+  hasActiveInvestments    Boolean @default(false)
+  hasActiveDebts          Boolean @default(false)
+  wantsCapitalGrowth      Boolean @default(false)
+  wantsFinancialLiteracy  Boolean @default(false)
 }

@@ -1,19 +1,76 @@
 import {
+  BookOpen,
+  Calendar,
+  ChevronLeft,
   ChevronRight,
+  CreditCard,
   Fingerprint,
   Landmark,
+  Loader2,
   LogOut,
+  Mail,
   MessageSquare,
   Moon,
+  TrendingUp,
   User,
 } from "lucide-react";
 import React, { useState } from "react";
-import type { AuthUser } from "../lib/auth";
+import {
+  saveUserSettings,
+  type AuthUser,
+  type OnboardingChoices,
+  type UserSettings,
+} from "../lib/auth";
 
 type ProfileScreenProps = {
   user: AuthUser;
+  settings: UserSettings | null;
+  onSettingsChange: (settings: UserSettings) => void;
   onLogout: () => void;
 };
+
+const PREFERENCE_ROWS: Array<{
+  key: keyof OnboardingChoices;
+  title: string;
+  subtitle: string;
+  icon: React.ReactNode;
+}> = [
+  {
+    key: "hasActiveInvestments",
+    title: "Active investments",
+    subtitle: "I currently hold investments",
+    icon: <TrendingUp size={16} color="#10B981" />,
+  },
+  {
+    key: "hasActiveDebts",
+    title: "Debt payoff",
+    subtitle: "I have debts I want to pay off",
+    icon: <CreditCard size={16} color="#10B981" />,
+  },
+  {
+    key: "wantsCapitalGrowth",
+    title: "Capital growth",
+    subtitle: "I want to focus on growing capital",
+    icon: <Landmark size={16} color="#10B981" />,
+  },
+  {
+    key: "wantsFinancialLiteracy",
+    title: "Financial literacy",
+    subtitle: "I want to learn the basics",
+    icon: <BookOpen size={16} color="#10B981" />,
+  },
+];
+
+function formatJoinedDate(iso?: string) {
+  if (!iso) return "—";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleDateString("en-US", {
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  });
+}
 
 type SettingsRowProps = {
   icon: React.ReactNode;
@@ -50,10 +107,12 @@ function Toggle({
   checked,
   onChange,
   label,
+  disabled,
 }: {
   checked: boolean;
   onChange: (next: boolean) => void;
   label: string;
+  disabled?: boolean;
 }) {
   return (
     <button
@@ -61,11 +120,13 @@ function Toggle({
       role="switch"
       aria-checked={checked}
       aria-label={label}
+      disabled={disabled}
       onClick={() => onChange(!checked)}
       style={{
         ...styles.toggle,
         background: checked ? "#10B981" : "#1F1F1F",
         borderColor: checked ? "#10B981" : "#2A2A2A",
+        opacity: disabled ? 0.55 : 1,
       }}
     >
       <span
@@ -78,8 +139,16 @@ function Toggle({
   );
 }
 
-export default function ProfileScreen({ user, onLogout }: ProfileScreenProps) {
+export default function ProfileScreen({
+  user,
+  settings,
+  onSettingsChange,
+  onLogout,
+}: ProfileScreenProps) {
   const [biometricEnabled, setBiometricEnabled] = useState(false);
+  const [personalInfoOpen, setPersonalInfoOpen] = useState(false);
+  const [savingPrefs, setSavingPrefs] = useState(false);
+  const [prefError, setPrefError] = useState<string | null>(null);
   const initials = (user.name || user.email || "?")
     .split(/\s+/)
     .filter(Boolean)
@@ -92,12 +161,142 @@ export default function ProfileScreen({ user, onLogout }: ProfileScreenProps) {
       "mailto:feedback@matterpro.app?subject=MatterPro%20Beta%20Feedback";
   };
 
+  const updatePreference = async (key: keyof OnboardingChoices, value: boolean) => {
+    if (!settings || savingPrefs) return;
+    setPrefError(null);
+    const previous = settings;
+    const optimistic: UserSettings = {
+      ...settings,
+      [key]: value,
+      investmentGoal:
+        (key === "wantsCapitalGrowth" ? value : settings.wantsCapitalGrowth) ? "growth" : "preservation",
+      experienceLevel:
+        (key === "wantsFinancialLiteracy" ? value : settings.wantsFinancialLiteracy)
+          ? "beginner"
+          : "experienced",
+    };
+    onSettingsChange(optimistic);
+    setSavingPrefs(true);
+    try {
+      const saved = await saveUserSettings({
+        hasActiveInvestments: optimistic.hasActiveInvestments,
+        hasActiveDebts: optimistic.hasActiveDebts,
+        wantsCapitalGrowth: optimistic.wantsCapitalGrowth,
+        wantsFinancialLiteracy: optimistic.wantsFinancialLiteracy,
+        hasCompletedOnboarding: true,
+      });
+      onSettingsChange(saved);
+    } catch (err) {
+      onSettingsChange(previous);
+      setPrefError(err instanceof Error ? err.message : "Couldn't save that preference.");
+    } finally {
+      setSavingPrefs(false);
+    }
+  };
+
+  if (personalInfoOpen) {
+    return (
+      <div style={styles.root}>
+        <button type="button" onClick={() => setPersonalInfoOpen(false)} style={styles.backBtn}>
+          <ChevronLeft size={16} />
+          Profile
+        </button>
+
+        <section style={styles.infoHero} aria-label="Account profile">
+          <div style={styles.infoAvatar} aria-hidden="true">
+            {user.avatarUrl ? (
+              <img
+                src={user.avatarUrl}
+                alt=""
+                referrerPolicy="no-referrer"
+                style={styles.avatarImg}
+              />
+            ) : (
+              initials
+            )}
+          </div>
+          <h2 style={styles.infoName}>{user.name || "—"}</h2>
+          <p style={styles.infoHint}>Google / account profile</p>
+        </section>
+
+        <section style={styles.card} aria-label="Account details">
+          <p style={styles.sectionLabel}>Account</p>
+          <div style={styles.detailRow}>
+            <span style={styles.rowIcon}>
+              <User size={16} color="#10B981" />
+            </span>
+            <span style={styles.rowBody}>
+              <span style={styles.rowSubtitle}>Full name</span>
+              <span style={styles.rowTitle}>{user.name || "—"}</span>
+            </span>
+          </div>
+          <div style={styles.divider} />
+          <div style={styles.detailRow}>
+            <span style={styles.rowIcon}>
+              <Mail size={16} color="#10B981" />
+            </span>
+            <span style={styles.rowBody}>
+              <span style={styles.rowSubtitle}>Email</span>
+              <span style={styles.rowTitle}>{user.email || "—"}</span>
+            </span>
+          </div>
+          <div style={styles.divider} />
+          <div style={styles.detailRow}>
+            <span style={styles.rowIcon}>
+              <Calendar size={16} color="#10B981" />
+            </span>
+            <span style={styles.rowBody}>
+              <span style={styles.rowSubtitle}>Registration date</span>
+              <span style={styles.rowTitle}>{formatJoinedDate(user.createdAt)}</span>
+            </span>
+          </div>
+        </section>
+
+        <section style={styles.card} aria-label="Onboarding preferences">
+          <div style={styles.prefHead}>
+            <p style={{ ...styles.sectionLabel, margin: 0 }}>Preferences</p>
+            {savingPrefs ? <Loader2 size={14} color="#10B981" className="animate-spin" /> : null}
+          </div>
+          <p style={styles.prefIntro}>Choices from onboarding — update anytime.</p>
+          {PREFERENCE_ROWS.map((row, index) => (
+            <React.Fragment key={row.key}>
+              {index > 0 ? <div style={styles.divider} /> : null}
+              <SettingsRow
+                icon={row.icon}
+                title={row.title}
+                subtitle={row.subtitle}
+                trailing={
+                  <Toggle
+                    checked={Boolean(settings?.[row.key])}
+                    onChange={(next) => void updatePreference(row.key, next)}
+                    label={row.title}
+                    disabled={savingPrefs || !settings}
+                  />
+                }
+              />
+            </React.Fragment>
+          ))}
+          {prefError ? <p style={styles.prefError}>{prefError}</p> : null}
+        </section>
+      </div>
+    );
+  }
+
   return (
     <div style={styles.root}>
       {/* User card */}
       <section style={styles.userCard} aria-label="Profile">
         <div style={styles.avatar} aria-hidden="true">
-          {initials}
+          {user.avatarUrl ? (
+            <img
+              src={user.avatarUrl}
+              alt=""
+              referrerPolicy="no-referrer"
+              style={styles.avatarImg}
+            />
+          ) : (
+            initials
+          )}
         </div>
         <div style={styles.userMeta}>
           <h2 style={styles.userName}>{user.name}</h2>
@@ -125,7 +324,7 @@ export default function ProfileScreen({ user, onLogout }: ProfileScreenProps) {
           icon={<User size={16} color="#10B981" />}
           title="Personal Info"
           subtitle="Name, email, and account profile"
-          onClick={() => window.alert("Personal info editing comes in a later build.")}
+          onClick={() => setPersonalInfoOpen(true)}
         />
         <div style={styles.divider} />
         <SettingsRow
@@ -210,6 +409,13 @@ const styles: Record<string, React.CSSProperties> = {
     color: "#042F2E",
     boxShadow: "0 0 0 3px rgba(16, 185, 129, 0.22)",
     flexShrink: 0,
+    overflow: "hidden",
+  },
+  avatarImg: {
+    width: "100%",
+    height: "100%",
+    objectFit: "cover",
+    display: "block",
   },
   userMeta: {
     minWidth: 0,
@@ -397,5 +603,78 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 14,
     fontWeight: 750,
     cursor: "pointer",
+  },
+  backBtn: {
+    alignSelf: "flex-start",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 4,
+    background: "transparent",
+    border: "none",
+    color: "#9CA3AF",
+    padding: "4px 0",
+    fontSize: 13,
+    fontWeight: 700,
+    cursor: "pointer",
+  },
+  infoHero: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    textAlign: "center",
+    gap: 8,
+    background: "#0A0A0A",
+    border: "1px solid #1F1F1F",
+    borderRadius: 16,
+    padding: "22px 16px 18px",
+  },
+  infoAvatar: {
+    width: 84,
+    height: 84,
+    borderRadius: "50%",
+    background: "linear-gradient(135deg, #10B981, #059669)",
+    display: "grid",
+    placeItems: "center",
+    fontWeight: 800,
+    fontSize: 28,
+    color: "#042F2E",
+    boxShadow: "0 0 0 3px rgba(16, 185, 129, 0.22)",
+    overflow: "hidden",
+  },
+  infoName: {
+    margin: "6px 0 0",
+    fontSize: 22,
+    fontWeight: 800,
+    letterSpacing: "-0.02em",
+    color: "#FFFFFF",
+  },
+  infoHint: {
+    margin: 0,
+    fontSize: 12,
+    color: "#9CA3AF",
+  },
+  detailRow: {
+    width: "100%",
+    display: "flex",
+    alignItems: "center",
+    gap: 12,
+    padding: "10px 4px",
+  },
+  prefHead: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+    marginBottom: 4,
+  },
+  prefIntro: {
+    margin: "0 0 8px",
+    fontSize: 12,
+    color: "#9CA3AF",
+  },
+  prefError: {
+    margin: "8px 0 0",
+    fontSize: 12,
+    color: "#FDA4AF",
   },
 };

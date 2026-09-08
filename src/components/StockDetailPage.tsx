@@ -51,7 +51,7 @@ export default function StockDetailPage({ holding, onBack, onRemove, removing }:
   const dayRangePosition = Math.min(100, Math.max(0, ((holding.currentPrice - dayLow) / dayRangeSpan) * 100));
 
   return (
-    <div className="fixed inset-0 z-50 min-h-screen overflow-y-auto bg-[#000000]">
+    <div className="fixed inset-0 z-[60] min-h-screen overflow-y-auto bg-[#000000]">
       {/* Top navigation bar */}
       <div className="sticky top-0 z-10 flex items-center gap-3 border-b border-[#1F1F1F] bg-[#000000]/95 px-4 py-3 backdrop-blur-md sm:px-6">
         <button

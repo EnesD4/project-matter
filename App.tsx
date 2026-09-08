@@ -2,26 +2,23 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import {
   Bell,
   Check,
+  ChevronDown,
+  ChevronUp,
   CircleDollarSign,
-  CreditCard,
-  Home,
-  Landmark,
   Plus,
   Receipt,
-  Repeat,
   ShieldCheck,
-  ShoppingCart,
   Trash2,
   TrendingDown,
   TrendingUp,
-  Wallet,
   X,
-  Zap,
 } from "lucide-react";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { type Debt } from "./src/components/DebtSnowballManager";
+import { formatCurrencyInput, formatCurrencyValue, parseCurrency } from "./src/lib/money";
+import { categoryIcon } from "./src/lib/categoryIcons";
 import AuthScreen from "./src/components/AuthScreen";
-import HealthScoreBadge from "./src/components/HealthScoreBadge";
+import OnboardingScreen from "./src/components/OnboardingScreen";
 import InvestmentPortfolioCard, { type Holding } from "./src/components/InvestmentPortfolioCard";
 import LessonsPhase1 from "./src/components/LessonsPhase1";
 import ProfileScreen from "./src/components/ProfileScreen";
@@ -32,6 +29,7 @@ import {
   getToken,
   saveSession,
   type AuthUser,
+  type UserSettings,
 } from "./src/lib/auth";
 
 type TabId = "dashboard" | "snowball" | "lessons" | "socrates" | "profile";
@@ -56,7 +54,7 @@ function createChatMessage(sender: ChatSender, text: string): ChatMessage {
 
 const TABS: Array<{ id: TabId; emoji: string; label: string }> = [
   { id: "dashboard", emoji: "📊", label: "Investments" },
-  { id: "snowball", emoji: "💸", label: "Cash Flow &\nDebt" },
+  { id: "snowball", emoji: "💸", label: "Cash Flow" },
   { id: "lessons", emoji: "🎓", label: "Lessons" },
   { id: "socrates", emoji: "🏛️", label: "Matter AI" },
   { id: "profile", emoji: "👤", label: "Profile" },
@@ -123,50 +121,14 @@ const DEFICIT_TONE = {
   border: "rgba(244, 63, 94, 0.35)",
 };
 
-const SEED_DEBTS: Debt[] = [
-  {
-    id: "debt-credit-card",
-    title: "Credit Card Balance",
-    originalBalance: 2400,
-    balance: 1680,
-    minPayment: 65,
-    apr: 22.99,
-  },
-  {
-    id: "debt-personal-loan",
-    title: "Personal Loan",
-    originalBalance: 6000,
-    balance: 4200,
-    minPayment: 145,
-    apr: 9.5,
-  },
-];
-
 type DebtFormState = { title: string; balance: string; minPayment: string; apr: string };
 const EMPTY_DEBT_FORM: DebtFormState = { title: "", balance: "", minPayment: "", apr: "" };
 
 /** One editable line in the monthly spending breakdown. */
 type ExpenseItem = { id: string; label: string; amount: number };
 
-const SEED_EXPENSES: ExpenseItem[] = [
-  { id: "expense-rent", label: "Rent", amount: 950 },
-  { id: "expense-groceries", label: "Groceries", amount: 420 },
-  { id: "expense-utilities", label: "Utilities", amount: 180 },
-  { id: "expense-subscriptions", label: "Subscriptions", amount: 90 },
-];
-
 type ExpenseFormState = { label: string; amount: string };
 const EMPTY_EXPENSE_FORM: ExpenseFormState = { label: "", amount: "" };
-
-/** Icon guessed from the category name so user-added rows get a fitting glyph too. */
-function expenseIcon(label: string) {
-  if (/rent|housing|mortgage|home|apartment/i.test(label)) return <Home size={15} />;
-  if (/food|grocer|dining|eat|meal/i.test(label)) return <ShoppingCart size={15} />;
-  if (/util|electric|water|internet|phone|heat/i.test(label)) return <Zap size={15} />;
-  if (/debt|loan|credit|card|payment/i.test(label)) return <CreditCard size={15} />;
-  if (/sub|stream|member|plan/i.test(label)) return <Repeat size={15} />;
-  return <Receipt size={15} />;
-}
 
 let expenseIdSeed = 0;
 function nextExpenseId() {
@@ -209,10 +171,48 @@ function aprTone(apr: number) {
   return { color: "#6EE7B7", bg: "rgba(16, 185, 129, 0.12)", border: "rgba(16, 185, 129, 0.32)" };
 }
 
-function debtIcon(title: string) {
-  if (/card|visa|master|amex|credit/i.test(title)) return <CreditCard size={15} />;
-  if (/loan|auto|car|student|mortgage/i.test(title)) return <Landmark size={15} />;
-  return <Wallet size={15} />;
+function CurrencyInput({
+  value,
+  onValueChange,
+  style,
+  ...rest
+}: {
+  value: number;
+  onValueChange: (next: number) => void;
+  style?: React.CSSProperties;
+} & Omit<React.InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "type">) {
+  const [draft, setDraft] = useState(() => formatCurrencyValue(value));
+  const focusedRef = useRef(false);
+
+  useEffect(() => {
+    if (!focusedRef.current) {
+      setDraft(formatCurrencyValue(value));
+    }
+  }, [value]);
+
+  return (
+    <input
+      {...rest}
+      type="text"
+      inputMode="decimal"
+      style={style}
+      value={draft}
+      onFocus={(event) => {
+        focusedRef.current = true;
+        rest.onFocus?.(event);
+      }}
+      onBlur={(event) => {
+        focusedRef.current = false;
+        setDraft(formatCurrencyValue(value));
+        rest.onBlur?.(event);
+      }}
+      onChange={(event) => {
+        const formatted = formatCurrencyInput(event.target.value);
+        setDraft(formatted);
+        onValueChange(parseCurrency(formatted));
+      }}
+    />
+  );
 }
 
 let debtIdSeed = 0;
@@ -224,28 +224,29 @@ function nextDebtId() {
 const App: React.FC = () => {
   const [authUser, setAuthUser] = useState<AuthUser | null>(() => getStoredUser());
   const [authChecking, setAuthChecking] = useState(() => Boolean(getToken()));
-  const [emergencyFund, setEmergencyFund] = useState(400);
+  const [userSettings, setUserSettings] = useState<UserSettings | null>(null);
+  const [settingsReady, setSettingsReady] = useState(() => !getToken());
+  const [emergencyFund, setEmergencyFund] = useState(0);
   const [question, setQuestion] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [socratesLoading, setSocratesLoading] = useState(false);
   const chatLogRef = useRef<HTMLDivElement | null>(null);
-  const [plusPulse, setPlusPulse] = useState(false);
-  const [monthlyIncome, setMonthlyIncome] = useState(2500);
+  const askInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const [monthlyIncome, setMonthlyIncome] = useState(0);
   const [activeTab, setActiveTab] = useState<TabId>("dashboard");
-  const [navVisible, setNavVisible] = useState(true);
-  const lastScrollYRef = useRef(0);
 
   // Cash Flow & Debt Management module state.
-  const [expenses, setExpenses] = useState<ExpenseItem[]>(SEED_EXPENSES);
+  const [expenses, setExpenses] = useState<ExpenseItem[]>([]);
   const [spendingModalOpen, setSpendingModalOpen] = useState(false);
   const [expenseFormOpen, setExpenseFormOpen] = useState(false);
   const [expenseForm, setExpenseForm] = useState<ExpenseFormState>(EMPTY_EXPENSE_FORM);
   const [expenseFormError, setExpenseFormError] = useState("");
-  const [extraPayoff, setExtraPayoff] = useState(100);
-  const [debts, setDebts] = useState<Debt[]>(SEED_DEBTS);
+  const [extraPayoff, setExtraPayoff] = useState(0);
+  const [debts, setDebts] = useState<Debt[]>([]);
   const [debtFormOpen, setDebtFormOpen] = useState(false);
   const [debtForm, setDebtForm] = useState<DebtFormState>(EMPTY_DEBT_FORM);
   const [debtFormError, setDebtFormError] = useState("");
+  const [debtAccordionOpen, setDebtAccordionOpen] = useState(false);
 
   // Live mirror of child-owned portfolio state, kept in sync via a callback prop so
   // Socrates AI can reference the user's real holdings.
@@ -258,23 +259,30 @@ const App: React.FC = () => {
     if (!token) {
       setAuthChecking(false);
       setAuthUser(null);
+      setUserSettings(null);
+      setSettingsReady(true);
       return;
     }
 
     let cancelled = false;
     (async () => {
       try {
-        const user = await fetchMe();
+        const me = await fetchMe();
         if (cancelled) return;
-        saveSession(token, user);
-        setAuthUser(user);
+        saveSession(token, me.user);
+        setAuthUser(me.user);
+        setUserSettings(me.settings);
       } catch {
         if (cancelled) return;
         clearSession();
         setAuthUser(null);
+        setUserSettings(null);
         setHoldings([]);
       } finally {
-        if (!cancelled) setAuthChecking(false);
+        if (!cancelled) {
+          setSettingsReady(true);
+          setAuthChecking(false);
+        }
       }
     })();
 
@@ -283,61 +291,75 @@ const App: React.FC = () => {
     };
   }, []);
 
-  const handleAuthenticated = (user: AuthUser) => {
+  const handleAuthenticated = (user: AuthUser, settings?: UserSettings | null) => {
     setAuthUser(user);
+    setActiveTab("dashboard");
+    if (settings !== undefined) {
+      setUserSettings(settings);
+      setSettingsReady(true);
+      return;
+    }
+    setSettingsReady(false);
+    void (async () => {
+      try {
+        const me = await fetchMe();
+        setUserSettings(me.settings);
+      } catch {
+        setUserSettings(null);
+      } finally {
+        setSettingsReady(true);
+      }
+    })();
+  };
+
+  const handleOnboardingComplete = (settings: UserSettings) => {
+    setUserSettings(settings);
     setActiveTab("dashboard");
   };
 
   const handleLogout = () => {
     clearSession();
     setAuthUser(null);
+    setUserSettings(null);
+    setSettingsReady(true);
     setHoldings([]);
     setMessages([]);
     setActiveTab("dashboard");
   };
 
   const emergencyGoal = 1000;
-  const score = 785;
-  const scoreMax = 1000;
 
-  const emergencyPct = Math.min(100, Math.round((emergencyFund / emergencyGoal) * 100));
-  const fundComplete = emergencyFund >= emergencyGoal;
-
-  const budgetSplit = useMemo(() => {
-    const pay = Math.max(0, monthlyIncome);
-    return {
-      needs: pay * 0.5,
-      wants: pay * 0.3,
-      savings: pay * 0.2,
-    };
-  }, [monthlyIncome]);
-
-  // Total spendings is always the sum of the itemized categories, so every keystroke
-  // in the breakdown flows straight through to net cash flow.
-  const monthlyExpenses = useMemo(
+  const categoryExpenses = useMemo(
     () => expenses.reduce((sum, item) => sum + item.amount, 0),
     [expenses]
   );
+  const totalDebt = useMemo(() => debts.reduce((sum, d) => sum + d.balance, 0), [debts]);
+  const activeDebts = useMemo(() => debts.filter((d) => d.balance > 0), [debts]);
+  const totalMinPayment = useMemo(
+    () => activeDebts.reduce((sum, d) => sum + d.minPayment, 0),
+    [activeDebts]
+  );
+  // Active debt minimums count toward monthly expenses so users never enter them twice.
+  const monthlyExpenses = categoryExpenses + totalMinPayment;
 
   const netCashFlow = monthlyIncome - monthlyExpenses;
   const isSurplus = netCashFlow >= 0;
-  const flowTone = isSurplus ? SURPLUS_TONE : DEFICIT_TONE;
+  const hasCashFlowInputs = monthlyIncome > 0 || expenses.length > 0 || totalMinPayment > 0;
+  const flowTone = !hasCashFlowInputs
+    ? { value: "#F8FAFC", text: "#94A3B8", bg: "rgba(255,255,255,0.04)", border: "#1F1F1F" }
+    : isSurplus
+    ? SURPLUS_TONE
+    : DEFICIT_TONE;
   const spendRatio = monthlyIncome > 0 ? Math.min(100, (monthlyExpenses / monthlyIncome) * 100) : 0;
 
   const emergencyTarget = monthlyExpenses * EMERGENCY_MONTHS;
   const emergencyTargetPct =
     emergencyTarget > 0 ? Math.min(100, Math.round((emergencyFund / emergencyTarget) * 100)) : 0;
   const monthsCovered = monthlyExpenses > 0 ? emergencyFund / monthlyExpenses : 0;
-
-  const totalDebt = useMemo(() => debts.reduce((sum, d) => sum + d.balance, 0), [debts]);
-  const totalMinPayment = useMemo(
-    () => debts.reduce((sum, d) => (d.balance > 0 ? sum + d.minPayment : sum), 0),
-    [debts]
-  );
-  const monthlyInterest = useMemo(
-    () => debts.reduce((sum, d) => sum + (d.balance * d.apr) / 100 / 12, 0),
-    [debts]
-  );
+  const avgApr = useMemo(() => {
+    if (totalDebt <= 0) return 0;
+    return debts.reduce((sum, d) => sum + d.balance * d.apr, 0) / totalDebt;
+  }, [debts, totalDebt]);
 
   // Snowball focus: every extra dollar lands on the smallest remaining balance.
   const focusDebt = useMemo(
@@ -376,18 +398,35 @@ const App: React.FC = () => {
 
   // Live cash-flow context from the Cash Flow & Debt Management module.
   const cashFlowContext = useMemo(() => {
-    const breakdown =
+    const categoryBreakdown =
       expenses.length === 0
         ? "No spending categories tracked yet."
         : `Spending breakdown: ${expenses
             .map((item) => `${item.label} $${money(item.amount)}/mo`)
             .join(", ")}.`;
+    const debtBreakdown =
+      totalMinPayment > 0
+        ? ` Active debt minimums included in expenses: ${activeDebts
+            .map((d) => `${d.title} $${money(d.minPayment)}/mo`)
+            .join(", ")}.`
+        : "";
     return `Monthly income $${money(monthlyIncome)}, total monthly spending $${money(
       monthlyExpenses
-    )}, net cash flow ${isSurplus ? "+" : "-"}$${money(Math.abs(netCashFlow))} (${
+    )} (categories $${money(categoryExpenses)} + debt minimums $${money(
+      totalMinPayment
+    )}), net cash flow ${isSurplus ? "+" : "-"}$${money(Math.abs(netCashFlow))} (${
       isSurplus ? "surplus" : "deficit"
-    }). ${breakdown}`;
-  }, [expenses, monthlyIncome, monthlyExpenses, isSurplus, netCashFlow]);
+    }). ${categoryBreakdown}${debtBreakdown}`;
+  }, [
+    expenses,
+    monthlyIncome,
+    monthlyExpenses,
+    categoryExpenses,
+    totalMinPayment,
+    activeDebts,
+    isSurplus,
+    netCashFlow,
+  ]);
 
   useEffect(() => {
     const log = chatLogRef.current;
@@ -397,38 +436,17 @@ const App: React.FC = () => {
   }, [messages, socratesLoading, activeTab]);
 
   useEffect(() => {
-    lastScrollYRef.current = window.scrollY;
-
-    const handleScroll = () => {
-      const currentY = window.scrollY;
-      const delta = currentY - lastScrollYRef.current;
-
-      // Ignore tiny jitters so the bar doesn't flicker on minor scroll noise.
-      if (Math.abs(delta) < 6) {
-        return;
-      }
-
-      if (delta > 0 && currentY > 80) {
-        setNavVisible(false); // scrolling down -> hide
-      } else {
-        setNavVisible(true); // scrolling up (or near top) -> show
-      }
-
-      lastScrollYRef.current = currentY;
-    };
-
-    window.addEventListener("scroll", handleScroll, { passive: true });
-    return () => window.removeEventListener("scroll", handleScroll);
-  }, []);
+    const el = askInputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const lineHeight = 21;
+    const paddingY = 24;
+    const maxHeight = lineHeight * 5 + paddingY;
+    el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`;
+  }, [question, activeTab]);
 
   const contributeEmergency = (amount: number, cap: number) => {
     setEmergencyFund((prev: number) => Math.max(prev, Math.min(cap, prev + amount)));
-  };
-
-  const addEmergency = () => {
-    contributeEmergency(50, emergencyGoal);
-    setPlusPulse(true);
-    window.setTimeout(() => setPlusPulse(false), 280);
   };
 
   const setExpenseAmount = (id: string, amount: number) => {
@@ -459,7 +477,7 @@ const App: React.FC = () => {
   const submitExpense = (event: React.FormEvent) => {
     event.preventDefault();
     const label = expenseForm.label.trim();
-    const amount = expenseForm.amount.trim() === "" ? 0 : Number(expenseForm.amount);
+    const amount = parseCurrency(expenseForm.amount);
 
     if (!label) {
       setExpenseFormError("Give the category a name.");
@@ -491,6 +509,7 @@ const App: React.FC = () => {
   };
 
   const openDebtForm = () => {
+    setDebtAccordionOpen(true);
     setDebtForm(EMPTY_DEBT_FORM);
     setDebtFormError("");
     setDebtFormOpen(true);
@@ -498,8 +517,8 @@ const App: React.FC = () => {
 
   const submitDebt = (event: React.FormEvent) => {
     event.preventDefault();
-    const balance = Number(debtForm.balance);
-    const minPayment = Number(debtForm.minPayment);
+    const balance = parseCurrency(debtForm.balance);
+    const minPayment = parseCurrency(debtForm.minPayment);
     const apr = debtForm.apr.trim() === "" ? 0 : Number(debtForm.apr);
 
     if (!Number.isFinite(balance) || balance <= 0) {
@@ -563,7 +582,7 @@ const App: React.FC = () => {
         .join("\n");
       const userPrompt = `${userName}'s live snapshot:\n- Emergency fund: $${money(emergencyFund)} (starter goal $${money(
         emergencyGoal
-      )}; full ${EMERGENCY_MONTHS}-month goal $${money(emergencyTarget)})\n- Financial health score: ${score} / ${scoreMax}\n- Cash flow: ${cashFlowContext}\n- Debt: ${debtContext}\n- Investment portfolio: ${portfolioContext}\n\nConversation:\n${history}\n\nReply to the latest user message. If ${userName} asks about their income, spending, budget, debts, or portfolio balance, answer using the real snapshot data above.`;
+      )}; full ${EMERGENCY_MONTHS}-month goal $${money(emergencyTarget)})\n- Cash flow: ${cashFlowContext}\n- Debt: ${debtContext}\n- Investment portfolio: ${portfolioContext}\n\nConversation:\n${history}\n\nReply to the latest user message. If ${userName} asks about their income, spending, budget, debts, or portfolio balance, answer using the real snapshot data above.`;
 
       if (!apiKey) {
         setMessages((prev) => [...prev, createChatMessage("socrates", SOCRATES_MOCK_REPLY)]);
@@ -593,14 +612,14 @@ const App: React.FC = () => {
     }
   };
 
-  const onAskKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "Enter") {
+  const onAskKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
       void askSocrates();
     }
   };
 
-  if (authChecking) {
+  if (authChecking || (authUser && !settingsReady)) {
     return (
       <div style={{ ...styles.page, display: "grid", placeItems: "center", minHeight: "100vh" }}>
         <p style={{ color: "#9CA3AF", fontWeight: 700, fontSize: 14 }}>Checking your session…</p>
@@ -612,12 +631,20 @@ const App: React.FC = () => {
     return <AuthScreen onAuthenticated={handleAuthenticated} />;
   }
 
+  if (!userSettings?.hasCompletedOnboarding) {
+    return (
+      <OnboardingScreen
+        onComplete={handleOnboardingComplete}
+      />
+    );
+  }
+
   return (
     <div style={styles.page}>
       <style>{css}</style>
 
       <div style={styles.shell}>
-        {activeTab === "dashboard" && (
+        {(activeTab === "dashboard" || activeTab === "snowball" || activeTab === "lessons") && (
           <header style={styles.investHeader}>
             <p style={styles.brandLogo}>MatterPro</p>
             <button type="button" style={styles.notifBtn} aria-label="Notifications">
@@ -626,109 +653,18 @@ const App: React.FC = () => {
           </header>
         )}
 
-        {(activeTab === "snowball" || activeTab === "lessons") && (
-          <header style={styles.header}>
-            <div>
-              <p style={styles.brand}>MATTER</p>
-              <h1 style={styles.hello}>Hey, {userName} 👋</h1>
-              <p style={styles.subhead}>Your money. Your move.</p>
-            </div>
-            <div style={styles.streak}>🔥 5-Day Streak</div>
-          </header>
-        )}
-
         {activeTab === "dashboard" && (
           <div className="matter-tab-panel" style={styles.tabPanel}>
-            <HealthScoreBadge score={score} scoreMax={scoreMax} />
-
             <InvestmentPortfolioCard
               key={authUser.id}
               onHoldingsChange={setHoldings}
               onConsultSocrates={() => setActiveTab("socrates")}
             />
-
-            <article style={styles.statCard}>
-              <div style={styles.fundHead}>
-                <p style={styles.statLabel}>Emergency Fund</p>
-                <button
-                  type="button"
-                  onClick={addEmergency}
-                  disabled={fundComplete}
-                  aria-label="Add 50 dollars to emergency fund"
-                  style={{
-                    ...styles.plusBtn,
-                    opacity: fundComplete ? 0.45 : 1,
-                    transform: plusPulse ? "scale(1.08)" : "scale(1)",
-                  }}
-                >
-                  +
-                </button>
-              </div>
-              <p style={styles.statValue}>
-                ${emergencyFund.toLocaleString("en-US")}{" "}
-                <span style={styles.statMuted}>/ ${emergencyGoal.toLocaleString("en-US")}</span>
-              </p>
-              <div style={styles.barTrack}>
-                <div style={{ ...styles.barFill, width: `${emergencyPct}%` }} />
-              </div>
-              <p style={styles.statHint}>
-                {fundComplete ? "Starter fund locked in. Huge." : `+ $50 · ${emergencyPct}% to starter goal`}
-              </p>
-            </article>
-
-            <article style={styles.toolCard} aria-label="50/30/20 Smart Budget Splitter">
-              <p style={styles.statLabel}>50/30/20 Smart Budget Splitter</p>
-              <h3 style={styles.toolTitle}>Monthly Take-Home Pay</h3>
-              <div style={styles.payRow}>
-                <span style={styles.payPrefix}>$</span>
-                <input
-                  style={styles.payInput}
-                  type="text"
-                  inputMode="decimal"
-                  value={monthlyIncome}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
-                    const raw = e.target.value.replace(/[^0-9.]/g, "");
-                    const next = Number(raw);
-                    setMonthlyIncome(Number.isFinite(next) ? next : 0);
-                  }}
-                  aria-label="Monthly take-home pay"
-                />
-              </div>
-
-              <div style={styles.splitBar} aria-hidden="true">
-                <div style={{ ...styles.splitNeeds, flex: 50 }} />
-                <div style={{ ...styles.splitWants, flex: 30 }} />
-                <div style={{ ...styles.splitSave, flex: 20 }} />
-              </div>
-
-              <ul style={styles.splitLegend}>
-                <li style={styles.splitItem}>
-                  <span style={{ ...styles.splitDot, background: "#10B981" }} />
-                  <span>Needs (50%): ${money(budgetSplit.needs)}</span>
-                </li>
-                <li style={styles.splitItem}>
-                  <span style={{ ...styles.splitDot, background: "#6EE7B7" }} />
-                  <span>Wants (30%): ${money(budgetSplit.wants)}</span>
-                </li>
-                <li style={styles.splitItem}>
-                  <span style={{ ...styles.splitDot, background: "#047857" }} />
-                  <span>Savings / Debt Snowball (20%): ${money(budgetSplit.savings)}</span>
-                </li>
-              </ul>
-            </article>
           </div>
         )}
 
         {activeTab === "snowball" && (
           <div className="matter-tab-panel" style={styles.tabPanel}>
-            <div style={styles.moduleHead}>
-              <p style={styles.brand}>CASH FLOW &amp; DEBT</p>
-              <h2 style={styles.moduleTitle}>Cash Flow &amp; Debt Management</h2>
-              <p style={styles.moduleSub}>
-                What comes in, what goes out, and what you owe — all in one place.
-              </p>
-            </div>
-
             {/* 1. One panel: earnings in, spendings out, net result. */}
             <article
               style={{ ...styles.flowPanel, borderColor: flowTone.border }}
@@ -744,7 +680,7 @@ const App: React.FC = () => {
                     border: `1px solid ${flowTone.border}`,
                   }}
                 >
-                  {isSurplus ? "Surplus" : "Deficit"}
+                  {!hasCashFlowInputs ? "Add yours" : isSurplus ? "Surplus" : "Deficit"}
                 </span>
               </div>
 
@@ -758,16 +694,11 @@ const App: React.FC = () => {
                   </div>
                   <div style={styles.flowInputRow}>
                     <span style={{ ...styles.flowPrefix, color: INCOME_GREEN }}>$</span>
-                    <input
+                    <CurrencyInput
                       style={styles.flowInput}
-                      type="text"
-                      inputMode="decimal"
-                      value={monthlyIncome === 0 ? "" : monthlyIncome}
+                      value={monthlyIncome}
+                      onValueChange={setMonthlyIncome}
                       placeholder="0"
-                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
-                        const next = Number(e.target.value.replace(/[^0-9.]/g, ""));
-                        setMonthlyIncome(Number.isFinite(next) ? next : 0);
-                      }}
                       aria-label="Monthly earnings"
                     />
                   </div>
@@ -794,9 +725,16 @@ const App: React.FC = () => {
                     Detaylandır
                   </button>
                   <p style={styles.flowCellHint}>
-                    {expenses.length === 0
+                    {expenses.length === 0 && totalMinPayment <= 0
                       ? "No categories yet"
-                      : `Across ${expenses.length} ${expenses.length === 1 ? "category" : "categories"}`}
+                      : [
+                          expenses.length > 0
+                            ? `${expenses.length} ${expenses.length === 1 ? "category" : "categories"}`
+                            : null,
+                          totalMinPayment > 0 ? "debt payments included" : null,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
                   </p>
                 </div>
               </div>
@@ -853,7 +791,8 @@ const App: React.FC = () => {
                           Spending Breakdown
                         </h3>
                         <p style={styles.spendingModalSub}>
-                          Edit categories — totals update cash flow live.
+                          Edit categories — totals update cash flow live. Debt minimums are counted
+                          automatically.
                         </p>
                       </div>
                     </div>
@@ -868,10 +807,11 @@ const App: React.FC = () => {
                   </div>
 
                   <div style={styles.spendingModalBody}>
-                    {expenses.length === 0 ? (
+                    {expenses.length === 0 && activeDebts.length === 0 ? (
                       <div style={styles.emptyExpenses}>
                         Nothing tracked yet. Add rent, groceries, utilities, subscriptions — anything
-                        that leaves your account each month.
+                        that leaves your account each month. Debt minimums from Active Debt Payoff are
+                        included automatically.
                       </div>
                     ) : (
                       <ul style={styles.expenseList}>
@@ -884,6 +824,13 @@ const App: React.FC = () => {
                             onRemove={() => removeExpense(item.id)}
                           />
                         ))}
+                        {activeDebts.map((debt) => (
+                          <DebtPaymentRow
+                            key={debt.id}
+                            debt={debt}
+                            share={monthlyExpenses > 0 ? (debt.minPayment / monthlyExpenses) * 100 : 0}
+                          />
+                        ))}
                       </ul>
                     )}
 
@@ -894,6 +841,12 @@ const App: React.FC = () => {
                         <span style={styles.netPer}>/mo</span>
                       </p>
                     </div>
+                    {totalMinPayment > 0 && (
+                      <p style={styles.expenseShareNote}>
+                        ${money(categoryExpenses)} in categories + ${money(totalMinPayment)} in debt
+                        minimums
+                      </p>
+                    )}
 
                     <div style={styles.modalNetRow}>
                       <p style={styles.expenseTotalLabel}>Net Cash Flow</p>
@@ -935,7 +888,7 @@ const App: React.FC = () => {
                           />
                         </label>
                         <label style={{ ...styles.debtFormLabel, gridColumn: "1 / -1" }}>
-                          Monthly Amount ($)
+                          Monthly Amount
                           <input
                             style={styles.debtFormInput}
                             inputMode="decimal"
@@ -943,10 +896,10 @@ const App: React.FC = () => {
                             onChange={(e) =>
                               setExpenseForm((f) => ({
                                 ...f,
-                                amount: e.target.value.replace(/[^0-9.]/g, ""),
+                                amount: formatCurrencyInput(e.target.value, { symbol: true }),
                               }))
                             }
-                            placeholder="120"
+                            placeholder="$0"
                           />
                         </label>
                       </div>
@@ -963,141 +916,200 @@ const App: React.FC = () => {
               </div>
             )}
 
-            {/* 3. Active debt payoff list */}
-            <section style={styles.moduleSection}>
-              <div style={styles.sectionHeadRow}>
-                <p style={styles.sectionLabel}>Active Debt Payoff</p>
-                <button type="button" onClick={openDebtForm} style={styles.addChip}>
-                  <Plus size={13} />
-                  Add Debt
+            {/* 3. Active debt payoff — collapsed summary accordion */}
+            <section aria-label="Active debt payoff">
+              <div className="overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-900/80">
+                <button
+                  type="button"
+                  onClick={() => setDebtAccordionOpen((open) => !open)}
+                  aria-expanded={debtAccordionOpen}
+                  aria-controls="debt-accordion-panel"
+                  className="w-full p-4 text-left transition-colors hover:bg-white/[0.03]"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-[11px] font-extrabold uppercase tracking-[0.12em] text-[#10B981]">
+                      Active Debt Payoff
+                    </p>
+                    {debtAccordionOpen ? (
+                      <ChevronUp size={18} className="flex-shrink-0 text-[#10B981]" aria-hidden="true" />
+                    ) : (
+                      <ChevronDown size={18} className="flex-shrink-0 text-neutral-500" aria-hidden="true" />
+                    )}
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-3 gap-2">
+                    <div className="rounded-xl border border-neutral-800 bg-black/40 px-2.5 py-2">
+                      <p className="text-[10px] font-bold uppercase tracking-wide text-neutral-500">Total Debt</p>
+                      <p className="mt-1 text-sm font-extrabold tracking-tight text-white">${money(totalDebt)}</p>
+                    </div>
+                    <div className="rounded-xl border border-neutral-800 bg-black/40 px-2.5 py-2">
+                      <p className="text-[10px] font-bold uppercase tracking-wide text-neutral-500">Minimums</p>
+                      <p className="mt-1 text-sm font-extrabold tracking-tight text-white">
+                        ${money(totalMinPayment)}
+                        <span className="text-[10px] font-semibold text-neutral-500">/mo</span>
+                      </p>
+                    </div>
+                    <div className="rounded-xl border border-neutral-800 bg-black/40 px-2.5 py-2">
+                      <p className="text-[10px] font-bold uppercase tracking-wide text-neutral-500">Avg Interest</p>
+                      <p className="mt-1 text-sm font-extrabold tracking-tight text-[#10B981]">
+                        {debts.length === 0 ? "—" : `${avgApr.toFixed(1)}%`}
+                      </p>
+                    </div>
+                  </div>
                 </button>
-              </div>
 
-              <div style={styles.statTiles}>
-                <StatTile label="Total Debt" value={`$${money(totalDebt)}`} />
-                <StatTile label="Minimums" value={`$${money(totalMinPayment)}/mo`} />
-                <StatTile label="Interest" value={`$${money(monthlyInterest)}/mo`} tone="#FDA4AF" />
-              </div>
+                <div
+                  className={`grid transition-all duration-300 ease-in-out ${
+                    debtAccordionOpen ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"
+                  }`}
+                >
+                  <div
+                    className={`min-h-0 overflow-hidden ${debtAccordionOpen ? "" : "pointer-events-none"}`}
+                    aria-hidden={!debtAccordionOpen}
+                    id="debt-accordion-panel"
+                  >
+                    <div className="space-y-3 border-t border-neutral-800 px-4 pb-4 pt-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-[11px] font-semibold text-neutral-500">Breakdown & snowball plan</p>
+                        <button type="button" onClick={openDebtForm} style={styles.addChip}>
+                          <Plus size={13} />
+                          Add Debt
+                        </button>
+                      </div>
 
-              <article style={styles.toolCard} aria-label="Extra monthly payoff amount">
-                <div style={styles.extraHead}>
-                  <p style={styles.statLabel}>Extra payment each month</p>
-                  <span style={styles.extraValue}>${extraPayoff}</span>
-                </div>
-                <input
-                  type="range"
-                  min={0}
-                  max={500}
-                  step={5}
-                  value={extraPayoff}
-                  onChange={(e) => setExtraPayoff(Number(e.target.value))}
-                  aria-label="Extra monthly payoff amount"
-                  className="matter-slider"
-                  style={styles.extraSlider}
-                />
-                <p style={styles.statHint}>
-                  {isSurplus && netCashFlow > 0
-                    ? `Your $${money(netCashFlow)}/mo surplus can cover this. `
-                    : "You're spending everything you earn — trim a category above to free this up. "}
-                  {focusDebt
-                    ? `Extra dollars go to ${focusDebt.title} first, then roll onto the next balance.`
-                    : "No active debt — send it all to savings and investing."}
-                </p>
-              </article>
+                      <article style={styles.toolCard} aria-label="Extra monthly payoff amount">
+                        <div style={styles.extraHead}>
+                          <p style={styles.statLabel}>Extra payment each month</p>
+                          <span style={styles.extraValue}>${extraPayoff}</span>
+                        </div>
+                        <input
+                          type="range"
+                          min={0}
+                          max={500}
+                          step={5}
+                          value={extraPayoff}
+                          onChange={(e) => setExtraPayoff(Number(e.target.value))}
+                          aria-label="Extra monthly payoff amount"
+                          className="matter-slider"
+                          style={styles.extraSlider}
+                        />
+                        <p style={styles.statHint}>
+                          {monthlyIncome <= 0
+                            ? "Add your earnings above to see how much extra you can put toward debt. "
+                            : isSurplus && netCashFlow > 0
+                            ? `Your $${money(netCashFlow)}/mo surplus can cover this. `
+                            : "You're spending everything you earn — trim a category above to free this up. "}
+                          {focusDebt
+                            ? `Extra dollars go to ${focusDebt.title} first, then roll onto the next balance.`
+                            : "No active debt — send it all to savings and investing."}
+                        </p>
+                      </article>
 
-              {debtFormOpen && (
-                <form className="matter-pop" onSubmit={submitDebt} style={styles.debtForm}>
-                  <div style={styles.debtFormHead}>
-                    <p style={styles.debtFormTitle}>Add a Debt</p>
-                    <button
-                      type="button"
-                      onClick={() => setDebtFormOpen(false)}
-                      aria-label="Cancel add debt"
-                      style={styles.iconBtn}
-                    >
-                      <X size={15} />
-                    </button>
+                      {debtFormOpen && (
+                        <form className="matter-pop" onSubmit={submitDebt} style={styles.debtForm}>
+                          <div style={styles.debtFormHead}>
+                            <p style={styles.debtFormTitle}>Add a Debt</p>
+                            <button
+                              type="button"
+                              onClick={() => setDebtFormOpen(false)}
+                              aria-label="Cancel add debt"
+                              style={styles.iconBtn}
+                            >
+                              <X size={15} />
+                            </button>
+                          </div>
+
+                          <div style={styles.debtFormGrid}>
+                            <label style={{ ...styles.debtFormLabel, gridColumn: "1 / -1" }}>
+                              Title
+                              <input
+                                style={styles.debtFormInput}
+                                value={debtForm.title}
+                                onChange={(e) => setDebtForm((f) => ({ ...f, title: e.target.value }))}
+                                placeholder="e.g. Car Loan"
+                              />
+                            </label>
+                            <label style={styles.debtFormLabel}>
+                              Balance
+                              <input
+                                style={styles.debtFormInput}
+                                inputMode="decimal"
+                                value={debtForm.balance}
+                                onChange={(e) =>
+                                  setDebtForm((f) => ({
+                                    ...f,
+                                    balance: formatCurrencyInput(e.target.value, { symbol: true }),
+                                  }))
+                                }
+                                placeholder="$0"
+                              />
+                            </label>
+                            <label style={styles.debtFormLabel}>
+                              Min. Payment /mo
+                              <input
+                                style={styles.debtFormInput}
+                                inputMode="decimal"
+                                value={debtForm.minPayment}
+                                onChange={(e) =>
+                                  setDebtForm((f) => ({
+                                    ...f,
+                                    minPayment: formatCurrencyInput(e.target.value, { symbol: true }),
+                                  }))
+                                }
+                                placeholder="$0"
+                              />
+                            </label>
+                            <label style={{ ...styles.debtFormLabel, gridColumn: "1 / -1" }}>
+                              Interest Rate — optional (APR %)
+                              <input
+                                style={styles.debtFormInput}
+                                inputMode="decimal"
+                                value={debtForm.apr}
+                                onChange={(e) =>
+                                  setDebtForm((f) => ({ ...f, apr: e.target.value.replace(/[^0-9.]/g, "") }))
+                                }
+                                placeholder="0"
+                              />
+                            </label>
+                          </div>
+
+                          {debtFormError && <p style={styles.debtFormError}>{debtFormError}</p>}
+
+                          <button type="submit" style={styles.saveDebtBtn}>
+                            <Check size={15} />
+                            Save Debt
+                          </button>
+                        </form>
+                      )}
+
+                      {debts.length === 0 ? (
+                        <div style={styles.emptyDebts}>No debts added yet</div>
+                      ) : (
+                        <div style={styles.debtList}>
+                          {debts.map((debt) => (
+                            <DebtPayoffCard
+                              key={debt.id}
+                              debt={debt}
+                              isFocus={debt.id === focusDebt?.id}
+                              extraPayoff={extraPayoff}
+                              onLogPayment={() => logDebtPayment(debt.id)}
+                              onRemove={() => removeDebt(debt.id)}
+                            />
+                          ))}
+                        </div>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab("lessons")}
+                        style={styles.lessonsLink}
+                      >
+                        Learn the payoff playbook →
+                      </button>
+                    </div>
                   </div>
-
-                  <div style={styles.debtFormGrid}>
-                    <label style={{ ...styles.debtFormLabel, gridColumn: "1 / -1" }}>
-                      Title
-                      <input
-                        style={styles.debtFormInput}
-                        value={debtForm.title}
-                        onChange={(e) => setDebtForm((f) => ({ ...f, title: e.target.value }))}
-                        placeholder="e.g. Car Loan"
-                      />
-                    </label>
-                    <label style={styles.debtFormLabel}>
-                      Balance ($)
-                      <input
-                        style={styles.debtFormInput}
-                        inputMode="decimal"
-                        value={debtForm.balance}
-                        onChange={(e) =>
-                          setDebtForm((f) => ({ ...f, balance: e.target.value.replace(/[^0-9.]/g, "") }))
-                        }
-                        placeholder="1200"
-                      />
-                    </label>
-                    <label style={styles.debtFormLabel}>
-                      Min. Payment ($/mo)
-                      <input
-                        style={styles.debtFormInput}
-                        inputMode="decimal"
-                        value={debtForm.minPayment}
-                        onChange={(e) =>
-                          setDebtForm((f) => ({ ...f, minPayment: e.target.value.replace(/[^0-9.]/g, "") }))
-                        }
-                        placeholder="45"
-                      />
-                    </label>
-                    <label style={{ ...styles.debtFormLabel, gridColumn: "1 / -1" }}>
-                      Interest Rate — optional (APR %)
-                      <input
-                        style={styles.debtFormInput}
-                        inputMode="decimal"
-                        value={debtForm.apr}
-                        onChange={(e) =>
-                          setDebtForm((f) => ({ ...f, apr: e.target.value.replace(/[^0-9.]/g, "") }))
-                        }
-                        placeholder="22.99"
-                      />
-                    </label>
-                  </div>
-
-                  {debtFormError && <p style={styles.debtFormError}>{debtFormError}</p>}
-
-                  <button type="submit" style={styles.saveDebtBtn}>
-                    <Check size={15} />
-                    Save Debt
-                  </button>
-                </form>
-              )}
-
-              {debts.length === 0 ? (
-                <div style={styles.emptyDebts}>
-                  No debts tracked. Add one above, or keep every extra dollar compounding.
                 </div>
-              ) : (
-                <div style={styles.debtList}>
-                  {debts.map((debt) => (
-                    <DebtPayoffCard
-                      key={debt.id}
-                      debt={debt}
-                      isFocus={debt.id === focusDebt?.id}
-                      extraPayoff={extraPayoff}
-                      onLogPayment={() => logDebtPayment(debt.id)}
-                      onRemove={() => removeDebt(debt.id)}
-                    />
-                  ))}
-                </div>
-              )}
-
-              <button type="button" onClick={() => setActiveTab("lessons")} style={styles.lessonsLink}>
-                Learn the payoff playbook →
-              </button>
+              </div>
             </section>
 
             {/* 4. Safety net, sized off the real spending total. */}
@@ -1201,10 +1213,13 @@ const App: React.FC = () => {
             </div>
 
             <div style={styles.chatComposer}>
-              <input
+              <textarea
+                ref={askInputRef}
+                className="matter-ask-input"
                 style={styles.askInput}
+                rows={1}
                 value={question}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQuestion(e.target.value)}
+                onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setQuestion(e.target.value)}
                 onKeyDown={onAskKeyDown}
                 placeholder="Ask Socrates..."
                 aria-label="Ask Socrates"
@@ -1234,7 +1249,12 @@ const App: React.FC = () => {
           }}
           aria-hidden={activeTab !== "profile"}
         >
-          <ProfileScreen user={authUser} onLogout={handleLogout} />
+          <ProfileScreen
+            user={authUser}
+            settings={userSettings}
+            onSettingsChange={setUserSettings}
+            onLogout={handleLogout}
+          />
         </div>
 
         {activeTab !== "socrates" && activeTab !== "profile" && (
@@ -1243,30 +1263,29 @@ const App: React.FC = () => {
       </div>
 
       <nav
-        style={styles.tabBar}
         aria-label="Primary"
-        className={`-translate-x-1/2 transition-transform duration-300 ease-in-out ${
-          navVisible ? "translate-y-0" : "translate-y-[calc(100%+32px)]"
-        }`}
+        className="fixed bottom-0 left-0 right-0 z-50 border-t border-neutral-800/60 bg-black"
       >
-        {TABS.map((tab) => {
-          const active = activeTab === tab.id;
-          return (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => setActiveTab(tab.id)}
-              aria-current={active ? "page" : undefined}
-              style={{
-                ...styles.tabBtn,
-                ...(active ? styles.tabBtnActive : {}),
-              }}
-            >
-              <span style={styles.tabEmoji}>{tab.emoji}</span>
-              <span style={styles.tabLabel}>{tab.label}</span>
-            </button>
-          );
-        })}
+        <div style={styles.tabBar}>
+          {TABS.map((tab) => {
+            const active = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTab(tab.id)}
+                aria-current={active ? "page" : undefined}
+                style={{
+                  ...styles.tabBtn,
+                  ...(active ? styles.tabBtnActive : {}),
+                }}
+              >
+                <span style={styles.tabEmoji}>{tab.emoji}</span>
+                <span style={styles.tabLabel}>{tab.label}</span>
+              </button>
+            );
+          })}
+        </div>
       </nav>
     </div>
   );
@@ -1286,7 +1305,7 @@ function ExpenseRow({
 }) {
   return (
     <li style={styles.expenseRow}>
-      <span style={styles.expenseIcon}>{expenseIcon(item.label)}</span>
+      <span style={styles.expenseIcon}>{categoryIcon(item.label)}</span>
 
       <div style={styles.expenseMain}>
         <p style={styles.expenseLabel}>{item.label}</p>
@@ -1298,16 +1317,11 @@ function ExpenseRow({
 
       <div style={styles.expenseInputRow}>
         <span style={styles.expensePrefix}>$</span>
-        <input
+        <CurrencyInput
           style={styles.expenseInput}
-          type="text"
-          inputMode="decimal"
-          value={item.amount === 0 ? "" : item.amount}
+          value={item.amount}
+          onValueChange={onAmountChange}
           placeholder="0"
-          onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
-            const next = Number(e.target.value.replace(/[^0-9.]/g, ""));
-            onAmountChange(Number.isFinite(next) ? next : 0);
-          }}
           aria-label={`${item.label} monthly amount`}
         />
       </div>
@@ -1324,12 +1338,35 @@ function ExpenseRow({
   );
 }
 
-function StatTile({ label, value, tone }: { label: string; value: string; tone?: string }) {
+function DebtPaymentRow({
+  debt,
+  share,
+}: {
+  debt: Debt;
+  share: number;
+}) {
   return (
-    <div style={styles.statTile}>
-      <p style={styles.statTileLabel}>{label}</p>
-      <p style={{ ...styles.statTileValue, color: tone ?? "#F8FAFC" }}>{value}</p>
-    </div>
+    <li style={styles.expenseRow}>
+      <span style={styles.expenseIcon}>{categoryIcon(debt.title)}</span>
+
+      <div style={styles.expenseMain}>
+        <div style={styles.expenseLabelRow}>
+          <p style={styles.expenseLabel}>{debt.title}</p>
+          <span style={styles.autoChip}>Auto</span>
+        </div>
+        <div style={styles.expenseShareTrack}>
+          <div style={{ ...styles.expenseShareFill, width: `${Math.min(100, share)}%` }} />
+        </div>
+        <p style={styles.expenseShareNote}>{Math.round(share)}% of spending · min. payment</p>
+      </div>
+
+      <div style={styles.expenseInputRow}>
+        <span style={styles.expensePrefix}>$</span>
+        <span style={styles.expenseLockedAmount}>{money(debt.minPayment)}</span>
+      </div>
+
+      <span style={styles.rowSpacer} aria-hidden="true" />
+    </li>
   );
 }
 
@@ -1365,7 +1402,7 @@ function DebtPayoffCard({
       }}
     >
       <div style={styles.debtCardTop}>
-        <span style={styles.debtIconBox}>{debtIcon(debt.title)}</span>
+        <span style={styles.debtIconBox}>{categoryIcon(debt.title)}</span>
         <div style={styles.debtHeadGrow}>
           <p style={styles.debtTitle}>{debt.title}</p>
           <div style={styles.debtChipRow}>
@@ -1436,11 +1473,14 @@ const styles: Record<string, React.CSSProperties> = {
     color: "#F8FAFC",
     fontFamily:
       'Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif',
-    padding: "24px 16px 132px",
+    padding: "24px 16px 96px",
     boxSizing: "border-box",
+    overflowX: "hidden",
   },
   shell: {
     maxWidth: 480,
+    width: "100%",
+    minWidth: 0,
     margin: "0 auto",
     display: "flex",
     flexDirection: "column",
@@ -1543,12 +1583,6 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: 8,
     flexWrap: "wrap",
   },
-  toolTitle: {
-    margin: "6px 0 0",
-    fontSize: 16,
-    fontWeight: 800,
-    letterSpacing: "-0.02em",
-  },
   sliderValueRow: {
     display: "flex",
     justifyContent: "space-between",
@@ -1582,82 +1616,6 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 700,
     lineHeight: 1.45,
   },
-  payRow: {
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-    margin: "10px 0 14px",
-    background: "#121212",
-    border: "1px solid #1F1F1F",
-    borderRadius: 12,
-    padding: "0 12px",
-  },
-  payPrefix: {
-    color: "#10B981",
-    fontWeight: 800,
-    fontSize: 18,
-  },
-  payInput: {
-    flex: 1,
-    background: "transparent",
-    border: "none",
-    color: "#F8FAFC",
-    fontSize: 20,
-    fontWeight: 800,
-    padding: "12px 0",
-    outline: "none",
-  },
-  splitBar: {
-    display: "flex",
-    height: 12,
-    borderRadius: 999,
-    overflow: "hidden",
-    background: "#121212",
-    marginBottom: 14,
-  },
-  splitNeeds: {
-    background: "#10B981",
-  },
-  splitWants: {
-    background: "#6EE7B7",
-  },
-  splitSave: {
-    background: "#047857",
-  },
-  splitLegend: {
-    listStyle: "none",
-    margin: 0,
-    padding: 0,
-    display: "flex",
-    flexDirection: "column",
-    gap: 8,
-  },
-  splitItem: {
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-    fontSize: 13,
-    color: "#E2E8F0",
-    fontWeight: 600,
-  },
-  splitDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 999,
-    flexShrink: 0,
-  },
-  statCard: {
-    background: "#0A0A0A",
-    border: "1px solid #1F1F1F",
-    borderRadius: 16,
-    padding: 16,
-  },
-  fundHead: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: 8,
-  },
   statLabel: {
     margin: 0,
     fontSize: 12,
@@ -1680,19 +1638,6 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 11,
     color: "#94A3B8",
     lineHeight: 1.4,
-  },
-  plusBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 10,
-    border: "none",
-    background: "#10B981",
-    color: "#042F2E",
-    fontSize: 22,
-    fontWeight: 800,
-    lineHeight: 1,
-    cursor: "pointer",
-    transition: "transform 0.15s ease",
   },
   barTrack: {
     height: 6,
@@ -1847,7 +1792,7 @@ const styles: Record<string, React.CSSProperties> = {
   modalOverlay: {
     position: "fixed",
     inset: 0,
-    zIndex: 50,
+    zIndex: 60,
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
@@ -1994,6 +1939,12 @@ const styles: Record<string, React.CSSProperties> = {
     flex: 1,
     minWidth: 0,
   },
+  expenseLabelRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    minWidth: 0,
+  },
   expenseLabel: {
     margin: 0,
     fontSize: 13,
@@ -2002,6 +1953,8 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: "hidden",
     textOverflow: "ellipsis",
     whiteSpace: "nowrap",
+    minWidth: 0,
+    flex: 1,
   },
   expenseShareTrack: {
     height: 4,
@@ -2026,7 +1979,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     alignItems: "center",
     gap: 2,
-    width: 96,
+    width: 118,
     background: "#121212",
     border: "1px solid #1F1F1F",
     borderRadius: 10,
@@ -2050,6 +2003,33 @@ const styles: Record<string, React.CSSProperties> = {
     padding: "9px 0",
     outline: "none",
     textAlign: "right",
+  },
+  expenseLockedAmount: {
+    flex: 1,
+    minWidth: 0,
+    color: "#F8FAFC",
+    fontSize: 15,
+    fontWeight: 800,
+    letterSpacing: "-0.02em",
+    padding: "9px 0",
+    textAlign: "right",
+  },
+  autoChip: {
+    display: "inline-block",
+    flexShrink: 0,
+    fontSize: 9,
+    fontWeight: 800,
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
+    color: "#FDA4AF",
+    background: "rgba(244, 63, 94, 0.12)",
+    border: "1px solid rgba(244, 63, 94, 0.28)",
+    borderRadius: 999,
+    padding: "2px 6px",
+  },
+  rowSpacer: {
+    width: 18,
+    flexShrink: 0,
   },
   expenseTotalRow: {
     display: "flex",
@@ -2459,14 +2439,28 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 8,
   },
   askInput: {
-    flex: 1,
+    flex: "1 1 0%",
+    minWidth: 0,
+    width: "100%",
+    maxWidth: "100%",
     background: "#121212",
     border: "1px solid #1F1F1F",
     color: "#F8FAFC",
     borderRadius: 12,
     padding: "12px 14px",
     fontSize: 14,
+    lineHeight: 1.5,
     outline: "none",
+    resize: "none",
+    overflowX: "hidden",
+    overflowY: "auto",
+    minHeight: 44,
+    maxHeight: 129,
+    boxSizing: "border-box",
+    fontFamily: "inherit",
+    whiteSpace: "pre-wrap",
+    overflowWrap: "anywhere",
+    wordBreak: "break-word",
   },
   sendBtn: {
     background: "#10B981",
@@ -2476,6 +2470,10 @@ const styles: Record<string, React.CSSProperties> = {
     padding: "0 16px",
     fontWeight: 800,
     cursor: "pointer",
+    flexShrink: 0,
+    alignSelf: "flex-end",
+    height: 44,
+    minHeight: 44,
   },
   footer: {
     textAlign: "center",
@@ -2491,7 +2489,9 @@ const styles: Record<string, React.CSSProperties> = {
   chatWindow: {
     display: "flex",
     flexDirection: "column",
-    minHeight: "calc(100vh - 148px)",
+    minHeight: "calc(100vh - 120px)",
+    minWidth: 0,
+    maxWidth: "100%",
     background: "linear-gradient(180deg, #0A0A0A 0%, #000000 100%)",
     border: "1px solid #1F1F1F",
     borderRadius: 20,
@@ -2583,49 +2583,41 @@ const styles: Record<string, React.CSSProperties> = {
   },
   chatComposer: {
     display: "flex",
+    alignItems: "flex-end",
     gap: 8,
     padding: 12,
     borderTop: "1px solid #1F1F1F",
     background: "rgba(0, 0, 0, 0.85)",
+    minWidth: 0,
+    width: "100%",
+    boxSizing: "border-box",
   },
   tabBar: {
-    position: "fixed",
-    left: "50%",
-    bottom: 16,
-    width: "calc(100% - 24px)",
-    maxWidth: 480,
     display: "grid",
     gridTemplateColumns: "repeat(5, 1fr)",
-    gap: 4,
-    padding: 8,
-    borderRadius: 22,
-    background: "rgba(0, 0, 0, 0.6)",
-    border: "1px solid rgba(16, 185, 129, 0.28)",
-    boxShadow: "0 18px 40px rgba(2, 6, 23, 0.45), inset 0 1px 0 rgba(255,255,255,0.08)",
-    backdropFilter: "blur(18px)",
-    WebkitBackdropFilter: "blur(18px)",
-    zIndex: 30,
+    gap: 0,
+    maxWidth: 480,
+    margin: "0 auto",
+    width: "100%",
+    padding: "4px 4px calc(4px + env(safe-area-inset-bottom, 0px))",
   } as React.CSSProperties,
   tabBtn: {
     display: "flex",
     flexDirection: "column",
     alignItems: "center",
     justifyContent: "center",
-    gap: 2,
-    minHeight: 58,
+    gap: 1,
+    minHeight: 48,
     border: "none",
     background: "transparent",
-    color: "#94A3B8",
-    borderRadius: 16,
+    color: "#737373",
+    borderRadius: 0,
     cursor: "pointer",
-    padding: "8px 4px",
-    transition: "background 0.22s ease, color 0.22s ease, box-shadow 0.22s ease, transform 0.22s ease",
+    padding: "6px 2px",
+    transition: "color 0.18s ease",
   },
   tabBtnActive: {
-    background: "rgba(16, 185, 129, 0.16)",
-    color: "#6EE7B7",
-    boxShadow: "inset 0 0 0 1px rgba(16, 185, 129, 0.45), 0 8px 18px rgba(16, 185, 129, 0.12)",
-    transform: "translateY(-1px)",
+    color: "#10B981",
   },
   tabEmoji: {
     fontSize: 16,
@@ -2653,7 +2645,10 @@ const css = `
   .matter-tab-panel { animation: matterPop 0.22s ease-out; }
   .matter-slide-up { animation: matterSlideUp 0.28s ease-out; }
   .matter-pop { animation: matterPop 0.24s ease-out; }
-  input::placeholder { color: #64748B; }
+  input::placeholder, textarea::placeholder { color: #64748B; }
+  .matter-ask-input { scrollbar-width: thin; scrollbar-color: #2A2A2A transparent; }
+  .matter-ask-input::-webkit-scrollbar { width: 6px; }
+  .matter-ask-input::-webkit-scrollbar-thumb { background: #2A2A2A; border-radius: 999px; }
   button:disabled { cursor: default; }
   .matter-slider {
     -webkit-appearance: none;

@@ -5,6 +5,8 @@ import axios from 'axios';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import authRoutes from './routes/auth';
 import portfolioRoutes from './routes/portfolio';
+import userRoutes from './routes/user';
+import watchlistRoutes from './routes/watchlists';
 
 dotenv.config();
 
@@ -18,6 +20,8 @@ app.use(express.json());
 
 app.use('/api/auth', authRoutes);
 app.use('/api/portfolio', portfolioRoutes);
+app.use('/api/user', userRoutes);
+app.use('/api/watchlists', watchlistRoutes);
 
 type MarketNewsItem = {
   headline?: string;

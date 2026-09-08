@@ -1,15 +1,84 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { getEtfIcon } from "../lib/etfIcons";
 
-const INITIALS_COLORS = ["#10B981", "#3B82F6", "#F59E0B", "#8B5CF6", "#EC4899", "#22D3EE", "#F43F5E", "#22C55E"];
+const EMERALD = "#10B981";
+const FALLBACK_BG = "#1F2937";
 
-function colorForSymbol(symbol: string): string {
-  let hash = 0;
-  for (let i = 0; i < symbol.length; i++) {
-    hash = (hash * 31 + symbol.charCodeAt(i)) >>> 0;
-  }
-  return INITIALS_COLORS[hash % INITIALS_COLORS.length];
-}
+/** Well-known ticker → company domain, used for Clearbit when Finnhub profile isn't loaded yet. */
+const TICKER_DOMAINS: Record<string, string> = {
+  AAPL: "apple.com",
+  MSFT: "microsoft.com",
+  NVDA: "nvidia.com",
+  TSLA: "tesla.com",
+  AMZN: "amazon.com",
+  GOOGL: "google.com",
+  GOOG: "google.com",
+  META: "meta.com",
+  AMD: "amd.com",
+  NFLX: "netflix.com",
+  JPM: "jpmorganchase.com",
+  V: "visa.com",
+  MA: "mastercard.com",
+  COST: "costco.com",
+  AVGO: "broadcom.com",
+  "BRK.B": "berkshirehathaway.com",
+  "BRK.A": "berkshirehathaway.com",
+  DIS: "disney.com",
+  INTC: "intel.com",
+  PYPL: "paypal.com",
+  ADBE: "adobe.com",
+  CRM: "salesforce.com",
+  ORCL: "oracle.com",
+  CSCO: "cisco.com",
+  PEP: "pepsico.com",
+  KO: "coca-cola.com",
+  NKE: "nike.com",
+  MCD: "mcdonalds.com",
+  WMT: "walmart.com",
+  HD: "homedepot.com",
+  BA: "boeing.com",
+  UNH: "unitedhealthgroup.com",
+  JNJ: "jnj.com",
+  PFE: "pfizer.com",
+  LLY: "lilly.com",
+  XOM: "exxonmobil.com",
+  CVX: "chevron.com",
+  BAC: "bankofamerica.com",
+  GS: "goldmansachs.com",
+  WFC: "wellsfargo.com",
+  AXP: "americanexpress.com",
+  UBER: "uber.com",
+  ABNB: "airbnb.com",
+  SBUX: "starbucks.com",
+  QCOM: "qualcomm.com",
+  INTU: "intuit.com",
+  NOW: "servicenow.com",
+  SHOP: "shopify.com",
+  COIN: "coinbase.com",
+  PLTR: "palantir.com",
+  CRWD: "crowdstrike.com",
+  PANW: "paloaltonetworks.com",
+  F: "ford.com",
+  GM: "gm.com",
+  RIVN: "rivian.com",
+  BABA: "alibaba.com",
+  TSM: "tsmc.com",
+  ASML: "asml.com",
+  IBM: "ibm.com",
+  GE: "ge.com",
+  SNOW: "snowflake.com",
+  MU: "micron.com",
+  AMAT: "appliedmaterials.com",
+  TXN: "ti.com",
+  VOO: "vanguard.com",
+  VTI: "vanguard.com",
+  VUG: "vanguard.com",
+  SPY: "ssga.com",
+  QQQ: "invesco.com",
+  QQQM: "invesco.com",
+  SCHD: "schwab.com",
+  IVV: "ishares.com",
+};
 
 type StockLogoProps = {
   symbol: string;
@@ -21,32 +90,31 @@ type StockLogoProps = {
   className?: string;
 };
 
+function tickerInitials(symbol: string) {
+  const letters = symbol.replace(/[^A-Z0-9]/gi, "").toUpperCase();
+  if (!letters) return symbol.slice(0, 2).toUpperCase();
+  if (letters.length <= 4) return letters;
+  return letters.slice(0, 2);
+}
+
 function InitialsBadge({
   symbol,
   size,
   className,
-  bg,
-  fg,
   label,
 }: {
   symbol: string;
   size: number;
   className: string;
-  bg?: string;
-  fg?: string;
   label?: string;
 }) {
-  const text =
-    label ??
-    (symbol.replace(/[^A-Z]/gi, "").slice(0, 2).toUpperCase() || symbol.slice(0, 2).toUpperCase());
-  const color = fg ?? colorForSymbol(symbol);
-  const background = bg ?? `${colorForSymbol(symbol)}33`;
-  const fontSize = text.length >= 4 ? size * 0.22 : text.length === 3 ? size * 0.26 : size * 0.32;
+  const text = label ?? tickerInitials(symbol);
+  const fontSize = text.length >= 4 ? size * 0.28 : text.length === 3 ? size * 0.32 : size * 0.38;
 
   return (
     <span
-      className={`grid flex-shrink-0 place-items-center rounded-full font-extrabold tracking-tight ${className}`}
-      style={{ width: size, height: size, background, color, fontSize }}
+      className={`inline-flex flex-shrink-0 items-center justify-center overflow-hidden rounded-full font-extrabold tracking-tight ${className}`}
+      style={{ width: size, height: size, color: EMERALD, background: FALLBACK_BG, fontSize }}
       title={symbol}
       aria-label={`${symbol} icon`}
     >
@@ -55,47 +123,55 @@ function InitialsBadge({
   );
 }
 
+function logoSources(symbol: string, finnhubLogo?: string | null, domain?: string | null): string[] {
+  const ticker = symbol.trim().toUpperCase();
+  const yahooTicker = ticker.replace(/\./g, "-");
+  const resolvedDomain = (domain || TICKER_DOMAINS[ticker] || "").replace(/^www\./, "");
+  const urls = [
+    finnhubLogo,
+    resolvedDomain ? `https://logo.clearbit.com/${resolvedDomain}` : null,
+    `https://financialmodelingprep.com/image-stock/${encodeURIComponent(ticker)}.png`,
+    `https://images.financialmodelingprep.com/symbol/${encodeURIComponent(ticker)}.png`,
+    `https://storage.googleapis.com/iex/api/logos/${encodeURIComponent(yahooTicker)}.png`,
+    `https://assets.parqet.com/logos/symbol/${encodeURIComponent(ticker)}`,
+  ];
+  return [...new Set(urls.filter(Boolean) as string[])];
+}
+
 /**
- * Renders a company / ETF logo with a graceful fallback chain:
- * curated ETF badge → Finnhub CDN → Clearbit domain → ticker-initials badge.
- * Known ETFs skip remote images to avoid broken Clearbit/Finnhub links.
+ * Renders a company / ETF logo as a plain circular image.
+ * Source chain: Finnhub CDN → Clearbit → FMP → IEX → Parqet → emerald initials.
  */
-export default function StockLogo({ symbol, finnhubLogo, domain, size = 32, className = "" }: StockLogoProps) {
+export default function StockLogo({ symbol, finnhubLogo, domain, size = 40, className = "" }: StockLogoProps) {
   const etf = useMemo(() => getEtfIcon(symbol), [symbol]);
-  const sources = useMemo(() => {
-    if (etf) return [] as string[];
-    return [finnhubLogo, domain ? `https://logo.clearbit.com/${domain}` : null].filter(Boolean) as string[];
-  }, [etf, finnhubLogo, domain]);
+  const sources = useMemo(() => logoSources(symbol, finnhubLogo, domain), [symbol, finnhubLogo, domain]);
   const [attempt, setAttempt] = useState(0);
 
-  if (etf) {
-    return (
-      <InitialsBadge
-        symbol={symbol}
-        size={size}
-        className={className}
-        bg={etf.bg}
-        fg={etf.fg}
-        label={etf.label}
-      />
-    );
-  }
+  useEffect(() => {
+    setAttempt(0);
+  }, [symbol, finnhubLogo, domain]);
 
   const src = sources[attempt];
 
   if (src) {
     return (
-      <img
-        src={src}
-        alt={`${symbol} logo`}
-        width={size}
-        height={size}
-        onError={() => setAttempt((a) => a + 1)}
-        className={`flex-shrink-0 rounded-full bg-transparent object-contain ${className}`}
+      <span
+        className={`inline-block flex-shrink-0 overflow-hidden rounded-full ${className}`}
         style={{ width: size, height: size }}
-      />
+      >
+        <img
+          src={src}
+          alt={`${symbol} logo`}
+          width={size}
+          height={size}
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          onError={() => setAttempt((a) => a + 1)}
+          className="h-full w-full rounded-full object-cover"
+        />
+      </span>
     );
   }
 
-  return <InitialsBadge symbol={symbol} size={size} className={className} />;
+  return <InitialsBadge symbol={symbol} size={size} className={className} label={etf?.label} />;
 }

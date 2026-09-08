@@ -1,21 +1,16 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
   Banknote,
-  Bitcoin,
-  Building2,
-  Check,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   ChevronUp,
-  Landmark,
+  ExternalLink,
   Layers,
   Loader2,
   LucideIcon,
   Plus,
   Search,
-  ShieldCheck,
-  Sparkles,
-  TrendingUp,
   Wallet,
   X,
 } from "lucide-react";
@@ -39,6 +34,7 @@ import DailyReportScreen from "./DailyReportScreen";
 import SocratesPortfolioReport from "./SocratesPortfolioReport";
 import StockDetailPage from "./StockDetailPage";
 import StockLogo from "./StockLogo";
+import WatchlistsSection from "./WatchlistsSection";
 
 export type StockHolding = {
   id: string;
@@ -79,15 +75,82 @@ function holdingLabel(h: Holding): string {
 
 const ALLOCATION_COLORS = ["#10B981", "#3B82F6", "#F59E0B", "#8B5CF6", "#EC4899", "#22D3EE"];
 
-type BrokerPlatform = { name: string; icon: LucideIcon; color: string };
+type BrokerPlatform = {
+  name: string;
+  tag: string;
+  color: string;
+  domain: string;
+  partnerUrl: string;
+  initials: string;
+};
 
 const BROKER_PLATFORMS: BrokerPlatform[] = [
-  { name: "Midas", icon: Sparkles, color: "#8B5CF6" },
-  { name: "Robinhood", icon: TrendingUp, color: "#10B981" },
-  { name: "Fidelity", icon: Landmark, color: "#3B82F6" },
-  { name: "Charles Schwab", icon: Building2, color: "#0EA5E9" },
-  { name: "Coinbase", icon: Bitcoin, color: "#F59E0B" },
+  {
+    name: "Robinhood",
+    tag: "Popular for Stocks & Options",
+    color: "#00C805",
+    domain: "robinhood.com",
+    partnerUrl: "https://robinhood.com/us/en/?ref=matterpro",
+    initials: "RH",
+  },
+  {
+    name: "Webull",
+    tag: "Commission-free trading",
+    color: "#E11D2E",
+    domain: "webull.com",
+    partnerUrl: "https://www.webull.com/?ref=matterpro",
+    initials: "WB",
+  },
+  {
+    name: "Interactive Brokers",
+    tag: "Pro tools & global markets",
+    color: "#DC0128",
+    domain: "interactivebrokers.com",
+    partnerUrl: "https://www.interactivebrokers.com/?ref=matterpro",
+    initials: "IB",
+  },
+  {
+    name: "Fidelity",
+    tag: "Full-service investing",
+    color: "#4B8B3B",
+    domain: "fidelity.com",
+    partnerUrl: "https://www.fidelity.com/?ref=matterpro",
+    initials: "F",
+  },
+  {
+    name: "Charles Schwab",
+    tag: "Trusted wealth platform",
+    color: "#00A0DF",
+    domain: "schwab.com",
+    partnerUrl: "https://www.schwab.com/?ref=matterpro",
+    initials: "CS",
+  },
 ];
+
+function BrokerLogo({ platform }: { platform: BrokerPlatform }) {
+  const [failed, setFailed] = useState(false);
+  const src = `https://www.google.com/s2/favicons?sz=128&domain=${platform.domain}`;
+
+  return (
+    <span
+      className="grid h-11 w-11 flex-shrink-0 place-items-center overflow-hidden rounded-xl"
+      style={{ background: `${platform.color}22`, color: platform.color }}
+    >
+      {failed ? (
+        <span className="text-[11px] font-extrabold tracking-tight">{platform.initials}</span>
+      ) : (
+        <img
+          src={src}
+          alt={`${platform.name} logo`}
+          width={28}
+          height={28}
+          className="h-7 w-7 rounded-md object-contain"
+          onError={() => setFailed(true)}
+        />
+      )}
+    </span>
+  );
+}
 
 /** Base URL of our Express backend (see /server). Override with VITE_API_BASE_URL if needed. */
 const API_BASE_URL = getApiBaseUrl();
@@ -144,10 +207,6 @@ function formatAxisMoney(amount: number) {
 const GAIN_GREEN = "#10B981";
 const LOSS_RED = "#EF4444";
 
-function randomMockBalance() {
-  return Math.round(500 + Math.random() * 4500);
-}
-
 function extractDomain(url?: string): string | undefined {
   if (!url) return undefined;
   try {
@@ -163,6 +222,35 @@ type InvestmentPortfolioCardProps = {
   /** Opens the Matter AI chat tab from the insights card. */
   onConsultSocrates?: () => void;
 };
+
+function PortfolioActionButtons({
+  onAddStock,
+  onConnectBroker,
+}: {
+  onAddStock: () => void;
+  onConnectBroker: () => void;
+}) {
+  return (
+    <div className="mt-4 flex flex-col gap-2">
+      <button
+        type="button"
+        onClick={onAddStock}
+        className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-[#10B981] px-4 py-3 text-sm font-bold text-[#042F2E] transition hover:bg-emerald-400 active:scale-[0.99]"
+      >
+        <Plus size={16} />
+        Add Stock
+      </button>
+      <button
+        type="button"
+        onClick={onConnectBroker}
+        className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-[#2A2A2A] bg-[#0A0A0A] px-4 py-3 text-sm font-bold text-white transition hover:border-[#3F3F3F] hover:bg-[#111111] active:scale-[0.99]"
+      >
+        <Wallet size={16} />
+        Connect Broker
+      </button>
+    </div>
+  );
+}
 
 async function enrichStockHolding(item: PortfolioApiItem): Promise<StockHolding> {
   const [quoteResult, profileResult] = await Promise.allSettled([
@@ -221,7 +309,6 @@ export default function InvestmentPortfolioCard({
 
   const [modalOpen, setModalOpen] = useState(false);
   const [modalTab, setModalTab] = useState<"connect" | "manual">("connect");
-  const [connectingPlatform, setConnectingPlatform] = useState<string | null>(null);
   const [justAddedId, setJustAddedId] = useState<string | null>(null);
 
   const [searchQuery, setSearchQuery] = useState("");
@@ -398,32 +485,14 @@ export default function InvestmentPortfolioCard({
     setPurchasePrice("");
   };
 
-  const openModal = () => {
-    setModalTab("connect");
+  const openModal = (tab: "connect" | "manual" = "connect") => {
+    setModalTab(tab);
     resetManualForm();
     setModalOpen(true);
   };
 
   const closeModal = () => {
-    if (connectingPlatform) return;
     setModalOpen(false);
-  };
-
-  const connectPlatform = (platform: BrokerPlatform) => {
-    if (connectingPlatform || connectedPlatformNames.has(platform.name)) return;
-    setConnectingPlatform(platform.name);
-    window.setTimeout(() => {
-      const id = `${platform.name.toLowerCase().replace(/\s+/g, "-")}-${Date.now()}`;
-      setHoldings((prev) => [
-        ...prev,
-        { id, kind: "broker", name: platform.name, balance: randomMockBalance(), icon: platform.icon },
-      ]);
-      setConnectingPlatform(null);
-      setJustAddedId(id);
-      setModalOpen(false);
-      setHoldingsExpanded(true);
-      window.setTimeout(() => setJustAddedId(null), 2000);
-    }, 900);
   };
 
   const selectTicker = async (result: StockSearchResult) => {
@@ -609,14 +678,6 @@ export default function InvestmentPortfolioCard({
               Connect a broker or add your first investment to start tracking your portfolio.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={openModal}
-            className="mt-1 flex items-center gap-1.5 rounded-xl bg-emerald-500 px-4 py-2.5 text-xs font-bold text-[#042F2E] transition hover:bg-emerald-400 active:scale-[0.99]"
-          >
-            <Plus size={14} />
-            Add Your First Investment
-          </button>
         </div>
       ) : (
         <>
@@ -816,110 +877,98 @@ export default function InvestmentPortfolioCard({
               </div>
             </div>
           </div>
-
-          <button
-            type="button"
-            onClick={openModal}
-            className="mt-4 flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-emerald-500/40 bg-emerald-500/5 px-4 py-2.5 text-xs font-bold text-emerald-300 transition hover:border-emerald-500/70 hover:bg-emerald-500/10 active:scale-[0.99]"
-          >
-            <Plus size={14} />
-            Add Asset / Connect Account
-          </button>
         </>
       )}
 
+      <PortfolioActionButtons
+        onAddStock={() => openModal("manual")}
+        onConnectBroker={() => openModal("connect")}
+      />
+
+      <WatchlistsSection />
+
       {modalOpen && (
         <div
-          className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/75 p-4 sm:items-center"
+          className="fixed inset-0 z-[60] flex items-end justify-center bg-slate-950/75 p-4 sm:items-center"
           onClick={closeModal}
           role="presentation"
         >
           <div
-            className="matter-pop w-full max-w-sm rounded-2xl border border-[#1F1F1F] bg-[#0A0A0A] p-5"
+            className="matter-pop w-full max-w-md overflow-y-auto rounded-2xl border border-[#1F1F1F] bg-[#0A0A0A] p-5 max-h-[min(88vh,720px)]"
             onClick={(e) => e.stopPropagation()}
             role="dialog"
             aria-modal="true"
             aria-labelledby="portfolio-modal-title"
           >
             <div className="flex items-start justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <span className="grid h-9 w-9 place-items-center rounded-lg bg-emerald-500/15 text-emerald-400">
-                  <Wallet size={17} />
-                </span>
-                <h3 id="portfolio-modal-title" className="text-sm font-extrabold leading-snug text-white">
-                  Add Asset / Connect Account
-                </h3>
+              <div className="flex min-w-0 items-center gap-2">
+                {modalTab === "manual" ? (
+                  <button
+                    type="button"
+                    onClick={() => setModalTab("connect")}
+                    aria-label="Back to brokers"
+                    className="grid h-9 w-9 flex-shrink-0 place-items-center rounded-lg bg-white/5 text-slate-300 transition hover:bg-white/10 hover:text-white"
+                  >
+                    <ChevronLeft size={17} />
+                  </button>
+                ) : (
+                  <span className="grid h-9 w-9 flex-shrink-0 place-items-center rounded-lg bg-emerald-500/15 text-emerald-400">
+                    <Wallet size={17} />
+                  </span>
+                )}
+                <div className="min-w-0">
+                  <h3 id="portfolio-modal-title" className="text-sm font-extrabold leading-snug text-white">
+                    {modalTab === "manual" ? "Add assets manually" : "Connect Broker"}
+                  </h3>
+                  <p className="mt-0.5 text-[11px] leading-snug text-slate-500">
+                    {modalTab === "manual"
+                      ? "Search a ticker and log shares you already own."
+                      : "Link a top US brokerage via our partner network."}
+                  </p>
+                </div>
               </div>
               <button
                 type="button"
                 onClick={closeModal}
                 aria-label="Close"
-                className="text-slate-400 transition hover:text-white"
-                disabled={!!connectingPlatform}
+                className="flex-shrink-0 text-slate-400 transition hover:text-white"
               >
                 <X size={16} />
               </button>
             </div>
 
-            <div className="mt-4 flex gap-1 rounded-lg bg-black/30 p-1">
-              <button
-                type="button"
-                onClick={() => setModalTab("connect")}
-                className={`flex-1 rounded-md py-1.5 text-xs font-bold transition ${
-                  modalTab === "connect" ? "bg-emerald-500 text-[#042F2E]" : "text-slate-400 hover:text-slate-200"
-                }`}
-              >
-                Connect Broker / App
-              </button>
-              <button
-                type="button"
-                onClick={() => setModalTab("manual")}
-                className={`flex-1 rounded-md py-1.5 text-xs font-bold transition ${
-                  modalTab === "manual" ? "bg-emerald-500 text-[#042F2E]" : "text-slate-400 hover:text-slate-200"
-                }`}
-              >
-                Manual Entry
-              </button>
-            </div>
-
             {modalTab === "connect" && (
-              <div className="mt-4 space-y-2">
-                <p className="text-[11px] leading-relaxed text-slate-500">
-                  Pick a platform to simulate an auto-sync connection.
-                </p>
+              <div className="mt-4 space-y-2.5">
                 {BROKER_PLATFORMS.map((platform) => {
-                  const Icon = platform.icon;
-                  const isConnected = connectedPlatformNames.has(platform.name);
-                  const isConnecting = connectingPlatform === platform.name;
+                  const isLinked = connectedPlatformNames.has(platform.name);
                   return (
-                    <button
+                    <div
                       key={platform.name}
-                      type="button"
-                      onClick={() => connectPlatform(platform)}
-                      disabled={isConnected || !!connectingPlatform}
-                      className={`flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition ${
-                        isConnected
-                          ? "cursor-default border-[#1F1F1F]/60 bg-black/10 opacity-60"
-                          : "border-[#1F1F1F] bg-black/20 hover:border-emerald-500/40 hover:bg-emerald-500/5 active:scale-[0.99]"
-                      }`}
+                      className="rounded-2xl border border-[#1F1F1F] bg-black/30 p-3 transition hover:border-emerald-500/30"
                     >
-                      <span
-                        className="grid h-8 w-8 flex-shrink-0 place-items-center rounded-lg"
-                        style={{ background: `${platform.color}26`, color: platform.color }}
-                      >
-                        <Icon size={16} />
-                      </span>
-                      <span className="flex-1 text-xs font-bold text-white">{platform.name}</span>
-                      {isConnecting ? (
-                        <Loader2 size={15} className="animate-spin text-emerald-400" />
-                      ) : isConnected ? (
-                        <span className="flex items-center gap-1 text-[10px] font-bold text-emerald-400">
-                          <Check size={12} /> Connected
-                        </span>
+                      <div className="flex items-center gap-3">
+                        <BrokerLogo platform={platform} />
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-extrabold text-white">{platform.name}</p>
+                          <p className="truncate text-[11px] text-slate-400">{platform.tag}</p>
+                        </div>
+                      </div>
+                      {isLinked ? (
+                        <p className="mt-2.5 rounded-xl border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-center text-[11px] font-bold text-emerald-300">
+                          Linked in this session
+                        </p>
                       ) : (
-                        <ShieldCheck size={15} className="text-slate-500" />
+                        <a
+                          href={platform.partnerUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="mt-2.5 flex w-full items-center justify-center gap-1.5 rounded-xl bg-emerald-500 px-3 py-2 text-[11px] font-extrabold text-[#042F2E] transition hover:bg-emerald-400 active:scale-[0.99]"
+                        >
+                          Connect via Partner Link
+                          <ExternalLink size={12} />
+                        </a>
                       )}
-                    </button>
+                    </div>
                   );
                 })}
               </div>
@@ -960,6 +1009,7 @@ export default function InvestmentPortfolioCard({
                               className="flex w-full items-center justify-between gap-2 border-b border-[#1F1F1F]/60 px-3 py-2 text-left transition last:border-b-0 hover:bg-emerald-500/10"
                             >
                               <div className="flex min-w-0 items-center gap-2">
+                                <StockLogo symbol={result.displaySymbol || result.symbol} size={32} />
                                 <span className="flex-shrink-0 rounded-md bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-extrabold text-emerald-300">
                                   {result.displaySymbol || result.symbol}
                                 </span>
@@ -989,7 +1039,7 @@ export default function InvestmentPortfolioCard({
                             symbol={selectedTicker.symbol}
                             finnhubLogo={selectedProfile?.logo}
                             domain={extractDomain(selectedProfile?.weburl)}
-                            size={22}
+                            size={32}
                           />
                           <span className="flex-shrink-0 rounded-md bg-emerald-500/20 px-1.5 py-0.5 text-[10px] font-extrabold text-emerald-300">
                             {selectedTicker.symbol}

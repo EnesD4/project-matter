@@ -622,7 +622,7 @@ export default function LessonsPhase1() {
 
       {activeModule && (
         <div
-          className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/75 p-4 sm:items-center"
+          className="fixed inset-0 z-[60] flex items-end justify-center bg-slate-950/75 p-4 sm:items-center"
           onClick={closeModal}
           role="presentation"
         >
