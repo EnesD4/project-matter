@@ -13,6 +13,8 @@ export type UserSettings = {
   riskTolerance?: string;
   investmentGoal?: string;
   experienceLevel?: string;
+  age?: number | null;
+  birthDate?: string | null;
 };
 
 export type AuthUser = {
@@ -141,7 +143,11 @@ export async function fetchMe(): Promise<{ user: AuthUser; settings: UserSetting
 }
 
 export async function saveUserSettings(
-  input: OnboardingChoices & { hasCompletedOnboarding: boolean }
+  input: Partial<OnboardingChoices> & {
+    hasCompletedOnboarding?: boolean;
+    age?: number | null;
+    birthDate?: string | null;
+  }
 ): Promise<UserSettings> {
   const res = await authFetch("/api/user/settings", {
     method: "POST",

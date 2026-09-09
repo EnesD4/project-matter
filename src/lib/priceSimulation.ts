@@ -1,22 +1,89 @@
 /**
- * Historical price simulation utilities.
+ * Chart helpers + a last-resort historical simulation.
  *
- * Finnhub's candle/history endpoint isn't available on the free-tier API key this
- * app uses (verified: it returns "You don't have access to this resource."), so we
- * can't pull real historical series for arbitrary timeframes. Instead, every series
- * generated here is anchored at the *real* current value (and, for "1D", the real
- * open/high/low from a live quote) and fills in a realistic-looking, deterministic
- * (seeded) path in between — so numbers only look believable, never actually lie
- * about the one true data point that matters: where you are right now.
+ * Live stock/ETF candles come from GET /api/stocks/:symbol/chart (Yahoo Finance).
+ * `buildHistoricalSeries` is only used when that endpoint returns no points
+ * (Yahoo throttle, network error, unknown ticker) so the UI never goes blank.
  */
 
 export type RangeOption = "1D" | "1W" | "1M" | "1Y" | "ALL";
 
 export const RANGE_OPTIONS: RangeOption[] = ["1D", "1W", "1M", "1Y", "ALL"];
 
-export type SeriesPoint = { t: number; label: string; value: number };
+export type SeriesPoint = {
+  t: number;
+  label: string;
+  value: number;
+  open?: number;
+  high?: number;
+  low?: number;
+  close?: number;
+  volume?: number;
+};
+
+export type ChartCandle = {
+  timestamp: number;
+  date: string;
+  price: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+};
 
 export type DayAnchors = { open: number; high: number; low: number };
+
+const NY_TZ = "America/New_York";
+
+function formatChartLabel(ms: number, range: RangeOption): string {
+  const date = new Date(ms);
+  if (range === "1D") {
+    return new Intl.DateTimeFormat("en-US", {
+      timeZone: NY_TZ,
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    }).format(date);
+  }
+  if (range === "1W") {
+    return new Intl.DateTimeFormat("en-US", {
+      timeZone: NY_TZ,
+      weekday: "short",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    }).format(date);
+  }
+  if (range === "1M" || range === "1Y") {
+    return new Intl.DateTimeFormat("en-US", {
+      timeZone: NY_TZ,
+      month: "short",
+      day: "numeric",
+    }).format(date);
+  }
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: NY_TZ,
+    month: "short",
+    year: "2-digit",
+  }).format(date);
+}
+
+/** Maps Yahoo/Finnhub candle points into the Recharts series shape. */
+export function chartPointsToSeries(points: ChartCandle[], range: RangeOption): SeriesPoint[] {
+  return points
+    .filter((p) => Number.isFinite(p.price) && p.price > 0 && Number.isFinite(p.timestamp))
+    .map((p, i) => ({
+      t: i,
+      label: formatChartLabel(p.timestamp, range),
+      value: p.price,
+      open: p.open,
+      high: p.high,
+      low: p.low,
+      close: p.close,
+      volume: p.volume,
+    }));
+}
 
 function seededRandom(seed: string) {
   let h = 1779033703 ^ seed.length;
@@ -183,4 +250,16 @@ export function formatMarketCap(millions?: number | null): string {
   if (millions >= 1_000_000) return `$${(millions / 1_000_000).toFixed(2)}T`;
   if (millions >= 1_000) return `$${(millions / 1_000).toFixed(1)}B`;
   return `$${millions.toFixed(0)}M`;
+}
+
+/** Compact USD for balance-sheet figures (cash, debt, FCF). */
+export function formatCompactUsd(amount?: number | null): string {
+  if (amount == null || !Number.isFinite(amount)) return "—";
+  const sign = amount < 0 ? "-" : "";
+  const abs = Math.abs(amount);
+  if (abs >= 1_000_000_000_000) return `${sign}$${(abs / 1_000_000_000_000).toFixed(1)}T`;
+  if (abs >= 1_000_000_000) return `${sign}$${(abs / 1_000_000_000).toFixed(1)}B`;
+  if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `${sign}$${(abs / 1_000).toFixed(1)}K`;
+  return `${sign}$${abs.toFixed(0)}`;
 }

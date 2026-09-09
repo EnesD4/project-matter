@@ -82,3 +82,17 @@ export function getEtfIcon(symbol: string): EtfIconMeta | null {
   const key = symbol.trim().toUpperCase();
   return ETF_ICON_MAP[key] ?? null;
 }
+
+const ETF_NAME_RE = /\b(etf|etn|etp|exchange[\s-]?traded(?:\s+fund)?)\b/i;
+const ETF_TYPES = new Set(["ETF", "ETP", "ETN"]);
+
+/** True for known ETF tickers (VOO, SCHD, VIG, …) or assets flagged as funds. */
+export function isEtfAsset(
+  symbol: string,
+  extra?: { name?: string | null; type?: string | null }
+): boolean {
+  if (getEtfIcon(symbol)) return true;
+  const type = extra?.type?.trim().toUpperCase() ?? "";
+  if (ETF_TYPES.has(type)) return true;
+  return ETF_NAME_RE.test(`${symbol} ${extra?.name ?? ""}`);
+}

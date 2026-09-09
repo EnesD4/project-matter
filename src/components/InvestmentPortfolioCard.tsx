@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Banknote,
   ChevronDown,
@@ -6,6 +6,9 @@ import {
   ChevronRight,
   ChevronUp,
   ExternalLink,
+  Eye,
+  EyeOff,
+  GripVertical,
   Layers,
   Loader2,
   LucideIcon,
@@ -14,7 +17,24 @@ import {
   Wallet,
   X,
 } from "lucide-react";
-import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import {
+  Area,
+  AreaChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+  useActiveTooltipDataPoints,
+  useIsTooltipActive,
+} from "recharts";
+import { buildAllocationSlices, classifyHolding } from "../lib/allocation";
+import {
+  createPortfolioItem,
+  deletePortfolioItem,
+  fetchPortfolio,
+  getApiBaseUrl,
+  type PortfolioApiItem,
+} from "../lib/auth";
 import {
   buildHistoricalSeries,
   RANGE_OPTIONS,
@@ -23,18 +43,14 @@ import {
   seriesChangeAbs,
   seriesChangePct,
 } from "../lib/priceSimulation";
-import {
-  createPortfolioItem,
-  deletePortfolioItem,
-  fetchPortfolio,
-  getApiBaseUrl,
-  type PortfolioApiItem,
-} from "../lib/auth";
+import { privacyAxis, privacyMoney, privacyShares, privacySignedMoney, formatMoney } from "../lib/privacy";
+import { useMarketPolling } from "../hooks/useMarketPolling";
+import AllocationRing from "./AllocationRing";
 import DailyReportScreen from "./DailyReportScreen";
+import LiveStatusBadge from "./LiveStatusBadge";
 import SocratesPortfolioReport from "./SocratesPortfolioReport";
 import StockDetailPage from "./StockDetailPage";
 import StockLogo from "./StockLogo";
-import WatchlistsSection from "./WatchlistsSection";
 
 export type StockHolding = {
   id: string;
@@ -53,6 +69,8 @@ export type StockHolding = {
   logo?: string;
   domain?: string;
   marketCap?: number;
+  instrumentType?: string;
+  industry?: string;
 };
 
 type BrokerHolding = {
@@ -65,15 +83,52 @@ type BrokerHolding = {
 
 export type Holding = StockHolding | BrokerHolding;
 
+const HOLDING_ORDER_KEY = "matterpro:portfolio-holding-order";
+
 function holdingValue(h: Holding): number {
   return h.kind === "stock" ? h.quantity * h.currentPrice : h.balance;
 }
 
-function holdingLabel(h: Holding): string {
-  return h.kind === "stock" ? `${h.description} (${h.symbol})` : h.name;
+function readHoldingOrder(): string[] {
+  try {
+    const raw = localStorage.getItem(HOLDING_ORDER_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : [];
+  } catch {
+    return [];
+  }
 }
 
-const ALLOCATION_COLORS = ["#10B981", "#3B82F6", "#F59E0B", "#8B5CF6", "#EC4899", "#22D3EE"];
+function writeHoldingOrder(ids: string[]) {
+  try {
+    localStorage.setItem(HOLDING_ORDER_KEY, JSON.stringify(ids));
+  } catch {
+    // private mode / quota
+  }
+}
+
+function sortHoldingsByOrder(items: Holding[], order: string[]): Holding[] {
+  if (order.length === 0) return items;
+  const rank = new Map(order.map((id, i) => [id, i]));
+  return [...items].sort((a, b) => {
+    const ra = rank.get(a.id);
+    const rb = rank.get(b.id);
+    if (ra == null && rb == null) return 0;
+    if (ra == null) return 1;
+    if (rb == null) return -1;
+    return ra - rb;
+  });
+}
+
+function moveItemToIndex<T extends { id: string }>(items: T[], fromId: string, toIndex: number): T[] {
+  const fromIndex = items.findIndex((item) => item.id === fromId);
+  if (fromIndex < 0 || toIndex < 0 || toIndex >= items.length || fromIndex === toIndex) return items;
+  const next = [...items];
+  const [item] = next.splice(fromIndex, 1);
+  next.splice(toIndex, 0, item);
+  return next;
+}
 
 type BrokerPlatform = {
   name: string;
@@ -165,7 +220,7 @@ type StockSearchResult = {
   type: string;
 };
 
-/** Shape returned by GET /api/stocks/quote (proxied from Finnhub's /quote). `c` = current price. */
+/** Shape returned by GET /api/stocks/quote (Yahoo first, Finnhub fallback). `c` = current price. */
 export type StockQuote = {
   c: number;
   d: number;
@@ -175,6 +230,10 @@ export type StockQuote = {
   o: number;
   pc: number;
   t: number;
+  dividendYield?: number | null;
+  dividendRate?: number | null;
+  exDividendDate?: string | null;
+  dividendDate?: string | null;
 };
 
 /** Shape returned by GET /api/stocks/profile (proxied from Finnhub's /stock/profile2). */
@@ -183,19 +242,14 @@ type StockProfile = {
   logo?: string;
   weburl?: string;
   marketCapitalization?: number;
+  finnhubIndustry?: string;
 };
 
 type SelectedStock = {
   symbol: string;
   description: string;
+  type?: string;
 };
-
-function formatMoney(amount: number, digits = 2) {
-  return amount.toLocaleString("en-US", {
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
-  });
-}
 
 function formatAxisMoney(amount: number) {
   if (amount >= 1_000_000) return `$${(amount / 1_000_000).toFixed(1)}M`;
@@ -206,6 +260,33 @@ function formatAxisMoney(amount: number) {
 
 const GAIN_GREEN = "#10B981";
 const LOSS_RED = "#EF4444";
+
+function hoverPointFromChart(
+  state: { activeIndex?: number | string | null; isTooltipActive?: boolean },
+  data: SeriesPoint[]
+): SeriesPoint | null {
+  if (!state.isTooltipActive) return null;
+  const index = Number(state.activeIndex);
+  return Number.isFinite(index) && data[index] ? data[index] : null;
+}
+
+function ChartHoverBridge({ onHover }: { onHover: (point: SeriesPoint | null) => void }) {
+  const active = useIsTooltipActive();
+  const points = useActiveTooltipDataPoints<SeriesPoint>();
+  const t = active ? points?.[0]?.t : undefined;
+  const value = active ? points?.[0]?.value : undefined;
+  const label = active ? points?.[0]?.label : undefined;
+
+  useEffect(() => {
+    if (t == null || value == null) {
+      onHover(null);
+      return;
+    }
+    onHover({ t, value, label: label ?? "" });
+  }, [t, value, label, onHover]);
+
+  return null;
+}
 
 function extractDomain(url?: string): string | undefined {
   if (!url) return undefined;
@@ -221,6 +302,13 @@ type InvestmentPortfolioCardProps = {
   onHoldingsChange?: (holdings: Holding[]) => void;
   /** Opens the Matter AI chat tab from the insights card. */
   onConsultSocrates?: () => void;
+  /** Extra cash (e.g. emergency fund) rolled into portfolio value. */
+  cashBalance?: number;
+  /** Lifted so tab switches keep privacy mode on. */
+  privacyMode: boolean;
+  onTogglePrivacy?: () => void;
+  /** Rendered directly below the holdings list (e.g. in-page Watchlist). */
+  belowHoldings?: React.ReactNode;
 };
 
 function PortfolioActionButtons({
@@ -285,12 +373,38 @@ async function enrichStockHolding(item: PortfolioApiItem): Promise<StockHolding>
     logo: profile?.logo,
     domain: extractDomain(profile?.weburl),
     marketCap: profile?.marketCapitalization,
+    industry: profile?.finnhubIndustry,
   };
+}
+
+function applyQuoteToHolding(holding: StockHolding, quote: StockQuote): StockHolding {
+  if (!(quote.c > 0)) return holding;
+  return {
+    ...holding,
+    currentPrice: quote.c,
+    dayChangePct: quote.dp ?? holding.dayChangePct,
+    dayChangeAbs: quote.d ?? holding.dayChangeAbs,
+    open: quote.o ?? holding.open,
+    high: quote.h ?? holding.high,
+    low: quote.l ?? holding.low,
+    prevClose: quote.pc ?? holding.prevClose,
+  };
+}
+
+async function fetchStockQuote(symbol: string): Promise<StockQuote | null> {
+  const res = await fetch(`${API_BASE_URL}/api/stocks/quote?symbol=${encodeURIComponent(symbol)}`);
+  if (!res.ok) return null;
+  const data = (await res.json()) as StockQuote;
+  return data?.c > 0 ? data : null;
 }
 
 export default function InvestmentPortfolioCard({
   onHoldingsChange,
   onConsultSocrates,
+  cashBalance = 0,
+  privacyMode,
+  onTogglePrivacy,
+  belowHoldings,
 }: InvestmentPortfolioCardProps) {
   const [range, setRange] = useState<RangeOption>("1D");
   const [holdings, setHoldings] = useState<Holding[]>([]);
@@ -324,6 +438,62 @@ export default function InvestmentPortfolioCard({
 
   const [quantity, setQuantity] = useState("");
   const [purchasePrice, setPurchasePrice] = useState("");
+  const [chartAnimate, setChartAnimate] = useState(true);
+
+  const holdingsRef = useRef(holdings);
+  holdingsRef.current = holdings;
+  const holdingsListRef = useRef<HTMLDivElement>(null);
+  const draggingIdRef = useRef<string | null>(null);
+  const pendingDragRef = useRef<{
+    id: string;
+    pointerId: number;
+    startX: number;
+    startY: number;
+  } | null>(null);
+  const holdTimerRef = useRef<number | null>(null);
+  const ignoreHoldingClickRef = useRef(false);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [pressingId, setPressingId] = useState<string | null>(null);
+  const hasStockHoldings = holdings.some((h) => h.kind === "stock");
+  const canReorderHoldings = holdings.length > 1;
+
+  const { markUpdated, marketOpen } = useMarketPolling({
+    enabled: hasStockHoldings,
+    onPoll: async () => {
+      const stocks = holdingsRef.current.filter((h): h is StockHolding => h.kind === "stock");
+      if (stocks.length === 0) return;
+      const uniqueSymbols = [...new Set(stocks.map((s) => s.symbol))];
+      const entries = await Promise.all(
+        uniqueSymbols.map(async (symbol) => {
+          try {
+            const quote = await fetchStockQuote(symbol);
+            return quote ? ([symbol, quote] as const) : null;
+          } catch {
+            return null;
+          }
+        })
+      );
+      const quotes = new Map<string, StockQuote>();
+      for (const entry of entries) {
+        if (entry) quotes.set(entry[0], entry[1]);
+      }
+      if (quotes.size === 0) throw new Error("no quotes");
+
+      setChartAnimate(false);
+      setHoldings((prev) =>
+        prev.map((h) => {
+          if (h.kind !== "stock") return h;
+          const quote = quotes.get(h.symbol);
+          return quote ? applyQuoteToHolding(h, quote) : h;
+        })
+      );
+      setSelectedHolding((prev) => {
+        if (!prev) return prev;
+        const quote = quotes.get(prev.symbol);
+        return quote ? applyQuoteToHolding(prev, quote) : prev;
+      });
+    },
+  });
 
   // Load persisted portfolio for the authenticated user, then enrich with live quotes.
   useEffect(() => {
@@ -338,8 +508,9 @@ export default function InvestmentPortfolioCard({
         if (cancelled) return;
         setHoldings((prev) => {
           const brokers = prev.filter((h): h is BrokerHolding => h.kind === "broker");
-          return [...stocks, ...brokers];
+          return sortHoldingsByOrder([...stocks, ...brokers], readHoldingOrder());
         });
+        if (stocks.length > 0) markUpdated();
       } catch (err) {
         if (!cancelled) {
           setPortfolioError(err instanceof Error ? err.message : "Couldn't load portfolio");
@@ -352,7 +523,11 @@ export default function InvestmentPortfolioCard({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [markUpdated]);
+
+  useEffect(() => {
+    setChartAnimate(true);
+  }, [range]);
 
   // Live stock search — debounced fetch against our Express backend as the user types.
   useEffect(() => {
@@ -400,7 +575,67 @@ export default function InvestmentPortfolioCard({
   }, [searchQuery, selectedTicker]);
 
   const hasHoldings = holdings.length > 0;
-  const totalValue = useMemo(() => holdings.reduce((sum, h) => sum + holdingValue(h), 0), [holdings]);
+  const investmentValue = useMemo(
+    () => holdings.filter((h) => h.kind === "stock").reduce((sum, h) => sum + holdingValue(h), 0),
+    [holdings]
+  );
+  const brokerCash = useMemo(
+    () => holdings.filter((h) => h.kind === "broker").reduce((sum, h) => sum + holdingValue(h), 0),
+    [holdings]
+  );
+  const cashValue = brokerCash + Math.max(0, cashBalance);
+  const totalValue = investmentValue + cashValue;
+
+  const allocationSlices = useMemo(() => {
+    const items = holdings.map((h) => {
+      if (h.kind === "broker") {
+        return {
+          bucket: classifyHolding({ kind: "broker" }),
+          value: h.balance,
+          holdingId: h.id,
+          holdingLabel: h.name,
+          holdingDetail: "Connected account",
+        };
+      }
+      return {
+        bucket: classifyHolding({
+          kind: "stock",
+          symbol: h.symbol,
+          name: h.description,
+          type: h.instrumentType,
+          industry: h.industry,
+        }),
+        value: holdingValue(h),
+        holdingId: h.id,
+        holdingLabel: h.symbol,
+        holdingDetail: h.description,
+      };
+    });
+    if (cashBalance > 0) {
+      items.push({
+        bucket: classifyHolding({ kind: "cash" }),
+        value: cashBalance,
+        holdingId: "cash:balance",
+        holdingLabel: "Cash",
+        holdingDetail: "Available cash",
+      });
+    }
+    return buildAllocationSlices(items);
+  }, [holdings, cashBalance]);
+
+  const holdingOrderKey = holdings.map((h) => h.id).join("\0");
+  useEffect(() => {
+    if (portfolioLoading || !holdingOrderKey) return;
+    writeHoldingOrder(holdingOrderKey.split("\0"));
+  }, [holdingOrderKey, portfolioLoading]);
+
+  useEffect(() => {
+    return () => {
+      if (holdTimerRef.current == null) return;
+      window.clearTimeout(holdTimerRef.current);
+      holdTimerRef.current = null;
+    };
+  }, []);
 
   // Weighted average of each stock's real "today" % change, weighted by its share of
   // total portfolio value (broker/cash-style holdings contribute 0% change and dilute it).
@@ -456,17 +691,6 @@ export default function InvestmentPortfolioCard({
     return [0, Math.floor(n / 3), Math.floor((2 * n) / 3), n - 1];
   }, [chartData.length, range]);
 
-  const allocation = useMemo(
-    () =>
-      holdings.map((h, i) => ({
-        id: h.id,
-        label: holdingLabel(h),
-        pct: totalValue > 0 ? (holdingValue(h) / totalValue) * 100 : 0,
-        color: ALLOCATION_COLORS[i % ALLOCATION_COLORS.length],
-      })),
-    [holdings, totalValue]
-  );
-
   const connectedPlatformNames = useMemo(
     () => new Set(holdings.filter((h): h is BrokerHolding => h.kind === "broker").map((h) => h.name)),
     [holdings]
@@ -497,7 +721,7 @@ export default function InvestmentPortfolioCard({
 
   const selectTicker = async (result: StockSearchResult) => {
     const symbol = result.displaySymbol || result.symbol;
-    setSelectedTicker({ symbol, description: result.description });
+    setSelectedTicker({ symbol, description: result.description, type: result.type });
     setSearchQuery("");
     setSearchResults([]);
     setPurchasePrice("");
@@ -577,9 +801,12 @@ export default function InvestmentPortfolioCard({
         logo: selectedProfile?.logo,
         domain: extractDomain(selectedProfile?.weburl),
         marketCap: selectedProfile?.marketCapitalization,
+        instrumentType: selectedTicker.type,
+        industry: selectedProfile?.finnhubIndustry,
       };
 
       setHoldings((prev) => [holding, ...prev]);
+      markUpdated();
       resetManualForm();
       setJustAddedId(holding.id);
       setModalOpen(false);
@@ -590,6 +817,123 @@ export default function InvestmentPortfolioCard({
     } finally {
       setSavingAsset(false);
     }
+  };
+
+  const clearHoldTimer = () => {
+    if (holdTimerRef.current == null) return;
+    window.clearTimeout(holdTimerRef.current);
+    holdTimerRef.current = null;
+  };
+
+  const endHoldingDrag = () => {
+    clearHoldTimer();
+    pendingDragRef.current = null;
+    draggingIdRef.current = null;
+    setDraggingId(null);
+    setPressingId(null);
+  };
+
+  const startHoldingDrag = (id: string, pointerId: number) => {
+    clearHoldTimer();
+    pendingDragRef.current = null;
+    draggingIdRef.current = id;
+    ignoreHoldingClickRef.current = true;
+    setPressingId(id);
+    setDraggingId(id);
+    try {
+      holdingsListRef.current?.setPointerCapture(pointerId);
+    } catch {
+      // pointer already released
+    }
+  };
+
+  const reorderDraggingOver = (clientY: number) => {
+    const dragId = draggingIdRef.current;
+    const list = holdingsListRef.current;
+    if (!dragId || !list) return;
+
+    const rows = list.querySelectorAll<HTMLElement>("[data-holding-id]");
+    for (const row of rows) {
+      const overId = row.dataset.holdingId;
+      if (!overId || overId === dragId) continue;
+      const rect = row.getBoundingClientRect();
+      if (clientY < rect.top || clientY > rect.bottom) continue;
+      const mid = rect.top + rect.height / 2;
+      setHoldings((prev) => {
+        const from = prev.findIndex((item) => item.id === dragId);
+        const to = prev.findIndex((item) => item.id === overId);
+        if (from < 0 || to < 0 || from === to) return prev;
+        if (from < to && clientY < mid) return prev;
+        if (from > to && clientY > mid) return prev;
+        return moveItemToIndex(prev, dragId, to);
+      });
+      break;
+    }
+  };
+
+  const handleHoldingsPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!canReorderHoldings || e.button !== 0) return;
+    const target = e.target as HTMLElement;
+    const row = target.closest<HTMLElement>("[data-holding-id]");
+    const id = row?.dataset.holdingId;
+    if (!id) return;
+
+    setPressingId(id);
+    if (target.closest("[data-drag-handle]")) {
+      e.preventDefault();
+      startHoldingDrag(id, e.pointerId);
+      return;
+    }
+
+    pendingDragRef.current = {
+      id,
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+    };
+    holdTimerRef.current = window.setTimeout(() => {
+      const pending = pendingDragRef.current;
+      if (!pending || pending.pointerId !== e.pointerId) return;
+      startHoldingDrag(pending.id, pending.pointerId);
+    }, 350);
+  };
+
+  const handleHoldingsPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (draggingIdRef.current) {
+      e.preventDefault();
+      reorderDraggingOver(e.clientY);
+      return;
+    }
+
+    const pending = pendingDragRef.current;
+    if (!pending || pending.pointerId !== e.pointerId) return;
+    const moved = Math.hypot(e.clientX - pending.startX, e.clientY - pending.startY);
+    if (moved > 8) {
+      clearHoldTimer();
+      pendingDragRef.current = null;
+      setPressingId(null);
+    }
+  };
+
+  const handleHoldingsPointerEnd = (e: React.PointerEvent<HTMLDivElement>) => {
+    const list = holdingsListRef.current;
+    if (list?.hasPointerCapture(e.pointerId)) {
+      list.releasePointerCapture(e.pointerId);
+    }
+    if (draggingIdRef.current) {
+      ignoreHoldingClickRef.current = true;
+      window.setTimeout(() => {
+        ignoreHoldingClickRef.current = false;
+      }, 0);
+    }
+    endHoldingDrag();
+  };
+
+  const moveHolding = (id: string, direction: -1 | 1) => {
+    setHoldings((prev) => {
+      const index = prev.findIndex((h) => h.id === id);
+      return moveItemToIndex(prev, id, index + direction);
+    });
   };
 
   const removeHolding = async (id: string) => {
@@ -628,38 +972,53 @@ export default function InvestmentPortfolioCard({
         </div>
       )}
       {/* Portfolio hero */}
-      <div className="flex items-start justify-between gap-3">
-        <div>
+      <div>
+        <div className="flex flex-wrap items-center gap-2">
           <p className="text-[11px] font-semibold uppercase tracking-wider text-[#9CA3AF]">
             Portfolio Value
           </p>
-          <p className="mt-1 text-3xl font-extrabold tracking-tight text-white tabular-nums">
-            ${formatMoney(displayValue)}
-          </p>
-          {hasHoldings && (
-            <p
-              className="mt-1.5 text-sm font-bold tabular-nums"
-              style={{ color: displayGainColor }}
+          {onTogglePrivacy && (
+            <button
+              type="button"
+              onClick={onTogglePrivacy}
+              aria-label={privacyMode ? "Show amounts" : "Hide amounts"}
+              aria-pressed={privacyMode}
+              title={privacyMode ? "Show amounts" : "Hide amounts"}
+              className="grid h-6 w-6 place-items-center rounded-md text-[#9CA3AF] transition hover:bg-white/[0.06] hover:text-white"
             >
-              {displayPositive ? "+" : displayNegative ? "-" : ""}
-              ${formatMoney(Math.abs(displayGainAbs))} ({displayPositive ? "+" : ""}
-              {displayGainPct.toFixed(2)}%)
-              {hoverPoint ? (
-                <span className="ml-1.5 text-[11px] font-semibold text-[#9CA3AF]">
-                  · {hoverPoint.label}
-                </span>
+              {privacyMode ? (
+                <EyeOff size={14} strokeWidth={1.75} aria-hidden="true" />
               ) : (
-                <span className="ml-1.5 text-[11px] font-semibold text-[#9CA3AF]">· {range}</span>
+                <Eye size={14} strokeWidth={1.75} aria-hidden="true" />
               )}
-            </p>
+            </button>
           )}
-          {!hasHoldings && (
-            <p className="mt-1 text-[11px] text-[#9CA3AF]">No accounts connected yet</p>
+          {hasStockHoldings && (
+            <LiveStatusBadge marketOpen={marketOpen} />
           )}
         </div>
-        <div className="grid h-10 w-10 flex-shrink-0 place-items-center rounded-xl bg-emerald-500/15 text-emerald-400">
-          <Layers size={18} />
-        </div>
+        <p className="mt-1 text-3xl font-extrabold tracking-tight text-white tabular-nums">
+          {privacyMoney(privacyMode, displayValue)}
+        </p>
+        {hasHoldings && (
+          <p
+            className="mt-1.5 text-sm font-bold tabular-nums"
+            style={{ color: displayGainColor }}
+          >
+            {privacySignedMoney(privacyMode, displayGainAbs)} ({displayPositive ? "+" : ""}
+            {displayGainPct.toFixed(2)}%)
+            {hoverPoint ? (
+              <span className="ml-1.5 text-[11px] font-semibold text-[#9CA3AF]">
+                · {hoverPoint.label}
+              </span>
+            ) : (
+              <span className="ml-1.5 text-[11px] font-semibold text-[#9CA3AF]">· {range}</span>
+            )}
+          </p>
+        )}
+        {!hasHoldings && cashValue <= 0 && (
+          <p className="mt-1 text-[11px] text-[#9CA3AF]">No accounts connected yet</p>
+        )}
       </div>
 
       {/* AI daily report — above chart (below portfolio value) */}
@@ -668,17 +1027,20 @@ export default function InvestmentPortfolioCard({
       </div>
 
       {!hasHoldings ? (
-        <div className="mt-4 flex flex-col items-center gap-3 rounded-2xl border border-dashed border-[#1F2937] bg-black/10 px-4 py-10 text-center">
-          <div className="grid h-12 w-12 place-items-center rounded-full bg-emerald-500/10 text-emerald-400">
-            <Layers size={22} />
+        <>
+          <div className="mt-4 flex flex-col items-center gap-3 rounded-2xl border border-dashed border-[#1F2937] bg-black/10 px-4 py-10 text-center">
+            <div className="grid h-12 w-12 place-items-center rounded-full bg-emerald-500/10 text-emerald-400">
+              <Layers size={22} />
+            </div>
+            <div>
+              <p className="text-sm font-bold text-white">You didn&apos;t add any stock yet.</p>
+              <p className="mt-1 text-[11px] leading-relaxed text-[#9CA3AF]">
+                Connect a broker or add your first investment to start tracking your portfolio.
+              </p>
+            </div>
           </div>
-          <div>
-            <p className="text-sm font-bold text-white">You didn&apos;t add any stock yet.</p>
-            <p className="mt-1 text-[11px] leading-relaxed text-[#9CA3AF]">
-              Connect a broker or add your first investment to start tracking your portfolio.
-            </p>
-          </div>
-        </div>
+          <AllocationRing slices={allocationSlices} privacyMode={privacyMode} />
+        </>
       ) : (
         <>
           {/* Chart + timeframe (Google Finance / Midas style) */}
@@ -710,14 +1072,10 @@ export default function InvestmentPortfolioCard({
                 <AreaChart
                   data={chartData}
                   margin={{ top: 8, right: 8, bottom: 4, left: 0 }}
-                  onMouseMove={(state) => {
-                    const payload = (
-                      state as { activePayload?: Array<{ payload?: SeriesPoint }> }
-                    )?.activePayload?.[0]?.payload;
-                    if (payload) setHoverPoint(payload);
-                  }}
+                  onMouseMove={(state) => setHoverPoint(hoverPointFromChart(state, chartData))}
                   onMouseLeave={() => setHoverPoint(null)}
                 >
+                  <ChartHoverBridge onHover={setHoverPoint} />
                   <defs>
                     <linearGradient id="portfolioAreaGradient" x1="0" y1="0" x2="0" y2="1">
                       <stop offset="0%" stopColor={gainColor} stopOpacity={0.35} />
@@ -727,7 +1085,7 @@ export default function InvestmentPortfolioCard({
                   <YAxis
                     domain={yDomain}
                     width={46}
-                    tickFormatter={formatAxisMoney}
+                    tickFormatter={(v) => privacyAxis(privacyMode, formatAxisMoney(Number(v)))}
                     tick={{ fill: "#9CA3AF", fontSize: 10 }}
                     axisLine={false}
                     tickLine={false}
@@ -743,7 +1101,8 @@ export default function InvestmentPortfolioCard({
                     minTickGap={20}
                   />
                   <Tooltip
-                    cursor={{ stroke: "#FFFFFF", strokeWidth: 1, strokeDasharray: "4 4", opacity: 0.45 }}
+                    shared
+                    cursor={{ stroke: "#FFFFFF", strokeWidth: 1.25, strokeDasharray: "4 4", opacity: 0.55 }}
                     content={() => null}
                   />
                   <Area
@@ -752,7 +1111,7 @@ export default function InvestmentPortfolioCard({
                     stroke={gainColor}
                     strokeWidth={2.5}
                     fill="url(#portfolioAreaGradient)"
-                    isAnimationActive={true}
+                    isAnimationActive={chartAnimate}
                     animationDuration={400}
                     activeDot={{
                       r: 5,
@@ -766,25 +1125,7 @@ export default function InvestmentPortfolioCard({
             </div>
           </div>
 
-          {/* Allocation bar */}
-          <div className="mt-4 space-y-2">
-            <div className="flex h-2 w-full overflow-hidden rounded-full bg-black/30">
-              {allocation.map((a) => (
-                <div key={a.id} style={{ width: `${a.pct}%`, background: a.color }} />
-              ))}
-            </div>
-            <div className="flex flex-wrap gap-x-4 gap-y-1.5">
-              {allocation.map((a) => (
-                <div
-                  key={a.id}
-                  className="flex max-w-full items-center gap-1.5 text-[11px] font-semibold text-[#9CA3AF]"
-                >
-                  <span className="h-2 w-2 flex-shrink-0 rounded-full" style={{ background: a.color }} />
-                  <span className="truncate text-white/90">{a.label}</span> {a.pct.toFixed(0)}%
-                </div>
-              ))}
-            </div>
-          </div>
+          <AllocationRing slices={allocationSlices} privacyMode={privacyMode} />
 
           {/* Asset list — Midas style */}
           <div className="mt-5">
@@ -810,11 +1151,25 @@ export default function InvestmentPortfolioCard({
             </button>
 
             <div
-              className={`overflow-hidden transition-all duration-300 ease-in-out ${
-                holdingsExpanded ? "mt-2 max-h-[2000px] opacity-100" : "max-h-0 opacity-0"
+              className={`transition-all duration-300 ease-in-out ${
+                holdingsExpanded
+                  ? "mt-2 max-h-[2000px] overflow-visible opacity-100"
+                  : "max-h-0 overflow-hidden opacity-0"
               }`}
             >
-              <div className="divide-y divide-[#1F2937]">
+              <div
+                ref={holdingsListRef}
+                className={`divide-y divide-[#1F2937] select-none ${
+                  draggingId ? "cursor-grabbing touch-none" : ""
+                }`}
+                onPointerDown={handleHoldingsPointerDown}
+                onPointerMove={handleHoldingsPointerMove}
+                onPointerUp={handleHoldingsPointerEnd}
+                onPointerCancel={handleHoldingsPointerEnd}
+                onContextMenu={(e) => {
+                  if (draggingIdRef.current || pendingDragRef.current) e.preventDefault();
+                }}
+              >
                 {holdings.map((h) => {
                   const highlight = h.id === justAddedId;
                   const value = holdingValue(h);
@@ -825,53 +1180,96 @@ export default function InvestmentPortfolioCard({
                   const dayUp = dayPct > 0;
                   const dayDown = dayPct < 0;
                   const dayColor = dayDown ? LOSS_RED : dayUp ? GAIN_GREEN : "#9CA3AF";
+                  const isDragging = draggingId === h.id;
+                  const isPressed = pressingId === h.id;
 
                   return (
-                    <button
+                    <div
                       key={h.id}
-                      type="button"
-                      onClick={() => isStock && setSelectedHolding(h)}
-                      disabled={!isStock}
-                      className={`flex w-full items-center gap-3 py-3.5 text-left transition ${
-                        highlight ? "bg-emerald-500/10" : ""
-                      } ${isStock ? "hover:bg-white/[0.03] active:scale-[0.995]" : "cursor-default"}`}
+                      data-holding-id={h.id}
+                      aria-grabbed={isDragging}
+                      className={`flex w-full items-center gap-1 rounded-xl px-1 py-3.5 transition duration-150 ${
+                        isDragging
+                          ? "relative z-10 scale-[1.01] bg-[#09090B] shadow-[0_8px_24px_rgba(0,0,0,0.45)] ring-1 ring-white/10 pointer-events-none"
+                          : isPressed
+                            ? "bg-[#09090B]"
+                            : highlight
+                              ? "bg-emerald-500/10"
+                              : ""
+                      }`}
                     >
-                      {isStock ? (
-                        <StockLogo symbol={h.symbol} finnhubLogo={h.logo} domain={h.domain} size={40} />
-                      ) : (
-                        <span className="grid h-10 w-10 flex-shrink-0 place-items-center rounded-full bg-[#3B82F6]/15 text-[#60A5FA]">
-                          <h.icon size={18} />
-                        </span>
+                      {canReorderHoldings && (
+                        <button
+                          type="button"
+                          data-drag-handle
+                          aria-label={`Reorder ${isStock ? h.symbol : h.name}`}
+                          onKeyDown={(e) => {
+                            if (e.key === "ArrowUp") {
+                              e.preventDefault();
+                              moveHolding(h.id, -1);
+                            } else if (e.key === "ArrowDown") {
+                              e.preventDefault();
+                              moveHolding(h.id, 1);
+                            }
+                          }}
+                          className={`grid h-10 w-7 flex-shrink-0 touch-none place-items-center rounded-md text-[#6B7280] transition hover:bg-white/[0.06] hover:text-[#D1D5DB] ${
+                            isDragging ? "cursor-grabbing text-[#D1D5DB]" : "cursor-grab"
+                          }`}
+                          style={{ touchAction: "none" }}
+                        >
+                          <GripVertical size={16} aria-hidden="true" />
+                        </button>
                       )}
-                      <div className="min-w-0 flex-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (ignoreHoldingClickRef.current) {
+                            ignoreHoldingClickRef.current = false;
+                            return;
+                          }
+                          if (isStock) setSelectedHolding(h);
+                        }}
+                        disabled={!isStock}
+                        className={`flex min-w-0 flex-1 items-center gap-3 text-left transition ${
+                          isStock ? "hover:bg-white/[0.03] active:scale-[0.995]" : "cursor-default"
+                        }`}
+                      >
                         {isStock ? (
-                          <>
-                            <p className="truncate text-sm font-bold text-white">{h.symbol}</p>
-                            <p className="truncate text-[11px] text-[#9CA3AF]">
-                              {h.description} · {h.quantity} sh
-                            </p>
-                          </>
+                          <StockLogo symbol={h.symbol} finnhubLogo={h.logo} domain={h.domain} size={40} />
                         ) : (
-                          <>
-                            <p className="truncate text-sm font-bold text-white">{h.name}</p>
-                            <p className="text-[11px] text-[#9CA3AF]">Connected account</p>
-                          </>
+                          <span className="grid h-10 w-10 flex-shrink-0 place-items-center rounded-full bg-[#3B82F6]/15 text-[#60A5FA]">
+                            <h.icon size={18} />
+                          </span>
                         )}
-                      </div>
-                      <div className="flex-shrink-0 text-right">
-                        <p className="text-sm font-bold tabular-nums text-white">
-                          ${formatMoney(value)}
-                        </p>
-                        {isStock && (
-                          <p className="text-[11px] font-bold tabular-nums" style={{ color: dayColor }}>
-                            {dayUp ? "+" : dayDown ? "-" : ""}
-                            ${formatMoney(Math.abs(dayAbs))} ({dayUp ? "+" : ""}
-                            {dayPct.toFixed(2)}%)
+                        <div className="min-w-0 flex-1">
+                          {isStock ? (
+                            <>
+                              <p className="truncate text-sm font-bold text-white">{h.symbol}</p>
+                              <p className="truncate text-[11px] text-[#9CA3AF]">
+                                {h.description} · {privacyShares(privacyMode, h.quantity)}
+                              </p>
+                            </>
+                          ) : (
+                            <>
+                              <p className="truncate text-sm font-bold text-white">{h.name}</p>
+                              <p className="text-[11px] text-[#9CA3AF]">Connected account</p>
+                            </>
+                          )}
+                        </div>
+                        <div className="flex-shrink-0 text-right">
+                          <p className="text-sm font-bold tabular-nums text-white">
+                            {privacyMoney(privacyMode, value)}
                           </p>
-                        )}
-                      </div>
-                      {isStock && <ChevronRight size={14} className="flex-shrink-0 text-[#9CA3AF]" />}
-                    </button>
+                          {isStock && (
+                            <p className="text-[11px] font-bold tabular-nums" style={{ color: dayColor }}>
+                              {privacySignedMoney(privacyMode, dayAbs)} ({dayUp ? "+" : ""}
+                              {dayPct.toFixed(2)}%)
+                            </p>
+                          )}
+                        </div>
+                        {isStock && <ChevronRight size={14} className="flex-shrink-0 text-[#9CA3AF]" />}
+                      </button>
+                    </div>
                   );
                 })}
               </div>
@@ -880,12 +1278,12 @@ export default function InvestmentPortfolioCard({
         </>
       )}
 
+      {belowHoldings}
+
       <PortfolioActionButtons
         onAddStock={() => openModal("manual")}
         onConnectBroker={() => openModal("connect")}
       />
-
-      <WatchlistsSection />
 
       {modalOpen && (
         <div
@@ -1117,7 +1515,7 @@ export default function InvestmentPortfolioCard({
 
                 {selectedTicker && manualValue > 0 && (
                   <p className="text-[11px] font-semibold text-emerald-300">
-                    Estimated value: ${formatMoney(manualValue)}
+                    Estimated value: {privacyMoney(privacyMode, manualValue)}
                   </p>
                 )}
 
@@ -1142,8 +1540,10 @@ export default function InvestmentPortfolioCard({
       {selectedHolding && (
         <StockDetailPage
           holding={selectedHolding}
+          totalPortfolioValue={totalValue}
+          privacyMode={privacyMode}
           onBack={() => setSelectedHolding(null)}
-          onRemove={removeHolding}
+          onRemove={selectedHolding.quantity > 0 ? removeHolding : undefined}
           removing={removingId === selectedHolding.id}
         />
       )}

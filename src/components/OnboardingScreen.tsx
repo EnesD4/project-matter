@@ -6,6 +6,7 @@ import {
   Landmark,
   Loader2,
   MessageCircle,
+  Shield,
   Sparkles,
   TrendingUp,
   Wallet,
@@ -16,7 +17,7 @@ import { saveUserSettings, type OnboardingChoices, type UserSettings } from "../
 type Phase = "survey" | "walkthrough";
 
 type SurveyStep = 0 | 1 | 2 | 3;
-type WalkthroughStep = 0 | 1 | 2 | 3;
+type WalkthroughStep = 0 | 1 | 2 | 3 | 4;
 
 type OnboardingScreenProps = {
   onComplete: (settings: UserSettings) => void;
@@ -59,24 +60,30 @@ const WALKTHROUGH_META: Array<{
   title: string;
   icon: React.ReactNode;
 }> = [
-  { eyebrow: "Tab 1 of 4", title: "Portfolio", icon: <Wallet size={20} color="#042F2E" /> },
-  { eyebrow: "Tab 2 of 4", title: "Cash Flow & Debt", icon: <CreditCard size={20} color="#042F2E" /> },
-  { eyebrow: "Tab 3 of 4", title: "Lessons", icon: <BookOpen size={20} color="#042F2E" /> },
-  { eyebrow: "Tab 4 of 4", title: "Mater AI", icon: <MessageCircle size={20} color="#042F2E" /> },
+  { eyebrow: "Tab 1 of 5", title: "Investment", icon: <Wallet size={20} color="#042F2E" /> },
+  { eyebrow: "Tab 2 of 5", title: "Retirement", icon: <Shield size={20} color="#042F2E" /> },
+  { eyebrow: "Tab 3 of 5", title: "Cash Flow", icon: <CreditCard size={20} color="#042F2E" /> },
+  { eyebrow: "Tab 4 of 5", title: "Lessons", icon: <BookOpen size={20} color="#042F2E" /> },
+  { eyebrow: "Tab 5 of 5", title: "Mater AI", icon: <MessageCircle size={20} color="#042F2E" /> },
 ];
 
 function walkthroughLine(step: WalkthroughStep, answers: OnboardingChoices): string {
   if (step === 0) {
     return answers.hasActiveInvestments
-      ? "Add your assets or connect your broker to track your overall performance."
+      ? "Add your assets, review allocation, and follow stocks you don't own yet in Watchlist — just below Holdings."
       : "Start with paper trading in Lessons or build your first portfolio when ready!";
   }
   if (step === 1) {
+    return answers.wantsCapitalGrowth
+      ? "Track retirement savings on its own tab and stay on pace for the age you want to retire."
+      : "Set a retirement age and watch the dedicated tracker as your nest egg grows.";
+  }
+  if (step === 2) {
     return answers.hasActiveDebts
       ? "Set up your debt payoff strategy and track your monthly budget balance."
       : "Track your net cash flow and build your 3-month emergency fund target.";
   }
-  if (step === 2) {
+  if (step === 3) {
     return answers.wantsFinancialLiteracy
       ? "Explore step-by-step guides to master personal finance fundamentals."
       : "Check back anytime to refresh your market strategies or catch new insights.";
@@ -95,7 +102,7 @@ export default function OnboardingScreen({ onComplete }: OnboardingScreenProps) 
   const survey = SURVEY[surveyStep];
   const tour = WALKTHROUGH_META[walkthroughStep];
   const progress =
-    phase === "survey" ? (surveyStep + 1) / 8 : (4 + walkthroughStep + 1) / 8;
+    phase === "survey" ? (surveyStep + 1) / 9 : (4 + walkthroughStep + 1) / 9;
 
   const answerQuestion = (value: boolean) => {
     setError(null);
@@ -245,7 +252,7 @@ export default function OnboardingScreen({ onComplete }: OnboardingScreenProps) 
 
             {error ? <p style={styles.error}>{error}</p> : null}
 
-            {walkthroughStep < 3 ? (
+            {walkthroughStep < 4 ? (
               <button
                 type="button"
                 style={styles.primaryBtn}

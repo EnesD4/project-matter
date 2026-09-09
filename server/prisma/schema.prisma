@@ -67,4 +67,6 @@ model UserSettings {
   hasActiveDebts          Boolean @default(false)
   wantsCapitalGrowth      Boolean @default(false)
   wantsFinancialLiteracy  Boolean @default(false)
+  age                     Int?
+  birthDate               String?
 }

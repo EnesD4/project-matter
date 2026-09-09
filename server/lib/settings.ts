@@ -9,6 +9,8 @@ export type PublicSettings = {
   riskTolerance: string;
   investmentGoal: string;
   experienceLevel: string;
+  age: number | null;
+  birthDate: string | null;
 };
 
 export function publicSettings(settings: UserSettings): PublicSettings {
@@ -21,7 +23,26 @@ export function publicSettings(settings: UserSettings): PublicSettings {
     riskTolerance: settings.riskTolerance,
     investmentGoal: settings.investmentGoal,
     experienceLevel: settings.experienceLevel,
+    age: settings.age ?? null,
+    birthDate: settings.birthDate ?? null,
   };
+}
+
+export function parseAge(value: unknown): number | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || value === "") return null;
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n)) return undefined;
+  return Math.min(100, Math.max(13, Math.round(n)));
+}
+
+export function parseBirthDate(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || value === "") return null;
+  if (typeof value !== "string") return undefined;
+  const iso = value.trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return undefined;
+  return iso;
 }
 
 export function parseBool(value: unknown): boolean | undefined {

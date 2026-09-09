@@ -16,10 +16,13 @@ import {
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { type Debt } from "./src/components/DebtSnowballManager";
 import { formatCurrencyInput, formatCurrencyValue, parseCurrency } from "./src/lib/money";
+import { privacyMoney } from "./src/lib/privacy";
 import { categoryIcon } from "./src/lib/categoryIcons";
 import AuthScreen from "./src/components/AuthScreen";
 import OnboardingScreen from "./src/components/OnboardingScreen";
-import InvestmentPortfolioCard, { type Holding } from "./src/components/InvestmentPortfolioCard";
+import InvestmentScreen, { type Holding } from "./src/components/InvestmentScreen";
+import CashFlowScreen from "./src/components/CashFlowScreen";
+import RetirementScreen from "./src/components/RetirementScreen";
 import LessonsPhase1 from "./src/components/LessonsPhase1";
 import ProfileScreen from "./src/components/ProfileScreen";
 import {
@@ -28,11 +31,12 @@ import {
   getStoredUser,
   getToken,
   saveSession,
+  saveUserSettings,
   type AuthUser,
   type UserSettings,
 } from "./src/lib/auth";
 
-type TabId = "dashboard" | "snowball" | "lessons" | "socrates" | "profile";
+type TabId = "dashboard" | "retirement" | "snowball" | "lessons" | "socrates" | "profile";
 
 type ChatSender = "user" | "socrates";
 
@@ -53,12 +57,14 @@ function createChatMessage(sender: ChatSender, text: string): ChatMessage {
 }
 
 const TABS: Array<{ id: TabId; emoji: string; label: string }> = [
-  { id: "dashboard", emoji: "📊", label: "Investments" },
+  { id: "dashboard", emoji: "📊", label: "Investment" },
+  { id: "retirement", emoji: "🛡️", label: "Retirement" },
   { id: "snowball", emoji: "💸", label: "Cash Flow" },
-  { id: "lessons", emoji: "🎓", label: "Lessons" },
-  { id: "socrates", emoji: "🏛️", label: "Matter AI" },
-  { id: "profile", emoji: "👤", label: "Profile" },
+  { id: "lessons", emoji: "📚", label: "Lessons" },
+  { id: "socrates", emoji: "🏛️", label: "Mater AI" },
 ];
+
+const HEADER_TABS: TabId[] = ["dashboard", "retirement", "snowball", "lessons", "profile"];
 
 const GEMINI_API_KEY = "AQ.Ab8RN6LVBGK2nK4hRt3tLM01jc1i7r3CWL7paFYfl8QdYO4Rjg";
 const SOCRATES_PERSONA =
@@ -98,6 +104,15 @@ function getGeminiApiKey() {
 
 function money(amount: number) {
   return Math.round(amount).toLocaleString("en-US");
+}
+
+/** Compact header amounts so the Net Worth chip stays one line on small screens. */
+function compactMoney(amount: number) {
+  const abs = Math.abs(amount);
+  const sign = amount < 0 ? "-" : "";
+  if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(2)}M`;
+  if (abs >= 10_000) return `${sign}$${(abs / 1_000).toFixed(1)}k`;
+  return `${sign}$${money(abs)}`;
 }
 
 /** Months of spending the emergency fund should eventually cover. */
@@ -234,6 +249,10 @@ const App: React.FC = () => {
   const askInputRef = useRef<HTMLTextAreaElement | null>(null);
   const [monthlyIncome, setMonthlyIncome] = useState(0);
   const [activeTab, setActiveTab] = useState<TabId>("dashboard");
+  const lastContentTabRef = useRef<TabId>("dashboard");
+  const [privacyMode, setPrivacyMode] = useState(false);
+  const [netWorthModalOpen, setNetWorthModalOpen] = useState(false);
+  const [retirementBalance, setRetirementBalance] = useState(0);
 
   // Cash Flow & Debt Management module state.
   const [expenses, setExpenses] = useState<ExpenseItem[]>([]);
@@ -253,6 +272,12 @@ const App: React.FC = () => {
   const [holdings, setHoldings] = useState<Holding[]>([]);
 
   const userName = authUser?.name?.trim() || "Investor";
+  const profileInitials = (authUser?.name || authUser?.email || "?")
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() || "")
+    .join("") || "?";
 
   useEffect(() => {
     const token = getToken();
@@ -278,6 +303,7 @@ const App: React.FC = () => {
         setAuthUser(null);
         setUserSettings(null);
         setHoldings([]);
+        setRetirementBalance(0);
       } finally {
         if (!cancelled) {
           setSettingsReady(true);
@@ -290,6 +316,11 @@ const App: React.FC = () => {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (activeTab !== "dashboard") setNetWorthModalOpen(false);
+    if (activeTab !== "profile") lastContentTabRef.current = activeTab;
+  }, [activeTab]);
 
   const handleAuthenticated = (user: AuthUser, settings?: UserSettings | null) => {
     setAuthUser(user);
@@ -317,12 +348,34 @@ const App: React.FC = () => {
     setActiveTab("dashboard");
   };
 
+  const persistAge = async (nextAge: number, nextBirthDate: string) => {
+    if (!userSettings) return;
+    const previous = userSettings;
+    const optimistic: UserSettings = { ...userSettings, age: nextAge, birthDate: nextBirthDate };
+    setUserSettings(optimistic);
+    try {
+      const saved = await saveUserSettings({
+        hasActiveInvestments: optimistic.hasActiveInvestments,
+        hasActiveDebts: optimistic.hasActiveDebts,
+        wantsCapitalGrowth: optimistic.wantsCapitalGrowth,
+        wantsFinancialLiteracy: optimistic.wantsFinancialLiteracy,
+        hasCompletedOnboarding: true,
+        age: nextAge,
+        birthDate: nextBirthDate,
+      });
+      setUserSettings(saved);
+    } catch {
+      setUserSettings(previous);
+    }
+  };
+
   const handleLogout = () => {
     clearSession();
     setAuthUser(null);
     setUserSettings(null);
     setSettingsReady(true);
     setHoldings([]);
+    setRetirementBalance(0);
     setMessages([]);
     setActiveTab("dashboard");
   };
@@ -386,6 +439,20 @@ const App: React.FC = () => {
     );
     return `Total portfolio value: $${money(totalValue)}. Holdings:\n- ${lines.join("\n- ")}`;
   }, [holdings]);
+
+  const stockHoldingsValue = useMemo(
+    () =>
+      holdings
+        .filter((h): h is Extract<Holding, { kind: "stock" }> => h.kind === "stock")
+        .reduce((sum, h) => sum + h.quantity * h.currentPrice, 0),
+    [holdings]
+  );
+  const brokerCashValue = useMemo(
+    () => holdings.filter((h) => h.kind === "broker").reduce((sum, h) => sum + h.balance, 0),
+    [holdings]
+  );
+  const availableCash = brokerCashValue + Math.max(0, emergencyFund);
+  const netWorth = stockHoldingsValue + retirementBalance + availableCash;
 
   // Live debt context — real debts, so Socrates can answer "how's my debt payoff going?" accurately.
   const debtContext = useMemo(() => {
@@ -644,27 +711,178 @@ const App: React.FC = () => {
       <style>{css}</style>
 
       <div style={styles.shell}>
-        {(activeTab === "dashboard" || activeTab === "snowball" || activeTab === "lessons") && (
+        {HEADER_TABS.includes(activeTab) && (
           <header style={styles.investHeader}>
             <p style={styles.brandLogo}>MatterPro</p>
-            <button type="button" style={styles.notifBtn} aria-label="Notifications">
-              <Bell size={20} strokeWidth={1.75} />
-            </button>
+            <div style={styles.headerActions}>
+              {activeTab === "dashboard" && (
+                <button
+                  type="button"
+                  style={styles.netWorthBtn}
+                  aria-label={`Net worth ${privacyMoney(privacyMode, netWorth)}`}
+                  aria-haspopup="dialog"
+                  aria-expanded={netWorthModalOpen}
+                  title={
+                    privacyMode
+                      ? "Net Worth"
+                      : `Net Worth: stocks $${money(stockHoldingsValue)} + retirement $${money(retirementBalance)} + cash $${money(availableCash)}`
+                  }
+                  onClick={() => setNetWorthModalOpen(true)}
+                >
+                  <span style={styles.netWorthLabel}>
+                    <span aria-hidden="true">💰</span> Net Worth
+                  </span>
+                  <span style={styles.netWorthValue}>
+                    {privacyMode ? privacyMoney(true, netWorth) : compactMoney(netWorth)}
+                  </span>
+                </button>
+              )}
+              <button type="button" style={styles.notifBtn} aria-label="Notifications">
+                <Bell size={20} strokeWidth={1.75} />
+              </button>
+              <button
+                type="button"
+                style={{
+                  ...styles.profileBtn,
+                  ...(activeTab === "profile" ? styles.profileBtnActive : {}),
+                }}
+                aria-label="Profile"
+                aria-current={activeTab === "profile" ? "page" : undefined}
+                title={authUser.name || "Profile"}
+                onClick={() => {
+                  if (activeTab === "profile") {
+                    const previous = lastContentTabRef.current;
+                    setActiveTab(previous === "profile" ? "dashboard" : previous);
+                    return;
+                  }
+                  setActiveTab("profile");
+                }}
+              >
+                {authUser.avatarUrl ? (
+                  <img
+                    src={authUser.avatarUrl}
+                    alt=""
+                    referrerPolicy="no-referrer"
+                    style={styles.profileBtnImg}
+                  />
+                ) : (
+                  <span style={styles.profileBtnInitials}>{profileInitials}</span>
+                )}
+              </button>
+            </div>
           </header>
+        )}
+
+        {netWorthModalOpen && (
+          <div
+            style={styles.modalOverlay}
+            onClick={() => setNetWorthModalOpen(false)}
+            role="presentation"
+          >
+            <div
+              className="matter-pop"
+              style={styles.netWorthModal}
+              onClick={(e) => e.stopPropagation()}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="net-worth-modal-title"
+            >
+              <div style={styles.spendingModalHead}>
+                <div style={styles.spendingModalTitleRow}>
+                  <span style={{ ...styles.spendingModalIcon, fontSize: 18 }} aria-hidden="true">
+                    💰
+                  </span>
+                  <div>
+                    <h3 id="net-worth-modal-title" style={styles.spendingModalTitle}>
+                      Total Net Worth
+                    </h3>
+                    <p style={styles.spendingModalSub}>How your total is composed</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setNetWorthModalOpen(false)}
+                  aria-label="Close net worth breakdown"
+                  style={styles.iconBtn}
+                >
+                  <X size={15} />
+                </button>
+              </div>
+
+              <p style={styles.netWorthModalTotal}>
+                {privacyMoney(privacyMode, netWorth)}
+              </p>
+
+              <ul style={styles.netWorthBreakdown}>
+                <li style={styles.netWorthRow}>
+                  <span style={styles.netWorthRowLabel}>
+                    <span aria-hidden="true">📈</span> Portfolio Value
+                  </span>
+                  <span style={styles.netWorthRowValue}>
+                    {privacyMoney(privacyMode, stockHoldingsValue)}
+                  </span>
+                </li>
+                <li style={styles.netWorthRow}>
+                  <span style={styles.netWorthRowLabel}>
+                    <span aria-hidden="true">🛡️</span> Retirement Savings
+                  </span>
+                  <span style={styles.netWorthRowValue}>
+                    {privacyMoney(privacyMode, retirementBalance)}
+                  </span>
+                </li>
+                <li style={styles.netWorthRow}>
+                  <span style={styles.netWorthRowLabel}>
+                    <span aria-hidden="true">💵</span> Cash / Liquid
+                  </span>
+                  <span style={styles.netWorthRowValue}>
+                    {privacyMoney(privacyMode, availableCash)}
+                  </span>
+                </li>
+              </ul>
+            </div>
+          </div>
         )}
 
         {activeTab === "dashboard" && (
           <div className="matter-tab-panel" style={styles.tabPanel}>
-            <InvestmentPortfolioCard
+            <InvestmentScreen
               key={authUser.id}
+              holdings={holdings}
+              totalPortfolioValue={stockHoldingsValue}
               onHoldingsChange={setHoldings}
               onConsultSocrates={() => setActiveTab("socrates")}
+              cashBalance={emergencyFund}
+              privacyMode={privacyMode}
+              onTogglePrivacy={() => setPrivacyMode((v) => !v)}
             />
           </div>
         )}
 
+        <div
+          className={activeTab === "retirement" ? "matter-tab-panel" : undefined}
+          style={{
+            ...styles.tabPanel,
+            display: activeTab === "retirement" ? undefined : "none",
+          }}
+          aria-hidden={activeTab !== "retirement"}
+        >
+          <RetirementScreen
+            key={authUser.id}
+            visible={activeTab === "retirement"}
+            userId={authUser.id}
+            age={userSettings?.age ?? null}
+            birthDate={userSettings?.birthDate ?? null}
+            onAgeChange={(nextAge, nextBirthDate) => {
+              void persistAge(nextAge, nextBirthDate);
+            }}
+            onBalanceChange={setRetirementBalance}
+          />
+        </div>
+
         {activeTab === "snowball" && (
           <div className="matter-tab-panel" style={styles.tabPanel}>
+            <CashFlowScreen holdings={holdings} privacyMode={privacyMode} />
+
             {/* 1. One panel: earnings in, spendings out, net result. */}
             <article
               style={{ ...styles.flowPanel, borderColor: flowTone.border }}
@@ -1159,11 +1377,16 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {activeTab === "lessons" && (
-          <div className="matter-tab-panel" style={styles.tabPanel}>
-            <LessonsPhase1 />
-          </div>
-        )}
+        <div
+          className={activeTab === "lessons" ? "matter-tab-panel" : undefined}
+          style={{
+            ...styles.tabPanel,
+            display: activeTab === "lessons" ? undefined : "none",
+          }}
+          aria-hidden={activeTab !== "lessons"}
+        >
+          <LessonsPhase1 />
+        </div>
 
         {activeTab === "socrates" && (
           <div className="matter-tab-panel" style={styles.chatWindow}>
@@ -1498,6 +1721,99 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: "center",
     gap: 12,
     minHeight: 40,
+    flexWrap: "wrap",
+  },
+  headerActions: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    flexShrink: 0,
+  },
+  netWorthBtn: {
+    minHeight: 40,
+    borderRadius: 12,
+    border: "1px solid #1F1F1F",
+    background: "#0A0A0A",
+    color: "#FFFFFF",
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "flex-end",
+    justifyContent: "center",
+    cursor: "pointer",
+    padding: "5px 10px",
+    flexShrink: 0,
+    gap: 1,
+  },
+  netWorthLabel: {
+    fontSize: 9,
+    fontWeight: 700,
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
+    color: "#9CA3AF",
+    lineHeight: 1.15,
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 4,
+  },
+  netWorthValue: {
+    fontSize: 13,
+    fontWeight: 800,
+    color: "#10B981",
+    fontVariantNumeric: "tabular-nums",
+    lineHeight: 1.15,
+  },
+  netWorthModal: {
+    width: "100%",
+    maxWidth: 400,
+    background: "#0A0A0A",
+    border: "1px solid #1F1F1F",
+    borderRadius: 20,
+    padding: 18,
+    display: "flex",
+    flexDirection: "column",
+    gap: 14,
+  },
+  netWorthModalTotal: {
+    margin: 0,
+    fontSize: 28,
+    fontWeight: 800,
+    letterSpacing: "-0.03em",
+    color: "#10B981",
+    fontVariantNumeric: "tabular-nums",
+    textAlign: "right" as const,
+  },
+  netWorthBreakdown: {
+    listStyle: "none",
+    margin: 0,
+    padding: 0,
+    display: "flex",
+    flexDirection: "column" as const,
+    gap: 8,
+  },
+  netWorthRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+    background: "#111111",
+    border: "1px solid #1F1F1F",
+    borderRadius: 12,
+    padding: "12px 14px",
+  },
+  netWorthRowLabel: {
+    fontSize: 13,
+    fontWeight: 700,
+    color: "#E5E7EB",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 8,
+  },
+  netWorthRowValue: {
+    fontSize: 14,
+    fontWeight: 800,
+    color: "#FFFFFF",
+    fontVariantNumeric: "tabular-nums",
+    flexShrink: 0,
   },
   brandLogo: {
     margin: 0,
@@ -1518,6 +1834,36 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: "pointer",
     padding: 0,
     flexShrink: 0,
+  },
+  profileBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: "50%",
+    border: "1px solid #1F1F1F",
+    background: "linear-gradient(135deg, #10B981, #059669)",
+    color: "#042F2E",
+    display: "grid",
+    placeItems: "center",
+    cursor: "pointer",
+    padding: 0,
+    flexShrink: 0,
+    overflow: "hidden",
+  },
+  profileBtnActive: {
+    boxShadow: "0 0 0 2px #10B981",
+    borderColor: "#10B981",
+  },
+  profileBtnImg: {
+    width: "100%",
+    height: "100%",
+    objectFit: "cover",
+    display: "block",
+  },
+  profileBtnInitials: {
+    fontSize: 12,
+    fontWeight: 800,
+    letterSpacing: "-0.02em",
+    lineHeight: 1,
   },
   brand: {
     margin: 0,
@@ -2594,12 +2940,12 @@ const styles: Record<string, React.CSSProperties> = {
   },
   tabBar: {
     display: "grid",
-    gridTemplateColumns: "repeat(5, 1fr)",
+    gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
     gap: 0,
-    maxWidth: 480,
+    maxWidth: 560,
     margin: "0 auto",
     width: "100%",
-    padding: "4px 4px calc(4px + env(safe-area-inset-bottom, 0px))",
+    padding: "4px 2px calc(4px + env(safe-area-inset-bottom, 0px))",
   } as React.CSSProperties,
   tabBtn: {
     display: "flex",
@@ -2607,29 +2953,33 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: "center",
     justifyContent: "center",
     gap: 1,
+    minWidth: 0,
     minHeight: 48,
     border: "none",
     background: "transparent",
     color: "#737373",
     borderRadius: 0,
     cursor: "pointer",
-    padding: "6px 2px",
+    padding: "6px 0",
     transition: "color 0.18s ease",
   },
   tabBtnActive: {
     color: "#10B981",
   },
   tabEmoji: {
-    fontSize: 16,
+    fontSize: 15,
     lineHeight: 1,
   },
   tabLabel: {
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: 800,
-    letterSpacing: "-0.02em",
+    letterSpacing: "-0.04em",
     textAlign: "center",
     lineHeight: 1.15,
-    whiteSpace: "pre-line",
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    maxWidth: "100%",
   },
 };
 

@@ -1,5 +1,6 @@
 import {
   ChevronDown,
+  ChevronRight,
   ChevronUp,
   Loader2,
   Plus,
@@ -22,6 +23,7 @@ import {
   type WatchlistApiItem,
   type WatchlistApiList,
 } from "../lib/auth";
+import { privacyMoney } from "../lib/privacy";
 import StockLogo from "./StockLogo";
 
 const GAIN_GREEN = "#10B981";
@@ -40,6 +42,15 @@ type LiveQuote = {
   price: number;
   changePct: number;
   name?: string;
+  logo?: string;
+  domain?: string;
+};
+
+export type WatchlistStockPick = {
+  symbol: string;
+  name: string;
+  price: number;
+  changePct: number;
   logo?: string;
   domain?: string;
 };
@@ -105,13 +116,6 @@ function companyName(item: WatchlistApiItem, quote?: LiveQuote) {
   return item.name || quote?.name || KNOWN_NAMES[item.symbol] || item.symbol;
 }
 
-function formatMoney(amount: number) {
-  return amount.toLocaleString("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-}
-
 function persistLists(lists: WatchlistApiList[]) {
   writeWatchlistCache(lists);
   return lists;
@@ -129,9 +133,11 @@ function WatchlistCard({
   onAddTicker,
   onRemoveTicker,
   onDeleteList,
+  onSelectStock,
   adding,
   removingItemId,
   deletingList,
+  privacyMode,
 }: {
   list: WatchlistApiList;
   quotes: Record<string, LiveQuote>;
@@ -140,9 +146,11 @@ function WatchlistCard({
   onAddTicker: (list: WatchlistApiList, symbol: string, description?: string) => Promise<void>;
   onRemoveTicker: (list: WatchlistApiList, item: WatchlistApiItem) => Promise<void>;
   onDeleteList: (list: WatchlistApiList) => Promise<void>;
+  onSelectStock?: (pick: WatchlistStockPick) => void;
   adding: boolean;
   removingItemId: string | null;
   deletingList: boolean;
+  privacyMode: boolean;
 }) {
   const [tickerQuery, setTickerQuery] = useState("");
   const [searchResults, setSearchResults] = useState<StockSearchResult[]>([]);
@@ -310,24 +318,40 @@ function WatchlistCard({
                   const down = quote.changePct < 0;
                   const changeColor = down ? LOSS_RED : up ? GAIN_GREEN : "#9CA3AF";
                   return (
-                    <div key={item.id} className="flex items-center gap-3 py-3">
-                      <StockLogo
-                        symbol={item.symbol}
-                        finnhubLogo={quote.logo}
-                        domain={quote.domain}
-                        size={40}
-                      />
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-bold text-white">{item.symbol}</p>
-                        <p className="truncate text-[11px] text-[#9CA3AF]">{companyName(item, quote)}</p>
-                      </div>
-                      <div className="flex-shrink-0 text-right">
-                        <p className="text-sm font-bold tabular-nums text-white">${formatMoney(quote.price)}</p>
-                        <p className="text-[11px] font-bold tabular-nums" style={{ color: changeColor }}>
-                          {up ? "+" : ""}
-                          {quote.changePct.toFixed(2)}%
-                        </p>
-                      </div>
+                    <div key={item.id} className="flex items-center gap-2 py-3">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onSelectStock?.({
+                            symbol: item.symbol,
+                            name: companyName(item, quote),
+                            price: quote.price,
+                            changePct: quote.changePct,
+                            logo: quote.logo,
+                            domain: quote.domain,
+                          })
+                        }
+                        className="flex min-w-0 flex-1 items-center gap-3 text-left transition hover:opacity-90 active:scale-[0.995]"
+                      >
+                        <StockLogo
+                          symbol={item.symbol}
+                          finnhubLogo={quote.logo}
+                          domain={quote.domain}
+                          size={40}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-bold text-white">{item.symbol}</p>
+                          <p className="truncate text-[11px] text-[#9CA3AF]">{companyName(item, quote)}</p>
+                        </div>
+                        <div className="flex-shrink-0 text-right">
+                          <p className="text-sm font-bold tabular-nums text-white">{privacyMoney(privacyMode, quote.price)}</p>
+                          <p className="text-[11px] font-bold tabular-nums" style={{ color: changeColor }}>
+                            {up ? "+" : ""}
+                            {quote.changePct.toFixed(2)}%
+                          </p>
+                        </div>
+                        <ChevronRight size={14} className="flex-shrink-0 text-[#9CA3AF]" />
+                      </button>
                       <button
                         type="button"
                         onClick={() => void onRemoveTicker(list, item)}
@@ -387,7 +411,13 @@ function WatchlistCard({
   );
 }
 
-export default function WatchlistsSection() {
+export default function WatchlistsSection({
+  onSelectStock,
+  privacyMode = false,
+}: {
+  onSelectStock?: (pick: WatchlistStockPick) => void;
+  privacyMode?: boolean;
+}) {
   const [lists, setLists] = useState<WatchlistApiList[]>(() => readWatchlistCache());
   const [activeId, setActiveId] = useState<string | null>(() => {
     try {
@@ -408,7 +438,6 @@ export default function WatchlistsSection() {
   const [deletingList, setDeletingList] = useState(false);
 
   const [quotes, setQuotes] = useState<Record<string, LiveQuote>>({});
-  const [expanded, setExpanded] = useState(true);
   const [openListIds, setOpenListIds] = useState<string[]>(() => {
     try {
       const stored = localStorage.getItem(activeListStorageKey());
@@ -657,63 +686,38 @@ export default function WatchlistsSection() {
     });
   }, [lists]);
 
-  const toggleExpanded = () => {
-    setExpanded((open) => {
-      if (open) {
-        setCreateOpen(false);
-        setCreateName("");
-      }
-      return !open;
-    });
-  };
-
   return (
-    <section className="mt-6 border-t border-[#1F2937] pt-5">
+    <section>
       <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={toggleExpanded}
-          aria-expanded={expanded}
-          aria-controls="watchlists-panel"
-          className="flex min-w-0 flex-1 items-center gap-2 rounded-xl py-1 text-left transition hover:opacity-90"
-        >
-          <span className="grid h-7 w-7 flex-shrink-0 place-items-center rounded-lg bg-emerald-500/15 text-emerald-400">
-            <Star size={13} />
+        <div className="flex min-w-0 flex-1 items-center gap-2 py-1">
+          <span className="grid h-9 w-9 flex-shrink-0 place-items-center rounded-xl bg-emerald-500/15 text-emerald-400">
+            <Star size={16} />
           </span>
-          <h3 className="text-[11px] font-bold uppercase tracking-wide text-[#9CA3AF]">Watchlists</h3>
+          <div className="min-w-0">
+            <h2 className="text-[15px] font-extrabold leading-snug tracking-tight text-white">
+              Watchlists
+            </h2>
+            <p className="text-[12px] font-medium italic leading-snug text-[#9CA3AF]">
+              Saved assets to follow
+            </p>
+          </div>
           <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-extrabold tabular-nums text-emerald-300">
             {totalItems}
           </span>
-        </button>
-        {expanded && (
-          <button
-            type="button"
-            onClick={() => {
-              setCreateOpen(true);
-            }}
-            className="flex flex-shrink-0 items-center gap-1 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1.5 text-[11px] font-bold text-emerald-300 transition hover:border-emerald-500/60 hover:bg-emerald-500/15"
-          >
-            <Plus size={12} />
-            Create List
-          </button>
-        )}
+        </div>
         <button
           type="button"
-          onClick={toggleExpanded}
-          aria-label={expanded ? "Collapse watchlists" : "Expand watchlists"}
-          className="grid h-8 w-8 flex-shrink-0 place-items-center rounded-lg text-[#9CA3AF] transition hover:bg-white/5 hover:text-white"
+          onClick={() => {
+            setCreateOpen(true);
+          }}
+          className="flex flex-shrink-0 items-center gap-1 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1.5 text-[11px] font-bold text-emerald-300 transition hover:border-emerald-500/60 hover:bg-emerald-500/15"
         >
-          {expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+          <Plus size={12} />
+          Create List
         </button>
       </div>
 
-      <div
-        id="watchlists-panel"
-        className={`grid transition-[grid-template-rows] duration-300 ease-in-out ${
-          expanded ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
-        }`}
-      >
-        <div className={`min-h-0 ${expanded ? "overflow-visible" : "overflow-hidden"}`}>
+      <div id="watchlists-panel">
 
       {loading && lists.length === 0 && (
         <p className="mt-3 flex items-center gap-2 text-[11px] font-semibold text-[#9CA3AF]">
@@ -789,14 +793,15 @@ export default function WatchlistsSection() {
               onAddTicker={addTicker}
               onRemoveTicker={removeTicker}
               onDeleteList={removeList}
+              onSelectStock={onSelectStock}
               adding={adding}
               removingItemId={removingItemId}
               deletingList={deletingList}
+              privacyMode={privacyMode}
             />
           ))}
         </div>
       )}
-        </div>
       </div>
     </section>
   );

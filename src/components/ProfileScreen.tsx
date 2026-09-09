@@ -1,6 +1,7 @@
 import {
   BookOpen,
   Calendar,
+  Cake,
   ChevronLeft,
   ChevronRight,
   CreditCard,
@@ -14,13 +15,20 @@ import {
   TrendingUp,
   User,
 } from "lucide-react";
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   saveUserSettings,
   type AuthUser,
   type OnboardingChoices,
   type UserSettings,
 } from "../lib/auth";
+import {
+  ageFromBirthDate,
+  applyAgeToBirthDate,
+  clampAge,
+  minBirthDateISO,
+  todayISODate,
+} from "../lib/age";
 
 type ProfileScreenProps = {
   user: AuthUser;
@@ -149,6 +157,15 @@ export default function ProfileScreen({
   const [personalInfoOpen, setPersonalInfoOpen] = useState(false);
   const [savingPrefs, setSavingPrefs] = useState(false);
   const [prefError, setPrefError] = useState<string | null>(null);
+  const [ageDraft, setAgeDraft] = useState(settings?.age != null ? String(settings.age) : "");
+  const [birthDraft, setBirthDraft] = useState(settings?.birthDate ?? "");
+  const [savingAge, setSavingAge] = useState(false);
+  const [ageError, setAgeError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setAgeDraft(settings?.age != null ? String(settings.age) : "");
+    setBirthDraft(settings?.birthDate ?? "");
+  }, [settings?.age, settings?.birthDate]);
   const initials = (user.name || user.email || "?")
     .split(/\s+/)
     .filter(Boolean)
@@ -184,6 +201,8 @@ export default function ProfileScreen({
         wantsCapitalGrowth: optimistic.wantsCapitalGrowth,
         wantsFinancialLiteracy: optimistic.wantsFinancialLiteracy,
         hasCompletedOnboarding: true,
+        age: optimistic.age ?? null,
+        birthDate: optimistic.birthDate ?? null,
       });
       onSettingsChange(saved);
     } catch (err) {
@@ -192,6 +211,62 @@ export default function ProfileScreen({
     } finally {
       setSavingPrefs(false);
     }
+  };
+
+  const persistAge = async (age: number, birthDate: string) => {
+    if (!settings) return;
+    setAgeError(null);
+    const previous = settings;
+    const optimistic: UserSettings = { ...settings, age, birthDate };
+    onSettingsChange(optimistic);
+    setSavingAge(true);
+    try {
+      const saved = await saveUserSettings({
+        hasActiveInvestments: optimistic.hasActiveInvestments,
+        hasActiveDebts: optimistic.hasActiveDebts,
+        wantsCapitalGrowth: optimistic.wantsCapitalGrowth,
+        wantsFinancialLiteracy: optimistic.wantsFinancialLiteracy,
+        hasCompletedOnboarding: true,
+        age,
+        birthDate,
+      });
+      onSettingsChange(saved);
+    } catch (err) {
+      onSettingsChange(previous);
+      setAgeError(err instanceof Error ? err.message : "Couldn't save your age.");
+    } finally {
+      setSavingAge(false);
+    }
+  };
+
+  const commitBirthDate = (iso: string) => {
+    if (!iso) {
+      setBirthDraft(settings?.birthDate ?? "");
+      return;
+    }
+    const nextAge = ageFromBirthDate(iso);
+    if (nextAge == null) {
+      setAgeError("Enter a valid birth date.");
+      setBirthDraft(settings?.birthDate ?? "");
+      return;
+    }
+    const clamped = clampAge(nextAge);
+    setBirthDraft(iso);
+    setAgeDraft(String(clamped));
+    void persistAge(clamped, iso);
+  };
+
+  const commitAge = (raw: string) => {
+    const parsed = Number(raw.replace(/[^0-9]/g, ""));
+    if (!Number.isFinite(parsed) || raw.trim() === "") {
+      setAgeDraft(settings?.age != null ? String(settings.age) : "");
+      return;
+    }
+    const clamped = clampAge(parsed);
+    const birthDate = applyAgeToBirthDate(clamped, birthDraft || settings?.birthDate);
+    setAgeDraft(String(clamped));
+    setBirthDraft(birthDate);
+    void persistAge(clamped, birthDate);
   };
 
   if (personalInfoOpen) {
@@ -238,6 +313,53 @@ export default function ProfileScreen({
             <span style={styles.rowBody}>
               <span style={styles.rowSubtitle}>Email</span>
               <span style={styles.rowTitle}>{user.email || "—"}</span>
+            </span>
+          </div>
+          <div style={styles.divider} />
+          <div style={styles.detailRow}>
+            <span style={styles.rowIcon}>
+              <Cake size={16} color="#10B981" />
+            </span>
+            <span style={styles.rowBody}>
+              <span style={styles.rowSubtitle}>Age / Birth date</span>
+              <span style={styles.ageFields}>
+                <label style={styles.ageField}>
+                  <span style={styles.ageFieldLabel}>Age</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    aria-label="Age"
+                    value={ageDraft}
+                    placeholder="—"
+                    disabled={savingAge || !settings}
+                    onChange={(e) => setAgeDraft(e.target.value.replace(/[^0-9]/g, "").slice(0, 3))}
+                    onBlur={(e) => commitAge(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                    }}
+                    style={styles.ageInput}
+                  />
+                </label>
+                <label style={styles.ageField}>
+                  <span style={styles.ageFieldLabel}>Birth date</span>
+                  <input
+                    type="date"
+                    aria-label="Birth date"
+                    value={birthDraft}
+                    min={minBirthDateISO()}
+                    max={todayISODate()}
+                    disabled={savingAge || !settings}
+                    onChange={(e) => commitBirthDate(e.target.value)}
+                    style={styles.dateInput}
+                  />
+                </label>
+              </span>
+              <span style={styles.ageHint}>
+                {savingAge
+                  ? "Saving…"
+                  : "Used for retirement projections. Edit anytime."}
+              </span>
+              {ageError ? <span style={styles.prefError}>{ageError}</span> : null}
             </span>
           </div>
           <div style={styles.divider} />
@@ -323,7 +445,7 @@ export default function ProfileScreen({
         <SettingsRow
           icon={<User size={16} color="#10B981" />}
           title="Personal Info"
-          subtitle="Name, email, and account profile"
+          subtitle="Name, email, age, and account profile"
           onClick={() => setPersonalInfoOpen(true)}
         />
         <div style={styles.divider} />
@@ -676,5 +798,53 @@ const styles: Record<string, React.CSSProperties> = {
     margin: "8px 0 0",
     fontSize: 12,
     color: "#FDA4AF",
+  },
+  ageFields: {
+    display: "grid",
+    gridTemplateColumns: "88px 1fr",
+    gap: 8,
+    marginTop: 8,
+    width: "100%",
+  },
+  ageField: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 4,
+    minWidth: 0,
+  },
+  ageFieldLabel: {
+    fontSize: 10,
+    fontWeight: 700,
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
+    color: "#64748B",
+  },
+  ageInput: {
+    width: "100%",
+    background: "#000000",
+    border: "1px solid #1F1F1F",
+    borderRadius: 10,
+    color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: 800,
+    padding: "8px 10px",
+    outline: "none",
+  },
+  dateInput: {
+    width: "100%",
+    background: "#000000",
+    border: "1px solid #1F1F1F",
+    borderRadius: 10,
+    color: "#FFFFFF",
+    fontSize: 13,
+    fontWeight: 700,
+    padding: "8px 10px",
+    outline: "none",
+    colorScheme: "dark",
+  },
+  ageHint: {
+    marginTop: 6,
+    fontSize: 11,
+    color: "#64748B",
   },
 };
