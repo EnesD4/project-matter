@@ -18,6 +18,8 @@ import {
   X,
   XCircle,
 } from "lucide-react";
+import { getStoredUser } from "../lib/auth";
+import { awardGoldCertificateForPhase1 } from "../lib/certificates";
 
 type ModuleId = "cashflow" | "credit" | "debt-battles" | "emergency-fund";
 
@@ -323,7 +325,7 @@ const MODULES: LessonModuleDef[] = [
   },
 ];
 
-type PhaseId = "phase-1" | "phase-2";
+export type PhaseId = "phase-1" | "phase-2" | "phase-3";
 
 type PhaseDef = {
   id: PhaseId;
@@ -334,14 +336,23 @@ type PhaseDef = {
 
 const PHASES: PhaseDef[] = [
   { id: "phase-1", title: "Phase 1: Put Out the Fire", subtitle: "Core Literacy & Debt Basics" },
-  { id: "phase-2", title: "Phase 2: Build Momentum", subtitle: "Coming soon — unlocks after Phase 1", locked: true },
+  { id: "phase-2", title: "Phase 2: Build Momentum", subtitle: "Intermediate strategies — unlocks after Phase 1", locked: true },
+  { id: "phase-3", title: "Phase 3: Mastery Certificate", subtitle: "Advanced strategies & highest certificate", locked: true },
 ];
 
 type Phase = "knowledge" | "q1" | "q1-feedback" | "q2" | "q2-feedback" | "complete";
 
 type Answer = { optionId: string; correct: boolean };
 
-export default function LessonsPhase1() {
+export default function LessonsPhase1({
+  recommendedPhaseId,
+  userId,
+  userName,
+}: {
+  recommendedPhaseId?: PhaseId;
+  userId?: string;
+  userName?: string;
+}) {
   const [completed, setCompleted] = useState<Record<ModuleId, boolean>>({
     cashflow: false,
     credit: false,
@@ -414,7 +425,8 @@ export default function LessonsPhase1() {
     const bonus = correctCount * 10;
     setXp((prev) => prev + activeModule.xpReward + bonus);
     setStreak((prev) => prev + 1);
-    setCompleted((prev) => ({ ...prev, [activeModule.id]: true }));
+    const nextCompleted = { ...completed, [activeModule.id]: true };
+    setCompleted(nextCompleted);
 
     // Auto-advance the accordion to the next module so it becomes the new "active" one.
     const currentIdx = MODULES.findIndex((m) => m.id === activeModule.id);
@@ -422,6 +434,15 @@ export default function LessonsPhase1() {
     setExpandedModuleId(nextModule ? nextModule.id : activeModule.id);
 
     closeModal();
+
+    const phase1Complete = MODULES.every((moduleDef) => nextCompleted[moduleDef.id]);
+    if (phase1Complete) {
+      const user = getStoredUser();
+      awardGoldCertificateForPhase1(
+        userId || user?.id || "anon",
+        userName || user?.name || "Investor"
+      );
+    }
   };
 
   const correctCount = (answer1?.correct ? 1 : 0) + (answer2?.correct ? 1 : 0);
@@ -475,9 +496,15 @@ export default function LessonsPhase1() {
                   {phaseDef.title}
                 </p>
                 <h2 className="mt-1 text-lg font-extrabold tracking-tight text-white">{phaseDef.subtitle}</h2>
+                {recommendedPhaseId === phaseDef.id && (
+                  <span className="mt-1.5 inline-flex rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold text-emerald-300">
+                    Recommended for you
+                  </span>
+                )}
                 {isPhase1 && (
                   <p className="mt-1 text-[11px] text-slate-500">
                     {completedCount} / {MODULES.length} modules completed
+                    {phasePct === 100 ? " · Gold Certificate unlocked" : ""}
                   </p>
                 )}
               </div>
@@ -611,7 +638,9 @@ export default function LessonsPhase1() {
                   })
                 ) : (
                   <p className="py-2 text-center text-[11px] font-semibold text-slate-500">
-                    New modules unlock here once you complete Phase 1. 🚀
+                    {phaseDef.id === "phase-3"
+                      ? "Certification modules unlock here once you complete Phase 2."
+                      : "New modules unlock here once you complete Phase 1. 🚀"}
                   </p>
                 )}
               </div>

@@ -3,11 +3,11 @@ import {
   Bell,
   Check,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
   CircleDollarSign,
   Plus,
   Receipt,
-  ShieldCheck,
   Trash2,
   TrendingDown,
   TrendingUp,
@@ -21,20 +21,41 @@ import { categoryIcon } from "./src/lib/categoryIcons";
 import AuthScreen from "./src/components/AuthScreen";
 import OnboardingScreen from "./src/components/OnboardingScreen";
 import InvestmentScreen, { type Holding } from "./src/components/InvestmentScreen";
-import CashFlowScreen from "./src/components/CashFlowScreen";
+import CashFlowScreen, { SafetyNetSection } from "./src/components/CashFlowScreen";
 import RetirementScreen from "./src/components/RetirementScreen";
-import LessonsPhase1 from "./src/components/LessonsPhase1";
+import LessonsScreen from "./src/components/LessonsScreen";
 import ProfileScreen from "./src/components/ProfileScreen";
+import AchievementBanner from "./src/components/AchievementBanner";
+import CertificateCelebration from "./src/components/CertificateCelebration";
+import { evaluateTrophies } from "./src/lib/achievements";
+import {
+  getRetirementDepositCount,
+  RETIREMENT_UPDATED_EVENT,
+} from "./src/components/RetirementPlanner";
 import {
   clearSession,
+  emptyCashFlow,
+  fetchCashFlow,
   fetchMe,
   getStoredUser,
   getToken,
+  readCashFlowCache,
+  saveCashFlow,
   saveSession,
   saveUserSettings,
+  writeCashFlowCache,
   type AuthUser,
+  type CashFlowExpense,
+  type CashFlowSnapshot,
   type UserSettings,
 } from "./src/lib/auth";
+import { useSafetyNetQuotes } from "./src/hooks/useSafetyNetQuotes";
+import {
+  SAFETY_NET_RECOMMENDED_MONTHS,
+  computeSafetyNetTotals,
+  emptySafetyNet,
+  type SafetyNetConfig,
+} from "./src/lib/safetyNet";
 
 type TabId = "dashboard" | "retirement" | "snowball" | "lessons" | "socrates" | "profile";
 
@@ -115,8 +136,6 @@ function compactMoney(amount: number) {
   return `${sign}$${money(abs)}`;
 }
 
-/** Months of spending the emergency fund should eventually cover. */
-const EMERGENCY_MONTHS = 3;
 const MAX_PAYOFF_MONTHS = 600;
 
 /** Money in is emerald, money out is crimson — used everywhere in the cash flow module. */
@@ -140,7 +159,7 @@ type DebtFormState = { title: string; balance: string; minPayment: string; apr: 
 const EMPTY_DEBT_FORM: DebtFormState = { title: "", balance: "", minPayment: "", apr: "" };
 
 /** One editable line in the monthly spending breakdown. */
-type ExpenseItem = { id: string; label: string; amount: number };
+type ExpenseItem = CashFlowExpense;
 
 type ExpenseFormState = { label: string; amount: string };
 const EMPTY_EXPENSE_FORM: ExpenseFormState = { label: "", amount: "" };
@@ -236,18 +255,34 @@ function nextDebtId() {
   return `debt-${Date.now()}-${debtIdSeed}`;
 }
 
+function cashFlowPayloadKey(snapshot: Pick<CashFlowSnapshot, "monthlyIncome" | "emergencyFund" | "extraPayoff" | "expenses" | "debts" | "safetyNet">) {
+  return JSON.stringify({
+    monthlyIncome: snapshot.monthlyIncome,
+    emergencyFund: snapshot.emergencyFund,
+    extraPayoff: snapshot.extraPayoff,
+    expenses: snapshot.expenses,
+    debts: snapshot.debts,
+    safetyNet: snapshot.safetyNet,
+  });
+}
+
 const App: React.FC = () => {
   const [authUser, setAuthUser] = useState<AuthUser | null>(() => getStoredUser());
   const [authChecking, setAuthChecking] = useState(() => Boolean(getToken()));
   const [userSettings, setUserSettings] = useState<UserSettings | null>(null);
   const [settingsReady, setSettingsReady] = useState(() => !getToken());
-  const [emergencyFund, setEmergencyFund] = useState(0);
+  const [cashFlowBoot] = useState<CashFlowSnapshot>(() =>
+    getToken() ? readCashFlowCache(getStoredUser()?.id) : emptyCashFlow()
+  );
+  const [cashFlowReady, setCashFlowReady] = useState(() => !getToken());
+  const [emergencyFund, setEmergencyFund] = useState(cashFlowBoot.emergencyFund);
+  const [safetyNet, setSafetyNet] = useState<SafetyNetConfig>(cashFlowBoot.safetyNet ?? emptySafetyNet());
   const [question, setQuestion] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [socratesLoading, setSocratesLoading] = useState(false);
   const chatLogRef = useRef<HTMLDivElement | null>(null);
   const askInputRef = useRef<HTMLTextAreaElement | null>(null);
-  const [monthlyIncome, setMonthlyIncome] = useState(0);
+  const [monthlyIncome, setMonthlyIncome] = useState(cashFlowBoot.monthlyIncome);
   const [activeTab, setActiveTab] = useState<TabId>("dashboard");
   const lastContentTabRef = useRef<TabId>("dashboard");
   const [privacyMode, setPrivacyMode] = useState(false);
@@ -255,13 +290,13 @@ const App: React.FC = () => {
   const [retirementBalance, setRetirementBalance] = useState(0);
 
   // Cash Flow & Debt Management module state.
-  const [expenses, setExpenses] = useState<ExpenseItem[]>([]);
+  const [expenses, setExpenses] = useState<ExpenseItem[]>(cashFlowBoot.expenses);
   const [spendingModalOpen, setSpendingModalOpen] = useState(false);
   const [expenseFormOpen, setExpenseFormOpen] = useState(false);
   const [expenseForm, setExpenseForm] = useState<ExpenseFormState>(EMPTY_EXPENSE_FORM);
   const [expenseFormError, setExpenseFormError] = useState("");
-  const [extraPayoff, setExtraPayoff] = useState(0);
-  const [debts, setDebts] = useState<Debt[]>([]);
+  const [extraPayoff, setExtraPayoff] = useState(cashFlowBoot.extraPayoff);
+  const [debts, setDebts] = useState<Debt[]>(cashFlowBoot.debts);
   const [debtFormOpen, setDebtFormOpen] = useState(false);
   const [debtForm, setDebtForm] = useState<DebtFormState>(EMPTY_DEBT_FORM);
   const [debtFormError, setDebtFormError] = useState("");
@@ -304,6 +339,13 @@ const App: React.FC = () => {
         setUserSettings(null);
         setHoldings([]);
         setRetirementBalance(0);
+        setMonthlyIncome(0);
+        setEmergencyFund(0);
+        setSafetyNet(emptySafetyNet());
+        setExtraPayoff(0);
+        setExpenses([]);
+        setDebts([]);
+        setCashFlowReady(true);
       } finally {
         if (!cancelled) {
           setSettingsReady(true);
@@ -314,6 +356,145 @@ const App: React.FC = () => {
 
     return () => {
       cancelled = true;
+    };
+  }, []);
+
+  const cashFlowHydratedJsonRef = useRef(cashFlowPayloadKey(cashFlowBoot));
+
+  const applyCashFlow = (snapshot: CashFlowSnapshot) => {
+    cashFlowHydratedJsonRef.current = cashFlowPayloadKey(snapshot);
+    setMonthlyIncome(snapshot.monthlyIncome);
+    setEmergencyFund(snapshot.emergencyFund);
+    setSafetyNet(snapshot.safetyNet ?? emptySafetyNet());
+    setExtraPayoff(snapshot.extraPayoff);
+    setExpenses(snapshot.expenses);
+    setDebts(snapshot.debts);
+  };
+
+  const cashFlowSnapshot = useMemo<CashFlowSnapshot>(
+    () => ({
+      monthlyIncome,
+      emergencyFund,
+      extraPayoff,
+      expenses,
+      debts,
+      safetyNet,
+      updatedAt: 0,
+    }),
+    [monthlyIncome, emergencyFund, extraPayoff, expenses, debts, safetyNet]
+  );
+  const cashFlowPersistRef = useRef({
+    userId: null as string | null,
+    snapshot: emptyCashFlow(),
+  });
+  cashFlowPersistRef.current = {
+    userId: authUser?.id ?? null,
+    snapshot: cashFlowSnapshot,
+  };
+
+  useEffect(() => {
+    if (!authUser?.id) {
+      applyCashFlow(emptyCashFlow());
+      setCashFlowReady(true);
+      return;
+    }
+
+    let cancelled = false;
+    const cached = readCashFlowCache(authUser.id);
+    applyCashFlow(cached);
+    setCashFlowReady(false);
+
+    (async () => {
+      try {
+        const remote = await fetchCashFlow();
+        if (cancelled) return;
+        const latest = readCashFlowCache(authUser.id);
+        const live = cashFlowPersistRef.current.snapshot;
+        const liveKey = cashFlowPayloadKey(live);
+        const startedKey = cashFlowPayloadKey(cached);
+        const remoteKey = cashFlowPayloadKey(remote);
+        if (liveKey !== startedKey && liveKey !== remoteKey) {
+          const pending: CashFlowSnapshot = { ...live, updatedAt: Date.now() };
+          applyCashFlow(pending);
+          writeCashFlowCache(pending, authUser.id);
+          try {
+            const saved = await saveCashFlow(pending);
+            if (!cancelled) {
+              writeCashFlowCache(
+                { ...pending, updatedAt: saved.updatedAt || pending.updatedAt },
+                authUser.id
+              );
+            }
+          } catch {
+            if (!cancelled) writeCashFlowCache(pending, authUser.id);
+          }
+        } else if (latest.updatedAt > remote.updatedAt) {
+          applyCashFlow(latest);
+          try {
+            const saved = await saveCashFlow(latest);
+            if (!cancelled) {
+              writeCashFlowCache(
+                { ...latest, updatedAt: saved.updatedAt || Date.now() },
+                authUser.id
+              );
+            }
+          } catch {
+            if (!cancelled) writeCashFlowCache(latest, authUser.id);
+          }
+        } else {
+          applyCashFlow(remote);
+          writeCashFlowCache(remote, authUser.id);
+        }
+      } catch {
+        if (!cancelled) applyCashFlow(readCashFlowCache(authUser.id));
+      } finally {
+        if (!cancelled) setCashFlowReady(true);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authUser?.id]);
+
+  useEffect(() => {
+    if (!authUser?.id) return;
+    if (cashFlowPayloadKey(cashFlowSnapshot) === cashFlowHydratedJsonRef.current) return;
+    const next: CashFlowSnapshot = { ...cashFlowSnapshot, updatedAt: Date.now() };
+    writeCashFlowCache(next, authUser.id);
+    if (!cashFlowReady) return;
+    const timer = window.setTimeout(() => {
+      void saveCashFlow(next)
+        .then((saved) => {
+          writeCashFlowCache(
+            { ...next, updatedAt: saved.updatedAt || next.updatedAt },
+            authUser.id
+          );
+        })
+        .catch(() => {
+          // Keep the local cache so a refresh still restores the latest inputs.
+        });
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [cashFlowReady, authUser?.id, cashFlowSnapshot]);
+
+  useEffect(() => {
+    const flush = () => {
+      const { userId, snapshot } = cashFlowPersistRef.current;
+      if (!userId) return;
+      if (cashFlowPayloadKey(snapshot) === cashFlowHydratedJsonRef.current) return;
+      const next: CashFlowSnapshot = { ...snapshot, updatedAt: Date.now() };
+      writeCashFlowCache(next, userId);
+      void saveCashFlow(next).catch(() => {});
+    };
+    const onHidden = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", onHidden);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", onHidden);
     };
   }, []);
 
@@ -376,6 +557,13 @@ const App: React.FC = () => {
     setSettingsReady(true);
     setHoldings([]);
     setRetirementBalance(0);
+    setMonthlyIncome(0);
+    setEmergencyFund(0);
+    setSafetyNet(emptySafetyNet());
+    setExtraPayoff(0);
+    setExpenses([]);
+    setDebts([]);
+    setCashFlowReady(true);
     setMessages([]);
     setActiveTab("dashboard");
   };
@@ -405,10 +593,6 @@ const App: React.FC = () => {
     : DEFICIT_TONE;
   const spendRatio = monthlyIncome > 0 ? Math.min(100, (monthlyExpenses / monthlyIncome) * 100) : 0;
 
-  const emergencyTarget = monthlyExpenses * EMERGENCY_MONTHS;
-  const emergencyTargetPct =
-    emergencyTarget > 0 ? Math.min(100, Math.round((emergencyFund / emergencyTarget) * 100)) : 0;
-  const monthsCovered = monthlyExpenses > 0 ? emergencyFund / monthlyExpenses : 0;
   const avgApr = useMemo(() => {
     if (totalDebt <= 0) return 0;
     return debts.reduce((sum, d) => sum + d.balance * d.apr, 0) / totalDebt;
@@ -451,8 +635,44 @@ const App: React.FC = () => {
     () => holdings.filter((h) => h.kind === "broker").reduce((sum, h) => sum + h.balance, 0),
     [holdings]
   );
+  const { goldPricePerOz, bondPrices, loading: safetyQuotesLoading } = useSafetyNetQuotes(safetyNet);
+  const safetyTotals = useMemo(
+    () =>
+      computeSafetyNetTotals({
+        cash: emergencyFund,
+        portfolioValue: stockHoldingsValue,
+        config: safetyNet,
+        goldPricePerOz,
+        bondPrices,
+      }),
+    [emergencyFund, stockHoldingsValue, safetyNet, goldPricePerOz, bondPrices]
+  );
   const availableCash = brokerCashValue + Math.max(0, emergencyFund);
-  const netWorth = stockHoldingsValue + retirementBalance + availableCash;
+  const netWorth =
+    stockHoldingsValue + retirementBalance + availableCash + safetyTotals.gold + safetyTotals.bonds;
+
+  useEffect(() => {
+    if (!authUser) return;
+    const userId = authUser.id;
+    const refresh = () => {
+      evaluateTrophies({
+        userId,
+        holdings,
+        netWorth,
+        portfolioValue: stockHoldingsValue,
+        retirementDeposits: getRetirementDepositCount(userId),
+        safetyNetValue: safetyTotals.total,
+        monthlyExpenses,
+      });
+    };
+    refresh();
+    window.addEventListener(RETIREMENT_UPDATED_EVENT, refresh);
+    window.addEventListener("storage", refresh);
+    return () => {
+      window.removeEventListener(RETIREMENT_UPDATED_EVENT, refresh);
+      window.removeEventListener("storage", refresh);
+    };
+  }, [authUser, holdings, netWorth, stockHoldingsValue, safetyTotals.total, monthlyExpenses]);
 
   // Live debt context — real debts, so Socrates can answer "how's my debt payoff going?" accurately.
   const debtContext = useMemo(() => {
@@ -511,10 +731,6 @@ const App: React.FC = () => {
     const maxHeight = lineHeight * 5 + paddingY;
     el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`;
   }, [question, activeTab]);
-
-  const contributeEmergency = (amount: number, cap: number) => {
-    setEmergencyFund((prev: number) => Math.max(prev, Math.min(cap, prev + amount)));
-  };
 
   const setExpenseAmount = (id: string, amount: number) => {
     setExpenses((prev) => prev.map((item) => (item.id === id ? { ...item, amount } : item)));
@@ -647,9 +863,7 @@ const App: React.FC = () => {
         .slice(-12)
         .map((msg) => `${msg.sender === "user" ? "User" : "Socrates"}: ${msg.text}`)
         .join("\n");
-      const userPrompt = `${userName}'s live snapshot:\n- Emergency fund: $${money(emergencyFund)} (starter goal $${money(
-        emergencyGoal
-      )}; full ${EMERGENCY_MONTHS}-month goal $${money(emergencyTarget)})\n- Cash flow: ${cashFlowContext}\n- Debt: ${debtContext}\n- Investment portfolio: ${portfolioContext}\n\nConversation:\n${history}\n\nReply to the latest user message. If ${userName} asks about their income, spending, budget, debts, or portfolio balance, answer using the real snapshot data above.`;
+      const userPrompt = `${userName}'s live snapshot:\n- Safety net: $${money(safetyTotals.total)} total liquidity (cash $${money(safetyTotals.cash)}, mapped stocks $${money(safetyTotals.stocks)}, gold $${money(safetyTotals.gold)}, bonds $${money(safetyTotals.bonds)})${monthlyExpenses > 0 ? ` — ${ (safetyTotals.total / monthlyExpenses).toFixed(1)} months of spending` : ""}. Starter cash goal $${money(emergencyGoal)}; recommended ${SAFETY_NET_RECOMMENDED_MONTHS}-month target $${money(monthlyExpenses * SAFETY_NET_RECOMMENDED_MONTHS)}.\n- Cash flow: ${cashFlowContext}\n- Debt: ${debtContext}\n- Investment portfolio: ${portfolioContext}\n\nConversation:\n${history}\n\nReply to the latest user message. If ${userName} asks about their income, spending, budget, debts, safety net, or portfolio balance, answer using the real snapshot data above.`;
 
       if (!apiKey) {
         setMessages((prev) => [...prev, createChatMessage("socrates", SOCRATES_MOCK_REPLY)]);
@@ -709,6 +923,8 @@ const App: React.FC = () => {
   return (
     <div style={styles.page}>
       <style>{css}</style>
+      <AchievementBanner userName={userName} />
+      <CertificateCelebration />
 
       <div style={styles.shell}>
         {HEADER_TABS.includes(activeTab) && (
@@ -838,6 +1054,26 @@ const App: React.FC = () => {
                     {privacyMoney(privacyMode, availableCash)}
                   </span>
                 </li>
+                {safetyTotals.gold > 0 && (
+                  <li style={styles.netWorthRow}>
+                    <span style={styles.netWorthRowLabel}>
+                      <span aria-hidden="true">🪙</span> Gold
+                    </span>
+                    <span style={styles.netWorthRowValue}>
+                      {privacyMoney(privacyMode, safetyTotals.gold)}
+                    </span>
+                  </li>
+                )}
+                {safetyTotals.bonds > 0 && (
+                  <li style={styles.netWorthRow}>
+                    <span style={styles.netWorthRowLabel}>
+                      <span aria-hidden="true">📜</span> Bonds / T-bills
+                    </span>
+                    <span style={styles.netWorthRowValue}>
+                      {privacyMoney(privacyMode, safetyTotals.bonds)}
+                    </span>
+                  </li>
+                )}
               </ul>
             </div>
           </div>
@@ -880,7 +1116,7 @@ const App: React.FC = () => {
         </div>
 
         {activeTab === "snowball" && (
-          <div className="matter-tab-panel" style={styles.tabPanel}>
+          <div className="matter-tab-panel" style={styles.tabPanel} aria-busy={!cashFlowReady}>
             <CashFlowScreen holdings={holdings} privacyMode={privacyMode} />
 
             {/* 1. One panel: earnings in, spendings out, net result. */}
@@ -932,15 +1168,18 @@ const App: React.FC = () => {
                     </span>
                     <p style={styles.flowCellLabel}>Total Spendings</p>
                   </div>
-                  <p style={{ ...styles.flowAmount, color: EXPENSE_RED }}>${money(monthlyExpenses)}</p>
                   <button
                     type="button"
                     onClick={openSpendingModal}
-                    style={styles.detailBtn}
+                    className="matter-spend-trigger"
+                    style={{ ...styles.flowAmount, color: EXPENSE_RED }}
+                    aria-label="Open spending breakdown"
                     aria-haspopup="dialog"
                     aria-expanded={spendingModalOpen}
+                    aria-controls="spending-breakdown-dialog"
                   >
-                    Detaylandır
+                    <span>${money(monthlyExpenses)}</span>
+                    <ChevronRight size={18} strokeWidth={2.5} className="matter-spend-trigger-arrow" aria-hidden />
                   </button>
                   <p style={styles.flowCellHint}>
                     {expenses.length === 0 && totalMinPayment <= 0
@@ -992,6 +1231,7 @@ const App: React.FC = () => {
                 role="presentation"
               >
                 <div
+                  id="spending-breakdown-dialog"
                   className="matter-pop"
                   style={styles.spendingModal}
                   onClick={(e) => e.stopPropagation()}
@@ -1330,50 +1570,19 @@ const App: React.FC = () => {
               </div>
             </section>
 
-            {/* 4. Safety net, sized off the real spending total. */}
-            <section style={styles.moduleSection}>
-              <p style={styles.sectionLabel}>Safety Net</p>
-
-              <article style={styles.toolCard} aria-label="Emergency fund progress">
-                <div style={styles.cardHeadRow}>
-                  <div style={styles.cardHeadIcon}>
-                    <ShieldCheck size={16} />
-                  </div>
-                  <div style={styles.cardHeadGrow}>
-                    <h3 style={styles.cardTitle}>Emergency Fund</h3>
-                    <p style={styles.cardSub}>
-                      Target: {EMERGENCY_MONTHS} months of spending (${money(monthlyExpenses)}/mo)
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => contributeEmergency(100, Math.max(emergencyTarget, emergencyFund))}
-                    aria-label="Add 100 dollars to emergency fund"
-                    style={styles.addChip}
-                  >
-                    <Plus size={13} />
-                    $100
-                  </button>
-                </div>
-
-                <p style={styles.statValue}>
-                  ${money(emergencyFund)}{" "}
-                  <span style={styles.statMuted}>/ ${money(emergencyTarget)}</span>
-                </p>
-                <div style={styles.barTrack}>
-                  <div style={{ ...styles.barFill, width: `${emergencyTargetPct}%` }} />
-                </div>
-                <p style={styles.statHint}>
-                  {emergencyTarget <= 0
-                    ? "Add your spending categories above to set a target."
-                    : emergencyFund >= emergencyTarget
-                    ? `Fully funded — ${EMERGENCY_MONTHS} months of spending covered. 🎉`
-                    : `${emergencyTargetPct}% funded · covers ${monthsCovered.toFixed(1)} months · $${money(
-                        emergencyTarget - emergencyFund
-                      )} to go`}
-                </p>
-              </article>
-            </section>
+            {/* 4. Multi-asset safety net, sized off the real spending total. */}
+            <SafetyNetSection
+              holdings={holdings}
+              monthlyExpenses={monthlyExpenses}
+              cash={emergencyFund}
+              onCashChange={setEmergencyFund}
+              config={safetyNet}
+              onConfigChange={setSafetyNet}
+              goldPricePerOz={goldPricePerOz}
+              bondPrices={bondPrices}
+              quotesLoading={safetyQuotesLoading}
+              privacyMode={privacyMode}
+            />
           </div>
         )}
 
@@ -1385,7 +1594,7 @@ const App: React.FC = () => {
           }}
           aria-hidden={activeTab !== "lessons"}
         >
-          <LessonsPhase1 />
+          <LessonsScreen active={activeTab === "lessons"} />
         </div>
 
         {activeTab === "socrates" && (
@@ -1477,6 +1686,11 @@ const App: React.FC = () => {
             settings={userSettings}
             onSettingsChange={setUserSettings}
             onLogout={handleLogout}
+            holdings={holdings}
+            netWorth={netWorth}
+            portfolioValue={stockHoldingsValue}
+            safetyNetValue={safetyTotals.total}
+            monthlyExpenses={monthlyExpenses}
           />
         </div>
 
@@ -2108,32 +2322,28 @@ const styles: Record<string, React.CSSProperties> = {
     outline: "none",
   },
   flowAmount: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 4,
+    width: "100%",
     margin: "9px 0 0",
     fontSize: 24,
     fontWeight: 800,
     letterSpacing: "-0.03em",
-    padding: "9px 0",
+    padding: "8px 2px 8px 0",
     lineHeight: 1,
+    background: "transparent",
+    border: "1px solid transparent",
+    borderRadius: 12,
+    cursor: "pointer",
+    textAlign: "left",
+    fontFamily: "inherit",
   },
   flowCellHint: {
     margin: "8px 0 0",
     fontSize: 11,
     color: "#64748B",
     fontWeight: 600,
-  },
-  detailBtn: {
-    display: "inline-flex",
-    alignItems: "center",
-    marginTop: 8,
-    background: "rgba(16, 185, 129, 0.12)",
-    color: "#6EE7B7",
-    border: "1px solid rgba(16, 185, 129, 0.4)",
-    borderRadius: 8,
-    padding: "5px 10px",
-    fontSize: 11,
-    fontWeight: 800,
-    letterSpacing: "0.02em",
-    cursor: "pointer",
   },
   modalOverlay: {
     position: "fixed",

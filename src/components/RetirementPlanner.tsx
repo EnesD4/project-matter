@@ -4,15 +4,14 @@ import {
   Calendar,
   CheckCircle2,
   ChevronLeft,
-  Coins,
   ExternalLink,
   HelpCircle,
   Landmark,
+  Pencil,
   Plus,
   RefreshCw,
   Sparkles,
   Target,
-  TrendingUp,
   Undo2,
   X,
 } from "lucide-react";
@@ -36,6 +35,8 @@ const LOOKAHEAD_AGE = 80;
 const DEFAULT_RETURN = 8;
 const AGE_PRESETS = [18, 21, 25, 30, 35, 40, 50];
 const ON_TRACK_TOLERANCE = 0.05;
+
+export const RETIREMENT_UPDATED_EVENT = "matterpro:retirement-updated";
 
 type AccountType = "401k" | "roth" | "traditional";
 type SetupStep = 1 | 2 | 3 | 4;
@@ -534,9 +535,15 @@ function loadPlan(userId: string): StoredPlan {
 function writePlan(userId: string, plan: StoredPlan) {
   try {
     localStorage.setItem(storageKey(userId), JSON.stringify(plan));
+    window.dispatchEvent(new Event(RETIREMENT_UPDATED_EVENT));
   } catch {
     // ignore quota / private-mode failures
   }
+}
+
+export function getRetirementDepositCount(userId: string): number {
+  if (!userId) return 0;
+  return loadPlan(userId).contributions?.length ?? 0;
 }
 
 function MoneyField({
@@ -545,12 +552,16 @@ function MoneyField({
   value,
   onChange,
   placeholder = "0",
+  suffix,
+  autoFocus,
 }: {
   id: string;
   label: string;
   value: number;
   onChange: (next: number) => void;
   placeholder?: string;
+  suffix?: string;
+  autoFocus?: boolean;
 }) {
   const [focused, setFocused] = useState(false);
   const [draft, setDraft] = useState(value === 0 ? "" : formatCurrencyInput(String(value)));
@@ -568,6 +579,7 @@ function MoneyField({
           id={id}
           type="text"
           inputMode="decimal"
+          autoFocus={autoFocus}
           value={draft}
           placeholder={placeholder}
           onFocus={() => setFocused(true)}
@@ -584,6 +596,7 @@ function MoneyField({
           }}
           className="w-full bg-transparent text-xl font-extrabold tabular-nums text-white outline-none placeholder:text-[#334155]"
         />
+        {suffix ? <span className="flex-shrink-0 text-[12px] font-bold text-[#64748B]">{suffix}</span> : null}
       </div>
     </label>
   );
@@ -750,6 +763,86 @@ function ContributionModal({
   );
 }
 
+function MonthlyPaymentModal({
+  current,
+  onClose,
+  onSave,
+}: {
+  current: number;
+  onClose: () => void;
+  onSave: (amount: number) => void;
+}) {
+  const [amount, setAmount] = useState(current);
+
+  const save = () => {
+    onSave(clamp(amount, 0, 20_000));
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-[80] flex items-end justify-center bg-black/70 p-4 sm:items-center"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="monthly-payment-title"
+      onClick={onClose}
+    >
+      <form
+        className="matter-pop w-full max-w-md rounded-2xl border border-[#1F2937] bg-[#0A0A0A] p-4 shadow-[0_24px_60px_rgba(0,0,0,0.55)]"
+        onClick={(e) => e.stopPropagation()}
+        onSubmit={(e) => {
+          e.preventDefault();
+          save();
+        }}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-[11px] font-extrabold uppercase tracking-[0.14em] text-emerald-300/80">
+              Monthly contribution
+            </p>
+            <h3 id="monthly-payment-title" className="mt-1 text-[16px] font-extrabold tracking-tight text-white">
+              Enter your new monthly payment
+            </h3>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="grid h-8 w-8 place-items-center rounded-lg border border-[#1F1F1F] text-[#9CA3AF] hover:text-white"
+            aria-label="Close"
+          >
+            <X size={14} />
+          </button>
+        </div>
+        <p className="mt-2 text-[12px] font-medium leading-relaxed text-[#9CA3AF]">
+          This updates your target contribution and recalculates the retirement projection immediately.
+        </p>
+        <div className="mt-4">
+          <MoneyField
+            id="retire-monthly-payment"
+            label="New monthly payment"
+            value={amount}
+            onChange={(next) => setAmount(clamp(next, 0, 20_000))}
+            suffix="/mo"
+            autoFocus
+          />
+        </div>
+        <button
+          type="submit"
+          className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-[#10B981] px-4 py-3 text-sm font-extrabold text-[#042F2E]"
+        >
+          Save {formatDollars(amount)} / month
+        </button>
+        <button
+          type="button"
+          onClick={onClose}
+          className="mt-2 w-full rounded-xl px-4 py-2 text-[12px] font-bold text-[#9CA3AF] hover:text-white"
+        >
+          Cancel
+        </button>
+      </form>
+    </div>
+  );
+}
+
 function ProviderLogo({ domain, color, name }: { domain: string; color: string; name: string }) {
   const [failed, setFailed] = useState(false);
   return (
@@ -855,6 +948,7 @@ export default function RetirementPlanner({
   const [accountType, setAccountType] = useState<AccountType>(() => loadPlan(userId).accountType);
   const [guideOpen, setGuideOpen] = useState(false);
   const [contributeOpen, setContributeOpen] = useState(false);
+  const [monthlyEditOpen, setMonthlyEditOpen] = useState(false);
   const [stepError, setStepError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -958,9 +1052,8 @@ export default function RetirementPlanner({
   const totalWealth = final?.value ?? 0;
   const totalContributed = final?.contributed ?? 0;
   const totalInterest = final?.interest ?? 0;
-  const yearsOut = Math.max(0, RETIRE_AGE - currentAge);
-  const freedomPct = clamp((totalWealth / FREEDOM_NUMBER) * 100, 0, 100);
-  const contributedPct = totalWealth > 0 ? clamp((totalContributed / totalWealth) * 100, 0, 100) : 0;
+  const contributedPct = totalWealth > 0 ? clamp((totalContributed / totalWealth) * 100, 0, 100) : 100;
+  const growthPct = 100 - contributedPct;
 
   const xTicks = useMemo(() => {
     if (chartData.length <= 1) return chartData.map((p) => p.age);
@@ -1074,6 +1167,12 @@ export default function RetirementPlanner({
     setStep(1);
     setStepError(null);
     setEditing(true);
+  };
+
+  const commitMonthly = (next: number) => {
+    const value = clamp(next, 0, 20_000);
+    setMonthly(value);
+    setPlan((prev) => ({ ...prev, monthly: value }));
   };
 
   const addContribution = (amount: number) => {
@@ -1217,6 +1316,7 @@ export default function RetirementPlanner({
                   label="Monthly contribution"
                   value={monthly}
                   onChange={(next) => setMonthly(clamp(next, 0, 20_000))}
+                  suffix="/mo"
                 />
               </div>
             </div>
@@ -1371,138 +1471,153 @@ export default function RetirementPlanner({
 
           <div className="mt-4 rounded-2xl border border-[#1F1F1F] bg-[#0A0A0A] px-4 py-4">
             <p className="text-[10px] font-extrabold uppercase tracking-[0.14em] text-[#64748B]">
-              Estimated wealth at {RETIRE_AGE}
+              Monthly Investment Contribution
             </p>
-            <p className="mt-1 text-3xl font-extrabold tracking-tight text-white tabular-nums">
-              {formatWealth(totalWealth)}
+            <p className="mt-1 text-[12px] font-medium text-[#9CA3AF]">
+              Change this anytime — the projection updates immediately.
             </p>
-            <p className="mt-1 text-[11px] font-semibold text-[#9CA3AF]">
-              {yearsOut} {yearsOut === 1 ? "year" : "years"} of compounding · {selectedAccount.label} · {annualReturn}% return
-            </p>
-
-            <div className="mt-3">
-              <div className="mb-1.5 flex items-center justify-between gap-2">
-                <span className="flex items-center gap-1 text-[10px] font-extrabold uppercase tracking-wide text-[#9CA3AF]">
-                  <Target size={11} className="text-emerald-400" />
-                  Freedom number $1M
-                </span>
-                <span className="text-[11px] font-extrabold tabular-nums text-emerald-300">
-                  {Math.round(freedomPct)}%
-                </span>
-              </div>
-              <div className="h-2 overflow-hidden rounded-full bg-[#1F1F1F]">
-                <div
-                  className="h-full rounded-full bg-[#10B981] transition-[width] duration-300"
-                  style={{ width: `${freedomPct}%` }}
-                />
-              </div>
-            </div>
+            <button
+              type="button"
+              onClick={() => setMonthlyEditOpen(true)}
+              className="mx-auto mt-3 flex w-fit items-center justify-center gap-2 rounded-full border border-[#1F1F1F] bg-black px-3.5 py-2 text-[13px] font-extrabold transition hover:border-emerald-500/40 hover:bg-emerald-500/[0.04] focus-visible:border-emerald-500/60 focus-visible:outline-none"
+              aria-haspopup="dialog"
+              aria-expanded={monthlyEditOpen}
+              aria-label={
+                plan.monthly > 0
+                  ? `Edit monthly contribution, currently ${formatDollars(plan.monthly)} per month`
+                  : "Edit monthly contribution"
+              }
+            >
+              {plan.monthly > 0 ? (
+                <>
+                  <span className="tabular-nums tracking-tight text-white">{formatDollars(plan.monthly)}</span>
+                  <span className="font-bold text-[#64748B]">/ month</span>
+                </>
+              ) : (
+                <span className="text-white">Edit Contribution</span>
+              )}
+              <Pencil size={13} className="text-emerald-300" aria-hidden="true" />
+            </button>
           </div>
 
-          <div className="mt-4 rounded-2xl border border-[#1F1F1F] bg-[#0A0A0A] px-4 py-4">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-[10px] font-extrabold uppercase tracking-[0.14em] text-[#64748B]">
-                  This Month&apos;s Retirement Target
-                </p>
-                <p className="mt-1 text-[13px] font-semibold text-[#E2E8F0]">
-                  Target: {formatDollars(plan.monthly)}{" "}
-                  <span className="text-[#64748B]">|</span> Deposited so far: {formatDollars(thisMonthDeposited)}
-                </p>
+          <div className="mt-3 rounded-2xl border border-[#1F1F1F] bg-[#0A0A0A] px-4 py-4">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[10px] font-extrabold uppercase tracking-[0.14em] text-[#64748B]">
+                Monthly Retirement Target
+              </p>
+              <div className="flex items-center gap-2">
+                <span className="text-[12px] font-extrabold tabular-nums text-emerald-300">{Math.round(monthProgress)}%</span>
+                {lastContribution ? (
+                  <button
+                    type="button"
+                    onClick={undoLastContribution}
+                    className="grid h-8 w-8 flex-shrink-0 place-items-center rounded-lg border border-[#1F1F1F] text-[#9CA3AF] hover:text-white"
+                    aria-label="Undo last contribution"
+                  >
+                    <Undo2 size={14} />
+                  </button>
+                ) : null}
               </div>
-              <span className="text-[12px] font-extrabold tabular-nums text-emerald-300">{Math.round(monthProgress)}%</span>
             </div>
-            <div className="mt-3 h-2.5 overflow-hidden rounded-full bg-[#1F1F1F]" aria-hidden="true">
-              <div
-                className="h-full rounded-full bg-[#10B981] transition-[width] duration-300"
-                style={{ width: `${monthProgress}%` }}
-              />
-            </div>
+            <button
+              type="button"
+              onClick={() => setContributeOpen(true)}
+              className="mt-3 w-full rounded-xl border border-[#1F1F1F] bg-black px-3.5 py-3 text-left transition hover:border-emerald-500/40 hover:bg-emerald-500/[0.04] focus-visible:border-emerald-500/60 focus-visible:outline-none"
+              aria-label={`Log a manual contribution. Monthly target ${formatDollars(plan.monthly)}.`}
+            >
+              <div className="flex items-end justify-between gap-3">
+                <p className="text-3xl font-extrabold tabular-nums tracking-tight text-white">
+                  {formatDollars(plan.monthly)}
+                  <span className="ml-1 text-[12px] font-bold text-[#64748B]">/mo</span>
+                </p>
+                <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-300">
+                  <Plus size={12} />
+                  Tap to log
+                </span>
+              </div>
+              <p className="mt-1 text-[12px] font-semibold text-[#9CA3AF]">
+                Deposited so far: {formatDollars(thisMonthDeposited)}
+                {thisMonthCount > 0
+                  ? ` · ${thisMonthCount} ${thisMonthCount === 1 ? "deposit" : "deposits"}`
+                  : ""}
+              </p>
+            </button>
             <p className="mt-2 text-[11px] font-medium text-[#9CA3AF]">
               {thisMonthRemaining > 0
                 ? `${formatDollars(thisMonthRemaining)} left to stay on this month's pace`
                 : plan.monthly > 0
                   ? "Monthly target hit — nice work."
-                  : "Set a monthly target to start pacing."}
-              {thisMonthCount > 0 ? ` · ${thisMonthCount} ${thisMonthCount === 1 ? "deposit" : "deposits"} logged` : ""}
+                  : "Set a monthly contribution above to start pacing."}
             </p>
-            <div className="mt-3 flex gap-2">
-              <button
-                type="button"
-                onClick={() => setContributeOpen(true)}
-                className="flex h-11 min-w-0 flex-1 items-center justify-center gap-2 rounded-xl bg-[#10B981] px-3 text-sm font-extrabold text-[#042F2E]"
-              >
-                <Plus size={16} />
-                Add Manual Contribution
-              </button>
-              {lastContribution ? (
-                <button
-                  type="button"
-                  onClick={undoLastContribution}
-                  className="grid h-11 w-11 flex-shrink-0 place-items-center rounded-xl border border-[#1F1F1F] text-[#9CA3AF] hover:text-white"
-                  aria-label="Undo last contribution"
-                >
-                  <Undo2 size={15} />
-                </button>
-              ) : null}
-            </div>
           </div>
 
-          <div className="mt-4 grid grid-cols-2 gap-2">
-            <div className="rounded-2xl border border-[#1F1F1F] bg-[#0A0A0A] p-3">
-              <span className="grid h-7 w-7 place-items-center rounded-lg bg-white/5 text-[#9CA3AF]">
-                <Coins size={14} />
-              </span>
-              <p className="mt-2 text-[10px] font-extrabold uppercase tracking-wide text-[#64748B]">
-                You contribute
-              </p>
-              <p className="mt-0.5 text-lg font-extrabold tabular-nums tracking-tight text-white">
-                {formatWealth(totalContributed)}
-              </p>
-            </div>
-            <div className="rounded-2xl border border-emerald-500/25 bg-emerald-500/10 p-3">
-              <span className="grid h-7 w-7 place-items-center rounded-lg bg-emerald-500/15 text-emerald-400">
-                <TrendingUp size={14} />
-              </span>
-              <p className="mt-2 text-[10px] font-extrabold uppercase tracking-wide text-emerald-300/80">
-                Compound interest
-              </p>
-              <p className="mt-0.5 text-lg font-extrabold tabular-nums tracking-tight text-emerald-300">
-                {formatWealth(totalInterest)}
-              </p>
-            </div>
-          </div>
-
-          <div className="mt-3">
-            <div className="mb-1.5 flex items-center justify-between gap-2 text-[10px] font-bold text-[#9CA3AF]">
-              <span>Your dollars</span>
-              <span className="text-emerald-300">Market growth</span>
-            </div>
-            <div className="flex h-2.5 overflow-hidden rounded-full bg-[#1F1F1F]">
-              <div className="h-full bg-[#334155] transition-[width] duration-300" style={{ width: `${contributedPct}%` }} />
-              <div className="h-full bg-[#10B981] transition-[width] duration-300" style={{ width: `${100 - contributedPct}%` }} />
-            </div>
-          </div>
-
-          <div className="mt-4">
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <p className="text-[10px] font-extrabold uppercase tracking-wide text-[#9CA3AF]">
-                Portfolio growth by age
-              </p>
-              <div className="flex items-center gap-3 text-[10px] font-bold text-[#9CA3AF]">
-                <span className="inline-flex items-center gap-1.5">
-                  <span className="h-px w-3.5 border-t-[1.5px] border-dashed border-[#94A3B8]" />
-                  Target
-                </span>
-                <span className="inline-flex items-center gap-1.5 text-emerald-300">
-                  <span className="h-[2px] w-3.5 rounded-full bg-[#10B981]" />
-                  Actual
-                </span>
+          <div className="mt-4 rounded-2xl border border-[#1F1F1F] bg-[#0A0A0A] px-4 py-4">
+            <p className="text-[12px] font-semibold leading-snug text-[#9CA3AF]">
+              Estimated Wealth at Age {RETIRE_AGE}
+            </p>
+            <p className="mt-1 text-4xl font-extrabold tracking-tight text-white tabular-nums sm:text-5xl">
+              {formatWealth(totalWealth)}
+            </p>
+            <div className="mt-3 grid grid-cols-2 gap-3">
+              <div>
+                <p className="flex items-center gap-1.5 text-[12px] font-bold leading-snug text-[#94A3B8]">
+                  <span className="h-2 w-2 flex-shrink-0 rounded-full bg-[#64748B]" aria-hidden="true" />
+                  Principal (You Contribute)
+                </p>
+                <p className="mt-0.5 text-[15px] font-extrabold tabular-nums tracking-tight text-white sm:text-base">
+                  {formatWealth(totalContributed)}
+                </p>
+              </div>
+              <div className="text-right">
+                <p className="inline-flex items-center justify-end gap-1.5 text-[12px] font-bold leading-snug text-emerald-300/90">
+                  Compound Growth
+                  <span className="h-2 w-2 flex-shrink-0 rounded-full bg-[#10B981]" aria-hidden="true" />
+                </p>
+                <p className="mt-0.5 text-[15px] font-extrabold tabular-nums tracking-tight text-emerald-300 sm:text-base">
+                  +{formatWealth(totalInterest)}
+                </p>
               </div>
             </div>
-            <div className="h-44 -mx-1 sm:h-48">
-              <ResponsiveContainer width="100%" height="100%">
-                <ComposedChart data={chartData} margin={{ top: 8, right: 8, bottom: 4, left: 0 }}>
+            <div className="mt-3">
+              <div className="mb-1.5 flex items-center justify-between gap-2 text-[10px] font-extrabold uppercase tracking-wide text-[#9CA3AF]">
+                <span>{Math.round(contributedPct)}% you contribute</span>
+                <span className="text-emerald-300">{Math.round(growthPct)}% compound</span>
+              </div>
+              <div
+                className="flex h-2.5 overflow-hidden rounded-full bg-[#1F1F1F]"
+                role="img"
+                aria-label={`Principal ${Math.round(contributedPct)} percent, compound growth ${Math.round(growthPct)} percent`}
+              >
+                <div
+                  className="h-full bg-[#334155] transition-[width] duration-300"
+                  style={{ width: `${contributedPct}%` }}
+                />
+                <div
+                  className="h-full bg-[#10B981] transition-[width] duration-300"
+                  style={{ width: `${growthPct}%` }}
+                />
+              </div>
+            </div>
+
+            <div className="mt-4 border-t border-[#1F1F1F] pt-4">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <p className="text-[10px] font-extrabold uppercase tracking-wide text-[#9CA3AF]">
+                  Portfolio growth by age
+                </p>
+                <div className="flex items-center gap-3 text-[10px] font-bold text-[#9CA3AF]">
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="h-px w-3.5 border-t-[1.5px] border-dashed border-[#94A3B8]" />
+                    Target
+                  </span>
+                  <span className="inline-flex items-center gap-1.5 text-emerald-300">
+                    <span className="h-[2px] w-3.5 rounded-full bg-[#10B981]" />
+                    Actual
+                  </span>
+                </div>
+              </div>
+              <div className="h-44 -mx-1 sm:h-48">
+                <ResponsiveContainer width="100%" height="100%">
+                  <ComposedChart data={chartData} margin={{ top: 8, right: 8, bottom: 4, left: 0 }}>
                   <defs>
                     <linearGradient id="retirementAreaGradient" x1="0" y1="0" x2="0" y2="1">
                       <stop offset="0%" stopColor={EMERALD} stopOpacity={0.38} />
@@ -1558,8 +1673,9 @@ export default function RetirementPlanner({
                     animationDuration={400}
                     activeDot={{ r: 5, fill: EMERALD, stroke: "#000000", strokeWidth: 2 }}
                   />
-                </ComposedChart>
-              </ResponsiveContainer>
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </div>
             </div>
           </div>
 
@@ -1601,6 +1717,17 @@ export default function RetirementPlanner({
           account={plan.accountType}
           onClose={() => setContributeOpen(false)}
           onSave={addContribution}
+        />
+      ) : null}
+
+      {monthlyEditOpen ? (
+        <MonthlyPaymentModal
+          current={plan.monthly}
+          onClose={() => setMonthlyEditOpen(false)}
+          onSave={(next) => {
+            commitMonthly(next);
+            setMonthlyEditOpen(false);
+          }}
         />
       ) : null}
     </article>

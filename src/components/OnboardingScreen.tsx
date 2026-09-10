@@ -70,7 +70,7 @@ const WALKTHROUGH_META: Array<{
 function walkthroughLine(step: WalkthroughStep, answers: OnboardingChoices): string {
   if (step === 0) {
     return answers.hasActiveInvestments
-      ? "Add your assets, review allocation, and follow stocks you don't own yet in Watchlist — just below Holdings."
+      ? "Add your assets, review allocation, and follow stocks you don't own yet in Watchlist — just below Connect Broker."
       : "Start with paper trading in Lessons or build your first portfolio when ready!";
   }
   if (step === 1) {

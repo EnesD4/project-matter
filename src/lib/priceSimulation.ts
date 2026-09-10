@@ -6,19 +6,23 @@
  * (Yahoo throttle, network error, unknown ticker) so the UI never goes blank.
  */
 
-export type RangeOption = "1D" | "1W" | "1M" | "1Y" | "ALL";
+export type RangeOption = "1D" | "1W" | "1M" | "YTD" | "1Y" | "ALL";
 
-export const RANGE_OPTIONS: RangeOption[] = ["1D", "1W", "1M", "1Y", "ALL"];
+export const RANGE_OPTIONS: RangeOption[] = ["1D", "1W", "1M", "YTD", "1Y", "ALL"];
 
 export type SeriesPoint = {
   t: number;
   label: string;
   value: number;
+  timestamp?: number;
   open?: number;
   high?: number;
   low?: number;
   close?: number;
   volume?: number;
+  portfolioValue?: number;
+  portfolioPct?: number;
+  spPct?: number;
 };
 
 export type ChartCandle = {
@@ -36,7 +40,7 @@ export type DayAnchors = { open: number; high: number; low: number };
 
 const NY_TZ = "America/New_York";
 
-function formatChartLabel(ms: number, range: RangeOption): string {
+export function formatChartLabel(ms: number, range: RangeOption): string {
   const date = new Date(ms);
   if (range === "1D") {
     return new Intl.DateTimeFormat("en-US", {
@@ -55,7 +59,7 @@ function formatChartLabel(ms: number, range: RangeOption): string {
       hour12: true,
     }).format(date);
   }
-  if (range === "1M" || range === "1Y") {
+  if (range === "1M" || range === "1Y" || range === "YTD") {
     return new Intl.DateTimeFormat("en-US", {
       timeZone: NY_TZ,
       month: "short",
@@ -75,6 +79,7 @@ export function chartPointsToSeries(points: ChartCandle[], range: RangeOption): 
     .filter((p) => Number.isFinite(p.price) && p.price > 0 && Number.isFinite(p.timestamp))
     .map((p, i) => ({
       t: i,
+      timestamp: p.timestamp,
       label: formatChartLabel(p.timestamp, range),
       value: p.price,
       open: p.open,
@@ -136,6 +141,7 @@ type RangeShape = { points: number; dailyVolPct: number; driftPct: number };
 const RANGE_SHAPE: Record<WalkRange, RangeShape> = {
   "1W": { points: 7, dailyVolPct: 1.1, driftPct: 0.4 },
   "1M": { points: 22, dailyVolPct: 1.4, driftPct: 1.2 },
+  YTD: { points: 40, dailyVolPct: 1.8, driftPct: 4 },
   "1Y": { points: 52, dailyVolPct: 2.6, driftPct: 6 },
   ALL: { points: 90, dailyVolPct: 2.9, driftPct: 12 },
 };
@@ -149,7 +155,7 @@ function labelForWalkPoint(range: WalkRange, index: number, total: number): stri
     return WEEKDAY_LABELS[index % 7];
   }
 
-  if (range === "1M") {
+  if (range === "1M" || range === "YTD") {
     const daysAgo = last - index;
     if (daysAgo === 0) return "Now";
     const d = new Date();

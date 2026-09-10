@@ -1,6 +1,6 @@
 import YahooFinance from 'yahoo-finance2';
 
-export type ChartRange = '1D' | '1W' | '1M' | '1Y' | 'ALL';
+export type ChartRange = '1D' | '1W' | '1M' | 'YTD' | '1Y' | 'ALL';
 export type YahooInterval = '1m' | '15m' | '1d' | '1wk' | '1mo';
 
 export type ChartPoint = {
@@ -102,12 +102,13 @@ type YahooQuoteSummaryRaw = {
   } | null;
 };
 
-const RANGE_OPTIONS: ChartRange[] = ['1D', '1W', '1M', '1Y', 'ALL'];
+const RANGE_OPTIONS: ChartRange[] = ['1D', '1W', '1M', 'YTD', '1Y', 'ALL'];
 
 const RANGE_INTERVAL: Record<ChartRange, YahooInterval> = {
   '1D': '1m',
   '1W': '15m',
   '1M': '1d',
+  YTD: '1d',
   '1Y': '1wk',
   ALL: '1mo',
 };
@@ -116,6 +117,7 @@ const CHART_TTL_MS: Record<ChartRange, number> = {
   '1D': 30_000,
   '1W': 60_000,
   '1M': 5 * 60_000,
+  YTD: 5 * 60_000,
   '1Y': 5 * 60_000,
   ALL: 10 * 60_000,
 };
@@ -343,6 +345,9 @@ function period1For(range: ChartRange): Date {
     d.setMonth(d.getMonth() - 1);
     return d;
   }
+  if (range === 'YTD') {
+    return new Date(new Date().getFullYear(), 0, 1);
+  }
   if (range === '1Y') {
     const d = new Date();
     d.setFullYear(d.getFullYear() - 1);
@@ -407,6 +412,7 @@ async function fetchFinnhubChart(symbol: string, range: ChartRange): Promise<Cha
     '1D': '1',
     '1W': '15',
     '1M': 'D',
+    YTD: 'D',
     '1Y': 'W',
     ALL: 'M',
   };

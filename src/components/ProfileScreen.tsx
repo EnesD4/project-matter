@@ -29,12 +29,25 @@ import {
   minBirthDateISO,
   todayISODate,
 } from "../lib/age";
+import { evaluateTrophies, type Trophy } from "../lib/achievements";
+import {
+  getRetirementDepositCount,
+  RETIREMENT_UPDATED_EVENT,
+} from "./RetirementPlanner";
+import type { Holding } from "./InvestmentPortfolioCard";
+import CertificatesSection from "./CertificatesSection";
+import TrophyCabinet from "./TrophyCabinet";
 
 type ProfileScreenProps = {
   user: AuthUser;
   settings: UserSettings | null;
   onSettingsChange: (settings: UserSettings) => void;
   onLogout: () => void;
+  holdings: Holding[];
+  netWorth: number;
+  portfolioValue: number;
+  safetyNetValue?: number;
+  monthlyExpenses?: number;
 };
 
 const PREFERENCE_ROWS: Array<{
@@ -152,6 +165,11 @@ export default function ProfileScreen({
   settings,
   onSettingsChange,
   onLogout,
+  holdings,
+  netWorth,
+  portfolioValue,
+  safetyNetValue = 0,
+  monthlyExpenses = 0,
 }: ProfileScreenProps) {
   const [biometricEnabled, setBiometricEnabled] = useState(false);
   const [personalInfoOpen, setPersonalInfoOpen] = useState(false);
@@ -161,11 +179,35 @@ export default function ProfileScreen({
   const [birthDraft, setBirthDraft] = useState(settings?.birthDate ?? "");
   const [savingAge, setSavingAge] = useState(false);
   const [ageError, setAgeError] = useState<string | null>(null);
+  const [trophies, setTrophies] = useState<Trophy[]>([]);
 
   useEffect(() => {
     setAgeDraft(settings?.age != null ? String(settings.age) : "");
     setBirthDraft(settings?.birthDate ?? "");
   }, [settings?.age, settings?.birthDate]);
+
+  useEffect(() => {
+    const refresh = () => {
+      setTrophies(
+        evaluateTrophies({
+          userId: user.id,
+          holdings,
+          netWorth,
+          portfolioValue,
+          retirementDeposits: getRetirementDepositCount(user.id),
+          safetyNetValue,
+          monthlyExpenses,
+        })
+      );
+    };
+    refresh();
+    window.addEventListener(RETIREMENT_UPDATED_EVENT, refresh);
+    window.addEventListener("storage", refresh);
+    return () => {
+      window.removeEventListener(RETIREMENT_UPDATED_EVENT, refresh);
+      window.removeEventListener("storage", refresh);
+    };
+  }, [user.id, holdings, netWorth, portfolioValue, safetyNetValue, monthlyExpenses]);
   const initials = (user.name || user.email || "?")
     .split(/\s+/)
     .filter(Boolean)
@@ -426,6 +468,9 @@ export default function ProfileScreen({
           <span style={styles.planBadge}>Free Plan</span>
         </div>
       </section>
+
+      <CertificatesSection userId={user.id} />
+      <TrophyCabinet trophies={trophies} />
 
       {/* Currency lock */}
       <section style={styles.card} aria-label="Currency">

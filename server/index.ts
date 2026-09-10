@@ -7,6 +7,7 @@ import authRoutes from './routes/auth';
 import portfolioRoutes from './routes/portfolio';
 import userRoutes from './routes/user';
 import watchlistRoutes from './routes/watchlists';
+import cashFlowRoutes from './routes/cashFlow';
 import {
   fetchDividendDetailsMany,
   fetchStockChart,
@@ -29,6 +30,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/portfolio', portfolioRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/watchlists', watchlistRoutes);
+app.use('/api/cash-flow', cashFlowRoutes);
 
 type MarketNewsItem = {
   headline?: string;

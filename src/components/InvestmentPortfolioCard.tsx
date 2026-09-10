@@ -19,7 +19,8 @@ import {
 } from "lucide-react";
 import {
   Area,
-  AreaChart,
+  ComposedChart,
+  Line,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -36,11 +37,24 @@ import {
   type PortfolioApiItem,
 } from "../lib/auth";
 import {
+  buildBenchmarkChartData,
+  canonicalTimestamps,
+  fetchChartCandles,
+  fetchSp500Candles,
+  formatSignedPct,
+  PORTFOLIO_LINE,
+  pricesOnTimestamps,
+  reconstructPortfolioValues,
+  resampleValuesToLength,
+  SP500_LINE,
+  type BenchmarkChartPoint,
+} from "../lib/benchmarkChart";
+import {
   buildHistoricalSeries,
+  ChartCandle,
   RANGE_OPTIONS,
   RangeOption,
   SeriesPoint,
-  seriesChangeAbs,
   seriesChangePct,
 } from "../lib/priceSimulation";
 import { privacyAxis, privacyMoney, privacyShares, privacySignedMoney, formatMoney } from "../lib/privacy";
@@ -71,6 +85,8 @@ export type StockHolding = {
   marketCap?: number;
   instrumentType?: string;
   industry?: string;
+  /** Trailing yield as a decimal (0.03 = 3%), when the quote provides it. */
+  dividendYield?: number | null;
 };
 
 type BrokerHolding = {
@@ -84,6 +100,25 @@ type BrokerHolding = {
 export type Holding = StockHolding | BrokerHolding;
 
 const HOLDING_ORDER_KEY = "matterpro:portfolio-holding-order";
+const ASSETS_PERF_KEY = "matterpro:assets-perf-mode";
+
+type AssetsPerfMode = "daily" | "total";
+
+function readAssetsPerfMode(): AssetsPerfMode {
+  try {
+    return localStorage.getItem(ASSETS_PERF_KEY) === "total" ? "total" : "daily";
+  } catch {
+    return "daily";
+  }
+}
+
+function writeAssetsPerfMode(mode: AssetsPerfMode) {
+  try {
+    localStorage.setItem(ASSETS_PERF_KEY, mode);
+  } catch {
+    // private mode / quota
+  }
+}
 
 function holdingValue(h: Holding): number {
   return h.kind === "stock" ? h.quantity * h.currentPrice : h.balance;
@@ -273,19 +308,57 @@ function hoverPointFromChart(
 function ChartHoverBridge({ onHover }: { onHover: (point: SeriesPoint | null) => void }) {
   const active = useIsTooltipActive();
   const points = useActiveTooltipDataPoints<SeriesPoint>();
-  const t = active ? points?.[0]?.t : undefined;
-  const value = active ? points?.[0]?.value : undefined;
-  const label = active ? points?.[0]?.label : undefined;
+  const point = active ? points?.[0] : undefined;
+  const t = point?.t;
+  const value = point?.value;
+  const label = point?.label;
+  const portfolioValue = point?.portfolioValue;
+  const portfolioPct = point?.portfolioPct;
+  const spPct = point?.spPct;
 
   useEffect(() => {
     if (t == null || value == null) {
       onHover(null);
       return;
     }
-    onHover({ t, value, label: label ?? "" });
-  }, [t, value, label, onHover]);
+    onHover({ t, value, label: label ?? "", portfolioValue, portfolioPct, spPct });
+  }, [t, value, label, portfolioValue, portfolioPct, spPct, onHover]);
 
   return null;
+}
+
+function BenchmarkTooltip({
+  active,
+  payload,
+  privacyMode,
+  startValue,
+}: {
+  active?: boolean;
+  payload?: ReadonlyArray<{ payload?: BenchmarkChartPoint }>;
+  privacyMode: boolean;
+  startValue: number;
+}) {
+  if (!active || !payload?.length) return null;
+  const point = payload[0]?.payload;
+  if (!point) return null;
+  const portfolioPct = point.portfolioPct ?? 0;
+  const gainAbs = (point.portfolioValue ?? startValue) - startValue;
+
+  return (
+    <div className="rounded-xl border border-[#1F1F1F] bg-[#0A0A0A] px-3 py-2 shadow-[0_8px_24px_rgba(0,0,0,0.45)]">
+      <p className="text-[10px] font-extrabold uppercase tracking-wider text-[#6B7280]">
+        {point.label}
+      </p>
+      <p className="mt-1.5 text-[11px] font-semibold text-[#9CA3AF]">My Portfolio</p>
+      <p className="text-sm font-extrabold tabular-nums" style={{ color: PORTFOLIO_LINE }}>
+        {privacySignedMoney(privacyMode, gainAbs)} ({formatSignedPct(portfolioPct)})
+      </p>
+      <p className="mt-1.5 text-[11px] font-semibold text-[#9CA3AF]">S&amp;P 500</p>
+      <p className="text-sm font-extrabold tabular-nums" style={{ color: SP500_LINE }}>
+        {point.spPct == null ? "—" : formatSignedPct(point.spPct)}
+      </p>
+    </div>
+  );
 }
 
 function extractDomain(url?: string): string | undefined {
@@ -307,8 +380,10 @@ type InvestmentPortfolioCardProps = {
   /** Lifted so tab switches keep privacy mode on. */
   privacyMode: boolean;
   onTogglePrivacy?: () => void;
-  /** Rendered directly below the holdings list (e.g. in-page Watchlist). */
+  /** Rendered directly below the Connect Broker button (e.g. in-page Watchlist). */
   belowHoldings?: React.ReactNode;
+  /** Rendered directly below the Asset Allocation ring. */
+  belowAllocation?: React.ReactNode;
 };
 
 function PortfolioActionButtons({
@@ -374,6 +449,7 @@ async function enrichStockHolding(item: PortfolioApiItem): Promise<StockHolding>
     domain: extractDomain(profile?.weburl),
     marketCap: profile?.marketCapitalization,
     industry: profile?.finnhubIndustry,
+    dividendYield: quote?.dividendYield ?? null,
   };
 }
 
@@ -388,6 +464,7 @@ function applyQuoteToHolding(holding: StockHolding, quote: StockQuote): StockHol
     high: quote.h ?? holding.high,
     low: quote.l ?? holding.low,
     prevClose: quote.pc ?? holding.prevClose,
+    dividendYield: quote.dividendYield ?? holding.dividendYield,
   };
 }
 
@@ -405,9 +482,15 @@ export default function InvestmentPortfolioCard({
   privacyMode,
   onTogglePrivacy,
   belowHoldings,
+  belowAllocation,
 }: InvestmentPortfolioCardProps) {
   const [range, setRange] = useState<RangeOption>("1D");
+  const [benchmarkOn, setBenchmarkOn] = useState(false);
+  const [benchmarkLoading, setBenchmarkLoading] = useState(false);
+  const [spCandles, setSpCandles] = useState<ChartCandle[]>([]);
+  const [holdingCandles, setHoldingCandles] = useState<Map<string, ChartCandle[]>>(new Map());
   const [holdings, setHoldings] = useState<Holding[]>([]);
+  const [assetsPerfMode, setAssetsPerfMode] = useState<AssetsPerfMode>(readAssetsPerfMode);
   const [hoverPoint, setHoverPoint] = useState<SeriesPoint | null>(null);
   const [portfolioLoading, setPortfolioLoading] = useState(true);
   const [portfolioError, setPortfolioError] = useState<string | null>(null);
@@ -527,7 +610,7 @@ export default function InvestmentPortfolioCard({
 
   useEffect(() => {
     setChartAnimate(true);
-  }, [range]);
+  }, [range, benchmarkOn]);
 
   // Live stock search — debounced fetch against our Express backend as the user types.
   useEffect(() => {
@@ -648,34 +731,147 @@ export default function InvestmentPortfolioCard({
     return weightedSum / totalValue;
   }, [holdings, totalValue]);
 
-  const chartData = useMemo(
+  const stockSymbolsKey = useMemo(
+    () =>
+      holdings
+        .filter((h): h is StockHolding => h.kind === "stock")
+        .map((h) => h.symbol)
+        .sort()
+        .join(","),
+    [holdings]
+  );
+
+  useEffect(() => {
+    if (!benchmarkOn) return;
+    let cancelled = false;
+
+    (async () => {
+      setBenchmarkLoading(true);
+      try {
+        const unique = stockSymbolsKey ? stockSymbolsKey.split(",") : [];
+        const [sp, holdingEntries] = await Promise.all([
+          fetchSp500Candles(range),
+          Promise.all(
+            unique.map(async (symbol) => [symbol, await fetchChartCandles(symbol, range)] as const)
+          ),
+        ]);
+        if (cancelled) return;
+        setSpCandles(sp);
+        setHoldingCandles(new Map(holdingEntries));
+      } catch {
+        if (!cancelled) {
+          setSpCandles([]);
+          setHoldingCandles(new Map());
+        }
+      } finally {
+        if (!cancelled) setBenchmarkLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [benchmarkOn, range, stockSymbolsKey]);
+
+  const simulatedChartData = useMemo(
     () => buildHistoricalSeries("portfolio-total", range, totalValue, portfolioDayChangePct),
     [range, totalValue, portfolioDayChangePct]
   );
 
-  const gainPct = useMemo(() => seriesChangePct(chartData), [chartData]);
-  const gainAbs = useMemo(() => seriesChangeAbs(chartData), [chartData]);
-  const isPositive = gainPct > 0;
+  const benchmarkReady = benchmarkOn && spCandles.length > 0;
+
+  const chartData = useMemo(() => {
+    if (!benchmarkReady) {
+      const first = simulatedChartData[0]?.value ?? 0;
+      return simulatedChartData.map((p) => ({
+        ...p,
+        portfolioValue: p.value,
+        portfolioPct: first > 0 ? ((p.value - first) / first) * 100 : 0,
+      }));
+    }
+
+    const timestamps = canonicalTimestamps(spCandles, [...holdingCandles.values()]);
+    if (timestamps.length === 0) {
+      const first = simulatedChartData[0]?.value ?? 0;
+      return simulatedChartData.map((p) => ({
+        ...p,
+        portfolioValue: p.value,
+        portfolioPct: first > 0 ? ((p.value - first) / first) * 100 : 0,
+      }));
+    }
+
+    const stocks = holdings
+      .filter((h): h is StockHolding => h.kind === "stock")
+      .map((h) => ({ symbol: h.symbol, quantity: h.quantity, currentPrice: h.currentPrice }));
+    const reconstructed = reconstructPortfolioValues(stocks, holdingCandles, cashValue, timestamps);
+    const hasLivePath = reconstructed.some((v) => v > 0);
+    const portfolioValues = hasLivePath
+      ? reconstructed
+      : resampleValuesToLength(
+          simulatedChartData.map((p) => p.value),
+          timestamps.length
+        );
+    if (portfolioValues.length > 0 && totalValue > 0) {
+      portfolioValues[portfolioValues.length - 1] = totalValue;
+    }
+    const spPrices = pricesOnTimestamps(spCandles, timestamps);
+    return buildBenchmarkChartData({ range, timestamps, portfolioValues, spPrices });
+  }, [
+    benchmarkReady,
+    simulatedChartData,
+    spCandles,
+    holdingCandles,
+    holdings,
+    cashValue,
+    totalValue,
+    range,
+  ]);
+
+  const gainPct = useMemo(() => {
+    const last = chartData[chartData.length - 1];
+    if (last?.portfolioPct != null) return last.portfolioPct;
+    return seriesChangePct(chartData);
+  }, [chartData]);
+  const gainAbs = useMemo(() => {
+    const first = chartData[0]?.portfolioValue ?? chartData[0]?.value ?? 0;
+    const last =
+      chartData[chartData.length - 1]?.portfolioValue ??
+      chartData[chartData.length - 1]?.value ??
+      0;
+    return last - first;
+  }, [chartData]);
   const isNegative = gainPct < 0;
   const gainColor = isNegative ? LOSS_RED : GAIN_GREEN;
+  const portfolioStroke = benchmarkReady ? PORTFOLIO_LINE : gainColor;
 
   const yDomain = useMemo(() => {
-    const values = chartData.map((p) => p.value);
+    const values = chartData.flatMap((p) => {
+      const pts = [p.value];
+      if (benchmarkReady && p.spPct != null) pts.push(p.spPct);
+      return pts;
+    });
+    if (values.length === 0) return [0, 1] as [number, number];
     const min = Math.min(...values);
     const max = Math.max(...values);
-    const pad = Math.max((max - min) * 0.08, (max || 1) * 0.01);
+    const pad = Math.max((max - min) * 0.08, benchmarkReady ? 0.6 : Math.max((max || 1) * 0.01, 1));
+    if (benchmarkReady) return [min - pad, max + pad] as [number, number];
     return [Math.max(0, min - pad), max + pad] as [number, number];
-  }, [chartData]);
+  }, [chartData, benchmarkReady]);
 
-  const displayValue = hoverPoint?.value ?? totalValue;
+  const startPortfolioValue = chartData[0]?.portfolioValue ?? chartData[0]?.value ?? 0;
+  const displayValue = benchmarkReady
+    ? (hoverPoint?.portfolioValue ?? totalValue)
+    : (hoverPoint?.value ?? totalValue);
   const displayGainAbs = hoverPoint
-    ? hoverPoint.value - (chartData[0]?.value ?? 0)
+    ? (hoverPoint.portfolioValue ?? hoverPoint.value) - startPortfolioValue
     : gainAbs;
   const displayGainPct = hoverPoint
-    ? chartData[0]?.value
-      ? ((hoverPoint.value - chartData[0].value) / chartData[0].value) * 100
-      : 0
+    ? hoverPoint.portfolioPct ??
+      (startPortfolioValue
+        ? ((hoverPoint.value - startPortfolioValue) / startPortfolioValue) * 100
+        : 0)
     : gainPct;
+  const displaySpPct = hoverPoint?.spPct ?? chartData[chartData.length - 1]?.spPct;
   const displayPositive = displayGainPct > 0;
   const displayNegative = displayGainPct < 0;
   const displayGainColor = displayNegative ? LOSS_RED : GAIN_GREEN;
@@ -803,6 +999,7 @@ export default function InvestmentPortfolioCard({
         marketCap: selectedProfile?.marketCapitalization,
         instrumentType: selectedTicker.type,
         industry: selectedProfile?.finnhubIndustry,
+        dividendYield: selectedQuote?.dividendYield ?? null,
       };
 
       setHoldings((prev) => [holding, ...prev]);
@@ -1000,7 +1197,30 @@ export default function InvestmentPortfolioCard({
         <p className="mt-1 text-3xl font-extrabold tracking-tight text-white tabular-nums">
           {privacyMoney(privacyMode, displayValue)}
         </p>
-        {hasHoldings && (
+        {hasHoldings && benchmarkReady && (
+          <div className="mt-1.5 space-y-0.5">
+            <p className="text-sm font-bold tabular-nums" style={{ color: displayGainColor }}>
+              <span className="mr-1.5 text-[11px] font-semibold uppercase tracking-wide text-[#9CA3AF]">
+                My Portfolio
+              </span>
+              {privacySignedMoney(privacyMode, displayGainAbs)} ({formatSignedPct(displayGainPct)})
+            </p>
+            <p className="text-sm font-bold tabular-nums" style={{ color: SP500_LINE }}>
+              <span className="mr-1.5 text-[11px] font-semibold uppercase tracking-wide text-[#9CA3AF]">
+                S&amp;P 500
+              </span>
+              {displaySpPct == null ? "—" : formatSignedPct(displaySpPct)}
+              {hoverPoint ? (
+                <span className="ml-1.5 text-[11px] font-semibold text-[#9CA3AF]">
+                  · {hoverPoint.label}
+                </span>
+              ) : (
+                <span className="ml-1.5 text-[11px] font-semibold text-[#9CA3AF]">· {range}</span>
+              )}
+            </p>
+          </div>
+        )}
+        {hasHoldings && !benchmarkReady && (
           <p
             className="mt-1.5 text-sm font-bold tabular-nums"
             style={{ color: displayGainColor }}
@@ -1040,12 +1260,48 @@ export default function InvestmentPortfolioCard({
             </div>
           </div>
           <AllocationRing slices={allocationSlices} privacyMode={privacyMode} />
+          {belowAllocation}
         </>
       ) : (
         <>
           {/* Chart + timeframe (Google Finance / Midas style) */}
           <div className="mt-4">
-            <div className="mb-2 flex items-center justify-end">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  aria-pressed={benchmarkOn}
+                  aria-label="Toggle S&P 500 benchmark overlay"
+                  title="Compare portfolio return to the S&P 500"
+                  onClick={() => {
+                    setBenchmarkOn((v) => !v);
+                    setHoverPoint(null);
+                  }}
+                  className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[10px] font-bold transition ${
+                    benchmarkOn
+                      ? "border-indigo-500/40 bg-indigo-500/15 text-indigo-300"
+                      : "border-[#1F2937] bg-black/40 text-[#9CA3AF] hover:border-[#374151] hover:text-white"
+                  }`}
+                >
+                  <span aria-hidden="true">📊</span>
+                  VS S&amp;P 500
+                </button>
+                {benchmarkOn && (
+                  <span className="hidden items-center gap-2 text-[10px] font-semibold text-[#9CA3AF] sm:inline-flex">
+                    <span className="inline-flex items-center gap-1">
+                      <span className="h-1.5 w-3 rounded-full" style={{ background: PORTFOLIO_LINE }} />
+                      Portfolio
+                    </span>
+                    <span className="inline-flex items-center gap-1">
+                      <span
+                        className="h-px w-3 border-t-2 border-dashed"
+                        style={{ borderColor: SP500_LINE }}
+                      />
+                      S&amp;P 500
+                    </span>
+                  </span>
+                )}
+              </div>
               <div className="flex gap-0.5 rounded-lg border border-[#1F2937] bg-black/40 p-0.5">
                 {RANGE_OPTIONS.map((opt) => (
                   <button
@@ -1055,7 +1311,7 @@ export default function InvestmentPortfolioCard({
                       setRange(opt);
                       setHoverPoint(null);
                     }}
-                    className={`rounded-md px-2.5 py-1 text-[10px] font-bold transition ${
+                    className={`rounded-md px-2 py-1 text-[10px] font-bold transition sm:px-2.5 ${
                       range === opt
                         ? "bg-emerald-500 text-[#042F2E]"
                         : "text-[#9CA3AF] hover:text-white"
@@ -1067,9 +1323,22 @@ export default function InvestmentPortfolioCard({
               </div>
             </div>
 
-            <div className="h-44 -mx-1 sm:h-48">
+            <div className="relative h-44 -mx-1 sm:h-48">
+              {benchmarkOn && benchmarkLoading && (
+                <div className="absolute inset-0 z-10 grid place-items-center rounded-lg bg-black/35">
+                  <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-indigo-300">
+                    <Loader2 size={14} className="animate-spin" />
+                    Loading S&amp;P 500…
+                  </span>
+                </div>
+              )}
+              {benchmarkOn && !benchmarkLoading && !benchmarkReady && (
+                <p className="absolute right-2 top-1 z-10 text-[10px] font-semibold text-amber-300/90">
+                  Couldn&apos;t load S&amp;P 500
+                </p>
+              )}
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart
+                <ComposedChart
                   data={chartData}
                   margin={{ top: 8, right: 8, bottom: 4, left: 0 }}
                   onMouseMove={(state) => setHoverPoint(hoverPointFromChart(state, chartData))}
@@ -1078,14 +1347,18 @@ export default function InvestmentPortfolioCard({
                   <ChartHoverBridge onHover={setHoverPoint} />
                   <defs>
                     <linearGradient id="portfolioAreaGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor={gainColor} stopOpacity={0.35} />
-                      <stop offset="100%" stopColor={gainColor} stopOpacity={0} />
+                      <stop offset="0%" stopColor={portfolioStroke} stopOpacity={0.35} />
+                      <stop offset="100%" stopColor={portfolioStroke} stopOpacity={0} />
                     </linearGradient>
                   </defs>
                   <YAxis
                     domain={yDomain}
-                    width={46}
-                    tickFormatter={(v) => privacyAxis(privacyMode, formatAxisMoney(Number(v)))}
+                    width={benchmarkReady ? 56 : 46}
+                    tickFormatter={(v) =>
+                      benchmarkReady
+                        ? formatSignedPct(Number(v), Math.abs(Number(v)) < 10 ? 1 : 0)
+                        : privacyAxis(privacyMode, formatAxisMoney(Number(v)))
+                    }
                     tick={{ fill: "#9CA3AF", fontSize: 10 }}
                     axisLine={false}
                     tickLine={false}
@@ -1103,52 +1376,112 @@ export default function InvestmentPortfolioCard({
                   <Tooltip
                     shared
                     cursor={{ stroke: "#FFFFFF", strokeWidth: 1.25, strokeDasharray: "4 4", opacity: 0.55 }}
-                    content={() => null}
+                    content={
+                      benchmarkReady
+                        ? (props) => (
+                            <BenchmarkTooltip
+                              {...props}
+                              privacyMode={privacyMode}
+                              startValue={startPortfolioValue}
+                            />
+                          )
+                        : () => null
+                    }
                   />
                   <Area
                     type="monotone"
                     dataKey="value"
-                    stroke={gainColor}
+                    name="My Portfolio"
+                    stroke={portfolioStroke}
                     strokeWidth={2.5}
                     fill="url(#portfolioAreaGradient)"
                     isAnimationActive={chartAnimate}
                     animationDuration={400}
                     activeDot={{
                       r: 5,
-                      fill: gainColor,
+                      fill: portfolioStroke,
                       stroke: "#000000",
                       strokeWidth: 2,
                     }}
                   />
-                </AreaChart>
+                  {benchmarkReady && (
+                    <Line
+                      type="monotone"
+                      dataKey="spPct"
+                      name="S&P 500"
+                      stroke={SP500_LINE}
+                      strokeWidth={2}
+                      strokeDasharray="6 4"
+                      dot={false}
+                      connectNulls
+                      isAnimationActive={chartAnimate}
+                      animationDuration={400}
+                      activeDot={{
+                        r: 4,
+                        fill: SP500_LINE,
+                        stroke: "#000000",
+                        strokeWidth: 2,
+                      }}
+                    />
+                  )}
+                </ComposedChart>
               </ResponsiveContainer>
             </div>
           </div>
 
           <AllocationRing slices={allocationSlices} privacyMode={privacyMode} />
+          {belowAllocation}
 
           {/* Asset list — Midas style */}
           <div className="mt-5">
-            <button
-              type="button"
-              onClick={() => setHoldingsExpanded((v) => !v)}
-              aria-expanded={holdingsExpanded}
-              className="flex w-full items-center justify-between gap-2 text-left"
-            >
-              <div className="flex items-center gap-2">
+            <div className="flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => setHoldingsExpanded((v) => !v)}
+                aria-expanded={holdingsExpanded}
+                className="flex min-w-0 items-center gap-2 text-left"
+              >
                 <span className="text-[11px] font-bold uppercase tracking-wide text-[#9CA3AF]">
                   Assets
                 </span>
                 <span className="rounded-full bg-[#1F2937] px-2 py-0.5 text-[10px] font-bold text-[#9CA3AF]">
                   {holdings.length}
                 </span>
+                {holdingsExpanded ? (
+                  <ChevronUp size={16} className="text-[#9CA3AF]" />
+                ) : (
+                  <ChevronDown size={16} className="text-[#9CA3AF]" />
+                )}
+              </button>
+              <div
+                role="group"
+                aria-label="Asset performance period"
+                className="flex flex-shrink-0 rounded-full border border-[#1F2937] bg-[#0A0A0A] p-0.5"
+              >
+                {(["daily", "total"] as const).map((mode) => {
+                  const active = assetsPerfMode === mode;
+                  return (
+                    <button
+                      key={mode}
+                      type="button"
+                      title={mode === "daily" ? "Today's gain/loss" : "Profit vs. average cost"}
+                      aria-pressed={active}
+                      onClick={() => {
+                        setAssetsPerfMode(mode);
+                        writeAssetsPerfMode(mode);
+                      }}
+                      className={`rounded-full px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wide transition ${
+                        active
+                          ? "bg-[#10B981] text-[#042F2E]"
+                          : "text-[#9CA3AF] hover:text-white"
+                      }`}
+                    >
+                      {mode === "daily" ? "Daily" : "Total"}
+                    </button>
+                  );
+                })}
               </div>
-              {holdingsExpanded ? (
-                <ChevronUp size={16} className="text-[#9CA3AF]" />
-              ) : (
-                <ChevronDown size={16} className="text-[#9CA3AF]" />
-              )}
-            </button>
+            </div>
 
             <div
               className={`transition-all duration-300 ease-in-out ${
@@ -1174,12 +1507,26 @@ export default function InvestmentPortfolioCard({
                   const highlight = h.id === justAddedId;
                   const value = holdingValue(h);
                   const isStock = h.kind === "stock";
-                  const dayAbs =
-                    isStock ? h.quantity * h.dayChangeAbs : 0;
-                  const dayPct = isStock ? h.dayChangePct : 0;
-                  const dayUp = dayPct > 0;
-                  const dayDown = dayPct < 0;
-                  const dayColor = dayDown ? LOSS_RED : dayUp ? GAIN_GREEN : "#9CA3AF";
+                  let perfAbs: number | null = null;
+                  let perfPct: number | null = null;
+                  if (isStock) {
+                    if (assetsPerfMode === "total") {
+                      if (h.avgCost > 0) {
+                        perfAbs = (h.currentPrice - h.avgCost) * h.quantity;
+                        perfPct = ((h.currentPrice - h.avgCost) / h.avgCost) * 100;
+                      }
+                    } else if (h.prevClose > 0) {
+                      perfAbs = (h.currentPrice - h.prevClose) * h.quantity;
+                      perfPct = ((h.currentPrice - h.prevClose) / h.prevClose) * 100;
+                    } else {
+                      perfAbs = h.dayChangeAbs * h.quantity;
+                      perfPct = h.dayChangePct;
+                    }
+                  }
+                  const dayUp = (perfPct ?? 0) > 0;
+                  const dayDown = (perfPct ?? 0) < 0;
+                  const dayColor =
+                    perfPct == null ? "#6B7280" : dayDown ? LOSS_RED : dayUp ? GAIN_GREEN : "#9CA3AF";
                   const isDragging = draggingId === h.id;
                   const isPressed = pressingId === h.id;
 
@@ -1262,8 +1609,9 @@ export default function InvestmentPortfolioCard({
                           </p>
                           {isStock && (
                             <p className="text-[11px] font-bold tabular-nums" style={{ color: dayColor }}>
-                              {privacySignedMoney(privacyMode, dayAbs)} ({dayUp ? "+" : ""}
-                              {dayPct.toFixed(2)}%)
+                              {perfAbs == null || perfPct == null
+                                ? "—"
+                                : `${privacySignedMoney(privacyMode, perfAbs)} (${dayUp ? "+" : ""}${perfPct.toFixed(2)}%)`}
                             </p>
                           )}
                         </div>
@@ -1278,12 +1626,12 @@ export default function InvestmentPortfolioCard({
         </>
       )}
 
-      {belowHoldings}
-
       <PortfolioActionButtons
         onAddStock={() => openModal("manual")}
         onConnectBroker={() => openModal("connect")}
       />
+
+      {belowHoldings}
 
       {modalOpen && (
         <div

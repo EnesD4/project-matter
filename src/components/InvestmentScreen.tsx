@@ -1,5 +1,6 @@
 import React from "react";
 import InvestmentPortfolioCard, { type Holding } from "./InvestmentPortfolioCard";
+import PortfolioHealthScoreCard from "./PortfolioHealthScoreCard";
 import WatchlistScreen from "./WatchlistScreen";
 
 export type { Holding };
@@ -30,6 +31,9 @@ export default function InvestmentScreen({
       cashBalance={cashBalance}
       privacyMode={privacyMode}
       onTogglePrivacy={onTogglePrivacy}
+      belowAllocation={
+        <PortfolioHealthScoreCard holdings={holdings} cashBalance={cashBalance} />
+      }
       belowHoldings={
         <WatchlistScreen
           holdings={holdings}

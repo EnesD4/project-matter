@@ -1,0 +1,142 @@
+import { getApiBaseUrl } from "./auth";
+import { ChartCandle, formatChartLabel, RangeOption, SeriesPoint } from "./priceSimulation";
+
+const API_BASE_URL = getApiBaseUrl();
+
+/** VOO tracks the S&P 500; ^GSPC is the index itself. */
+export const SP500_TICKERS = ["VOO", "^GSPC"] as const;
+
+export const PORTFOLIO_LINE = "#10B981";
+export const SP500_LINE = "#6366F1";
+
+export type StockSlice = {
+  symbol: string;
+  quantity: number;
+  currentPrice: number;
+};
+
+export type BenchmarkChartPoint = SeriesPoint & {
+  portfolioValue: number;
+  portfolioPct: number;
+  spPct?: number;
+};
+
+export async function fetchChartCandles(symbol: string, range: RangeOption): Promise<ChartCandle[]> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/stocks/${encodeURIComponent(symbol)}/chart?range=${encodeURIComponent(range)}`
+  );
+  if (!res.ok) return [];
+  const data = (await res.json()) as { points?: ChartCandle[] };
+  if (!Array.isArray(data.points)) return [];
+  return data.points.filter(
+    (p) => Number.isFinite(p.price) && p.price > 0 && Number.isFinite(p.timestamp)
+  );
+}
+
+export async function fetchSp500Candles(range: RangeOption): Promise<ChartCandle[]> {
+  for (const ticker of SP500_TICKERS) {
+    const points = await fetchChartCandles(ticker, range);
+    if (points.length > 0) return points;
+  }
+  return [];
+}
+
+function lastPriceAtOrBefore(points: ChartCandle[], ts: number): number | null {
+  if (points.length === 0) return null;
+  let lo = 0;
+  let hi = points.length - 1;
+  let ans = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (points[mid].timestamp <= ts) {
+      ans = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return ans >= 0 ? points[ans].price : null;
+}
+
+export function canonicalTimestamps(preferred: ChartCandle[] | undefined, others: ChartCandle[][]): number[] {
+  if (preferred && preferred.length > 0) {
+    return preferred.map((p) => p.timestamp);
+  }
+  let best: ChartCandle[] = [];
+  for (const series of others) {
+    if (series.length > best.length) best = series;
+  }
+  return best.map((p) => p.timestamp);
+}
+
+export function pricesOnTimestamps(candles: ChartCandle[], timestamps: number[]): number[] {
+  return timestamps.map((ts) => lastPriceAtOrBefore(candles, ts) ?? 0);
+}
+
+export function reconstructPortfolioValues(
+  stocks: StockSlice[],
+  charts: Map<string, ChartCandle[]>,
+  cashValue: number,
+  timestamps: number[]
+): number[] {
+  return timestamps.map((ts) => {
+    let sum = Math.max(0, cashValue);
+    for (const stock of stocks) {
+      const pts = charts.get(stock.symbol);
+      const price = pts && pts.length > 0 ? lastPriceAtOrBefore(pts, ts) : null;
+      sum += stock.quantity * (price ?? stock.currentPrice);
+    }
+    return sum;
+  });
+}
+
+export function resampleValuesToLength(values: number[], n: number): number[] {
+  if (n <= 0) return [];
+  if (values.length === 0) return Array.from({ length: n }, () => 0);
+  if (values.length === 1) return Array.from({ length: n }, () => values[0]);
+  return Array.from({ length: n }, (_, i) => {
+    const idx = (i / Math.max(n - 1, 1)) * (values.length - 1);
+    const lo = Math.floor(idx);
+    const hi = Math.min(values.length - 1, lo + 1);
+    const w = idx - lo;
+    return values[lo] * (1 - w) + values[hi] * w;
+  });
+}
+
+function pctFromBase(value: number, base: number): number {
+  if (!base) return 0;
+  return ((value - base) / base) * 100;
+}
+
+export function buildBenchmarkChartData(args: {
+  range: RangeOption;
+  timestamps: number[];
+  portfolioValues: number[];
+  spPrices: number[];
+}): BenchmarkChartPoint[] {
+  const { range, timestamps, portfolioValues, spPrices } = args;
+  const pBase = portfolioValues.find((v) => v > 0) ?? 0;
+  const sBase = spPrices.find((v) => v > 0) ?? 0;
+  return timestamps.map((ts, i) => {
+    const portfolioValue = portfolioValues[i] ?? 0;
+    const spPrice = spPrices[i] ?? 0;
+    const portfolioPct = pctFromBase(portfolioValue, pBase);
+    const spPct = sBase ? pctFromBase(spPrice, sBase) : undefined;
+    return {
+      t: i,
+      timestamp: ts,
+      label: formatChartLabel(ts, range),
+      value: portfolioPct,
+      portfolioValue,
+      portfolioPct,
+      spPct,
+    };
+  });
+}
+
+export function formatSignedPct(n: number, digits = 1): string {
+  const abs = Math.abs(n).toFixed(digits);
+  if (n > 0) return `+${abs}%`;
+  if (n < 0) return `-${abs}%`;
+  return `${abs}%`;
+}

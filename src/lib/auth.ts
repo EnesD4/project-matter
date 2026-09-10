@@ -1,3 +1,7 @@
+import { emptySafetyNet, parseSafetyNet, type SafetyNetConfig } from "./safetyNet";
+
+export type { SafetyNetConfig };
+
 const API_BASE_URL =
   (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() || "http://localhost:5000";
 
@@ -276,4 +280,138 @@ export async function deleteWatchlistItem(watchlistId: string, itemId: string): 
     { method: "DELETE" }
   );
   if (!res.ok) throw new Error(await parseError(res));
+}
+
+export type CashFlowExpense = { id: string; label: string; amount: number };
+
+export type CashFlowDebt = {
+  id: string;
+  title: string;
+  originalBalance: number;
+  balance: number;
+  minPayment: number;
+  apr: number;
+};
+
+export type CashFlowSnapshot = {
+  monthlyIncome: number;
+  emergencyFund: number;
+  extraPayoff: number;
+  expenses: CashFlowExpense[];
+  debts: CashFlowDebt[];
+  safetyNet: SafetyNetConfig;
+  updatedAt: number;
+};
+
+export function emptyCashFlow(): CashFlowSnapshot {
+  return {
+    monthlyIncome: 0,
+    emergencyFund: 0,
+    extraPayoff: 0,
+    expenses: [],
+    debts: [],
+    safetyNet: emptySafetyNet(),
+    updatedAt: 0,
+  };
+}
+
+function cashFlowCacheKey(userId?: string | null) {
+  return `matterpro_cashflow_${userId || getStoredUser()?.id || "anon"}`;
+}
+
+function asFiniteMoney(value: unknown): number {
+  const n = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
+}
+
+function parseCashFlowSnapshot(raw: unknown): CashFlowSnapshot | null {
+  if (!raw || typeof raw !== "object") return null;
+  const rec = raw as Record<string, unknown>;
+  const expenses = Array.isArray(rec.expenses)
+    ? rec.expenses
+        .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+        .map((item) => ({
+          id: String(item.id || ""),
+          label: String(item.label || "").trim(),
+          amount: asFiniteMoney(item.amount),
+        }))
+        .filter((item) => item.id && item.label)
+    : [];
+  const debts = Array.isArray(rec.debts)
+    ? rec.debts
+        .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+        .map((item) => ({
+          id: String(item.id || ""),
+          title: String(item.title || "").trim() || "Untitled Debt",
+          originalBalance: asFiniteMoney(item.originalBalance),
+          balance: asFiniteMoney(item.balance),
+          minPayment: asFiniteMoney(item.minPayment),
+          apr: asFiniteMoney(item.apr),
+        }))
+        .filter((item) => item.id)
+    : [];
+  const updatedAtRaw = rec.updatedAt;
+  const updatedAt =
+    typeof updatedAtRaw === "number" && Number.isFinite(updatedAtRaw)
+      ? updatedAtRaw
+      : typeof updatedAtRaw === "string"
+        ? Date.parse(updatedAtRaw) || 0
+        : 0;
+  return {
+    monthlyIncome: asFiniteMoney(rec.monthlyIncome),
+    emergencyFund: asFiniteMoney(rec.emergencyFund),
+    extraPayoff: asFiniteMoney(rec.extraPayoff),
+    expenses,
+    debts,
+    safetyNet: parseSafetyNet(rec.safetyNet),
+    updatedAt,
+  };
+}
+
+export function readCashFlowCache(userId?: string | null): CashFlowSnapshot {
+  try {
+    const raw = localStorage.getItem(cashFlowCacheKey(userId));
+    if (!raw) return emptyCashFlow();
+    return parseCashFlowSnapshot(JSON.parse(raw)) ?? emptyCashFlow();
+  } catch {
+    return emptyCashFlow();
+  }
+}
+
+export function writeCashFlowCache(snapshot: CashFlowSnapshot, userId?: string | null) {
+  try {
+    localStorage.setItem(cashFlowCacheKey(userId), JSON.stringify(snapshot));
+  } catch {
+    // ignore quota / private-mode failures
+  }
+}
+
+export function clearCashFlowCache(userId?: string | null) {
+  try {
+    localStorage.removeItem(cashFlowCacheKey(userId));
+  } catch {
+    // ignore
+  }
+}
+
+export async function fetchCashFlow(): Promise<CashFlowSnapshot> {
+  const res = await authFetch("/api/cash-flow");
+  if (!res.ok) throw new Error(await parseError(res));
+  return parseCashFlowSnapshot(await res.json()) ?? emptyCashFlow();
+}
+
+export async function saveCashFlow(snapshot: CashFlowSnapshot): Promise<CashFlowSnapshot> {
+  const res = await authFetch("/api/cash-flow", {
+    method: "PUT",
+    body: JSON.stringify({
+      monthlyIncome: snapshot.monthlyIncome,
+      emergencyFund: snapshot.emergencyFund,
+      extraPayoff: snapshot.extraPayoff,
+      expenses: snapshot.expenses,
+      debts: snapshot.debts,
+      safetyNet: snapshot.safetyNet,
+    }),
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+  return parseCashFlowSnapshot(await res.json()) ?? snapshot;
 }

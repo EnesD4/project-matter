@@ -18,6 +18,7 @@ model User {
   portfolio    PortfolioItem[]
   watchlists   Watchlist[]
   settings     UserSettings?
+  cashFlow     CashFlow?
 }
 
 model PortfolioItem {
@@ -69,4 +70,19 @@ model UserSettings {
   wantsFinancialLiteracy  Boolean @default(false)
   age                     Int?
   birthDate               String?
+}
+
+model CashFlow {
+  id            String   @id @default(uuid())
+  userId        String   @unique
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  monthlyIncome Float    @default(0)
+  emergencyFund Float    @default(0)
+  extraPayoff   Float    @default(0)
+  expenses      String   @default("[]")
+  debts         String   @default("[]")
+  /// JSON: { portfolioPct, goldAmount, goldUnit, bonds[] }
+  safetyNet     String   @default("{}")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 }
