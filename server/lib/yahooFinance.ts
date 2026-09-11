@@ -1,4 +1,5 @@
 import YahooFinance from 'yahoo-finance2';
+import { parseFlexibleDate } from './dates';
 
 export type ChartRange = '1D' | '1W' | '1M' | 'YTD' | '1Y' | 'ALL';
 export type YahooInterval = '1m' | '15m' | '1d' | '1wk' | '1mo';
@@ -126,10 +127,24 @@ const yahooFinance = new YahooFinance({
   suppressNotices: ['yahooSurvey'],
 });
 
+export type HistoricalClose = {
+  symbol: string;
+  requestedDate: string;
+  date: string;
+  price: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  source: 'yahoo' | 'finnhub';
+};
+
 const chartCache = new Map<string, { expires: number; value: ChartResponse }>();
 const quoteCache = new Map<string, { expires: number; value: QuoteSnapshot }>();
 const dividendCache = new Map<string, { expires: number; value: DividendDetails }>();
+const historyCache = new Map<string, { expires: number; value: HistoricalClose }>();
 const DIVIDEND_TTL_MS = 6 * 60 * 60 * 1000;
+const HISTORY_TTL_MS = 60 * 60 * 1000;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 function asFinite(value: unknown): number | null {
@@ -501,6 +516,141 @@ export async function fetchStockChart(symbol: string, range: ChartRange): Promis
   const fallback = emptyChart(ticker, range);
   cacheSet(chartCache, cacheKey, fallback, 15_000);
   return fallback;
+}
+
+function parseIsoDateParam(raw: unknown): string | null {
+  return parseFlexibleDate(raw);
+}
+
+function pickCloseOnOrBefore(points: ChartPoint[], isoDate: string): ChartPoint | null {
+  let best: ChartPoint | null = null;
+  for (const point of points) {
+    const key = nyDateKey(point.timestamp);
+    if (key > isoDate) continue;
+    const bestKey = best ? nyDateKey(best.timestamp) : '';
+    if (!best || key > bestKey || (key === bestKey && point.timestamp > best.timestamp)) {
+      best = point;
+    }
+  }
+  return best;
+}
+
+function toHistoricalClose(
+  symbol: string,
+  requestedDate: string,
+  point: ChartPoint,
+  source: 'yahoo' | 'finnhub'
+): HistoricalClose {
+  return {
+    symbol,
+    requestedDate,
+    date: nyDateKey(point.timestamp),
+    price: point.close,
+    open: point.open,
+    high: point.high,
+    low: point.low,
+    close: point.close,
+    source,
+  };
+}
+
+async function fetchYahooDailyWindow(symbol: string, isoDate: string): Promise<ChartPoint[]> {
+  const yahooSymbol = toYahooSymbol(symbol);
+  const target = Date.parse(`${isoDate}T12:00:00.000Z`);
+  const period1 = new Date(target - 21 * MS_PER_DAY);
+  const period2 = new Date(Math.min(Date.now() + MS_PER_DAY, target + 3 * MS_PER_DAY));
+  const result = await withTimeout(
+    yahooFinance.chart(yahooSymbol, {
+      period1,
+      period2,
+      interval: '1d',
+      includePrePost: false,
+      return: 'array',
+    }),
+    12_000,
+    `Yahoo history ${yahooSymbol} ${isoDate}`
+  );
+  const quotes = Array.isArray(result?.quotes) ? (result.quotes as YahooChartQuote[]) : [];
+  return quotes.map(mapCandle).filter((p): p is ChartPoint => p != null);
+}
+
+async function fetchFinnhubDailyWindow(symbol: string, isoDate: string): Promise<ChartPoint[]> {
+  const token = process.env.FINNHUB_API_KEY;
+  if (!token) return [];
+
+  const target = Date.parse(`${isoDate}T12:00:00.000Z`);
+  const from = Math.floor((target - 21 * MS_PER_DAY) / 1000);
+  const to = Math.floor(Math.min(Date.now(), target + 3 * MS_PER_DAY) / 1000);
+  const url = `https://finnhub.io/api/v1/stock/candle?symbol=${encodeURIComponent(symbol)}&resolution=D&from=${from}&to=${to}&token=${token}`;
+  const response = await withTimeout(fetch(url), 8000, `Finnhub history ${symbol}`);
+  if (!response.ok) return [];
+  const data = (await response.json()) as {
+    s?: string;
+    t?: number[];
+    o?: number[];
+    h?: number[];
+    l?: number[];
+    c?: number[];
+    v?: number[];
+  };
+  if (data.s !== 'ok' || !Array.isArray(data.t) || !Array.isArray(data.c)) return [];
+
+  const points: ChartPoint[] = [];
+  for (let i = 0; i < data.t.length; i++) {
+    const mapped = mapCandle({
+      date: (data.t[i] ?? 0) * 1000,
+      open: data.o?.[i],
+      high: data.h?.[i],
+      low: data.l?.[i],
+      close: data.c[i],
+      volume: data.v?.[i],
+    });
+    if (mapped) points.push(mapped);
+  }
+  return points;
+}
+
+/** Adjusted close on or before `date` (YYYY-MM-DD), skipping weekends and market holidays. */
+export async function fetchHistoricalClose(symbol: string, dateRaw: unknown): Promise<HistoricalClose | null> {
+  const ticker = symbol.trim().toUpperCase();
+  const requestedDate = parseIsoDateParam(dateRaw);
+  if (!ticker || !requestedDate) return null;
+
+  const cacheKey = `${ticker}:${requestedDate}`;
+  const cached = cacheGet(historyCache, cacheKey);
+  if (cached) return cached;
+
+  try {
+    const points = await fetchYahooDailyWindow(ticker, requestedDate);
+    const hit = pickCloseOnOrBefore(points, requestedDate);
+    if (hit) {
+      const payload = toHistoricalClose(ticker, requestedDate, hit, 'yahoo');
+      cacheSet(historyCache, cacheKey, payload, HISTORY_TTL_MS);
+      return payload;
+    }
+  } catch (error) {
+    console.error(
+      `Yahoo history failed for ${ticker} ${requestedDate}:`,
+      error instanceof Error ? error.message : error
+    );
+  }
+
+  try {
+    const points = await fetchFinnhubDailyWindow(ticker, requestedDate);
+    const hit = pickCloseOnOrBefore(points, requestedDate);
+    if (hit) {
+      const payload = toHistoricalClose(ticker, requestedDate, hit, 'finnhub');
+      cacheSet(historyCache, cacheKey, payload, HISTORY_TTL_MS);
+      return payload;
+    }
+  } catch (error) {
+    console.error(
+      `Finnhub history fallback failed for ${ticker} ${requestedDate}:`,
+      error instanceof Error ? error.message : error
+    );
+  }
+
+  return null;
 }
 
 export async function fetchYahooQuote(symbol: string): Promise<QuoteSnapshot | null> {

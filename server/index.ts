@@ -10,11 +10,13 @@ import watchlistRoutes from './routes/watchlists';
 import cashFlowRoutes from './routes/cashFlow';
 import {
   fetchDividendDetailsMany,
+  fetchHistoricalClose,
   fetchStockChart,
   fetchYahooQuote,
   parseChartRange,
   rangeInterval,
 } from './lib/yahooFinance';
+import { parseFlexibleDate, todayIsoLocal } from './lib/dates';
 
 dotenv.config();
 
@@ -294,6 +296,54 @@ app.get('/api/stocks/:symbol/chart', async (req, res) => {
       points: [],
     });
   }
+});
+
+app.get('/api/stocks/:symbol/history', async (req, res) => {
+  const symbol = String(req.params.symbol || '').trim().toUpperCase();
+  const isoDate = parseFlexibleDate(req.query.date);
+  if (!symbol) {
+    return res.status(400).json({ error: 'Symbol is required' });
+  }
+  if (!isoDate) {
+    return res.status(400).json({ error: 'date must be MM/DD/YYYY or YYYY-MM-DD' });
+  }
+  if (isoDate > todayIsoLocal()) {
+    return res.status(400).json({ error: 'Purchase date cannot be in the future' });
+  }
+
+  try {
+    const payload = await fetchHistoricalClose(symbol, isoDate);
+    if (payload) return res.json(payload);
+  } catch (error) {
+    console.error(`Error fetching history for ${symbol}:`, error);
+  }
+
+  try {
+    const quote = await fetchYahooQuote(symbol);
+    if (quote && quote.c > 0) {
+      return res.json({
+        symbol,
+        requestedDate: isoDate,
+        date: todayIsoLocal(),
+        price: quote.c,
+        open: quote.o,
+        high: quote.h,
+        low: quote.l,
+        close: quote.c,
+        source: 'fallback',
+      });
+    }
+  } catch (error) {
+    console.error(`History fallback quote failed for ${symbol}:`, error);
+  }
+
+  return res.json({
+    symbol,
+    requestedDate: isoDate,
+    date: null,
+    price: null,
+    source: 'fallback',
+  });
 });
 
 type FinnhubMetricMap = Record<string, unknown>;

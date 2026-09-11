@@ -22,13 +22,16 @@ model User {
 }
 
 model PortfolioItem {
-  id        String   @id @default(uuid())
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  symbol    String
-  shares    Float
-  buyPrice  Float
-  createdAt DateTime @default(now())
+  id          String    @id @default(uuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  symbol      String
+  shares      Float
+  buyPrice    Float
+  purchasedAt DateTime?
+  /// "paper" = manual entry; "verified" = API-imported brokerage lot.
+  accountType String    @default("paper")
+  createdAt   DateTime  @default(now())
 
   @@index([userId])
 }
