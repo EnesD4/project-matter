@@ -6,10 +6,12 @@ import {
   Landmark,
   LineChart,
   Loader2,
+  Map as MapIcon,
   Plus,
   ShieldCheck,
   Sparkles,
   Trash2,
+  TrendingUp,
   Wallet,
   X,
 } from "lucide-react";
@@ -37,7 +39,14 @@ import {
   type SafetyNetBond,
   type SafetyNetConfig,
 } from "../lib/safetyNet";
+import { useFinancialRoadmap, useRoadmapTodoProgress } from "../hooks/useFinancialRoadmap";
+import {
+  HYSA_APY,
+  hysaAnnualYield,
+  requestFinancialOnboarding,
+} from "../lib/roadmapService";
 import type { Holding, StockHolding } from "./InvestmentPortfolioCard";
+import FinancialRoadmapPanel from "./FinancialRoadmapPanel";
 import StockLogo from "./StockLogo";
 
 type CashFlowScreenProps = {
@@ -95,13 +104,23 @@ function positionsFromHoldings(holdings: Holding[]): DividendPosition[] {
   );
 }
 
-export default function CashFlowScreen({ holdings, privacyMode = false }: CashFlowScreenProps) {
+export default function CashFlowScreen({
+  holdings,
+  privacyMode = false,
+}: CashFlowScreenProps) {
   const parentPositions = useMemo(() => positionsFromHoldings(holdings), [holdings]);
   const [fallbackPositions, setFallbackPositions] = useState<DividendPosition[]>([]);
   const [metaBySymbol, setMetaBySymbol] = useState<Record<string, DividendDetails>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [calendarOpen, setCalendarOpen] = useState(false);
+  const [roadmapOpen, setRoadmapOpen] = useState(false);
+  const roadmap = useFinancialRoadmap();
+  const todoProgress = useRoadmapTodoProgress();
+  const roadmapDone = roadmap
+    ? roadmap.todos.filter((todo) => todoProgress.completedIds.includes(todo.id)).length
+    : 0;
+  const roadmapTotal = roadmap?.todos.length ?? 0;
 
   const positions = parentPositions.length > 0 ? parentPositions : fallbackPositions;
   const symbolsKey = positions.map((p) => p.symbol).join(",");
@@ -202,6 +221,47 @@ export default function CashFlowScreen({ holdings, privacyMode = false }: CashFl
 
   return (
     <div className="flex flex-col gap-3" aria-label="Dividend calendar">
+      <button
+        type="button"
+        onClick={() => {
+          if (roadmap) {
+            setRoadmapOpen(true);
+            return;
+          }
+          requestFinancialOnboarding(true);
+        }}
+        aria-haspopup="dialog"
+        aria-expanded={roadmapOpen}
+        aria-controls="financial-roadmap-panel-title"
+        className="group w-full overflow-hidden rounded-2xl border border-emerald-400/40 bg-gradient-to-r from-emerald-500 to-emerald-400 p-4 text-left text-[#042F2E] shadow-[0_10px_28px_rgba(16,185,129,0.18)] transition hover:from-emerald-400 hover:to-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
+      >
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <span className="grid h-10 w-10 flex-shrink-0 place-items-center rounded-xl bg-[#042F2E]/15 text-[#042F2E]">
+              <MapIcon size={18} />
+            </span>
+            <div className="min-w-0">
+              <p className="m-0 flex items-center gap-1 text-[13px] font-extrabold tracking-tight">
+                View Your Financial Roadmap
+                <ChevronRight
+                  size={15}
+                  strokeWidth={2.75}
+                  className="transition-transform group-hover:translate-x-0.5"
+                  aria-hidden
+                />
+              </p>
+              <p className="mt-0.5 text-[11px] font-semibold text-[#042F2E]/70">
+                {roadmap
+                  ? `${roadmap.emoji} ${roadmap.title} · ${roadmapDone}/${roadmapTotal} tasks`
+                  : "Build a real-life to-do list from your budget"}
+              </p>
+            </div>
+          </div>
+        </div>
+      </button>
+
+      <FinancialRoadmapPanel open={roadmapOpen} onClose={() => setRoadmapOpen(false)} />
+
       <button
         type="button"
         onClick={() => setCalendarOpen(true)}
@@ -450,10 +510,14 @@ export function SafetyNetSection({
     [cash, portfolioValue, config, goldPricePerOz, bondPrices]
   );
   const monthsCovered = monthsOfCoverage(totals.total, monthlyExpenses);
-  const progressPct = coverageProgressPct(monthsCovered, SAFETY_NET_STARTER_MONTHS);
+  const cashMonths = monthsOfCoverage(totals.cash, monthlyExpenses);
+  const cashProgressPct = coverageProgressPct(cashMonths, SAFETY_NET_STARTER_MONTHS);
   const starterTarget = monthlyExpenses * SAFETY_NET_STARTER_MONTHS;
   const goldOz = goldOunces(config.goldAmount, config.goldUnit);
   const selectedPortfolioPct = Math.round(config.portfolioPct);
+  const hysaCash = Math.max(0, config.hysaCash ?? 0);
+  const hysaYield = hysaAnnualYield(hysaCash);
+  const apyLabel = `${(HYSA_APY * 100).toFixed(1)}% APY`;
 
   useEffect(() => {
     if (!open) return;
@@ -466,6 +530,10 @@ export function SafetyNetSection({
 
   const patchConfig = (partial: Partial<SafetyNetConfig>) => {
     onConfigChange({ ...config, ...partial });
+  };
+
+  const setHysaCash = (next: number) => {
+    patchConfig({ hysaCash: Math.max(0, next) });
   };
 
   const updateBond = (id: string, partial: Partial<SafetyNetBond>) => {
@@ -528,11 +596,7 @@ export function SafetyNetSection({
   };
 
   return (
-    <section className="flex flex-col gap-3" aria-label="Safety net and liquidity">
-      <p className="m-0 text-[11px] font-extrabold uppercase tracking-[0.12em] text-slate-500">
-        Safety Net & Liquidity
-      </p>
-
+    <section className="flex flex-col gap-3" aria-label="Emergency Safety Net">
       <button
         type="button"
         onClick={() => setOpen(true)}
@@ -543,12 +607,12 @@ export function SafetyNetSection({
       >
         <div className="flex items-start justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2.5">
-            <span className="grid h-9 w-9 flex-shrink-0 place-items-center rounded-xl bg-emerald-500/15 text-emerald-400">
-              <ShieldCheck size={16} />
+            <span className="grid h-10 w-10 flex-shrink-0 place-items-center rounded-xl bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-400/20">
+              <ShieldCheck size={18} />
             </span>
             <div className="min-w-0">
               <p className="m-0 flex items-center gap-1 text-[11px] font-extrabold uppercase tracking-[0.12em] text-emerald-400">
-                Safety Net
+                Emergency Safety Net
                 <ChevronRight
                   size={13}
                   strokeWidth={2.75}
@@ -556,35 +620,32 @@ export function SafetyNetSection({
                   aria-hidden
                 />
               </p>
-              <p className="mt-0.5 text-[11px] font-semibold text-neutral-500">
-                Cash, brokerage, gold, and government bonds
+              <p className="mt-0.5 text-[11px] font-semibold leading-snug text-neutral-400">
+                {monthlyExpenses > 0
+                  ? `${formatCoverage(cashMonths)} of essential spending`
+                  : "Cash and yield accounts"}
               </p>
             </div>
           </div>
           {quotesLoading && (
-            <Loader2 size={16} className="mt-1 flex-shrink-0 animate-spin text-emerald-400" aria-label="Updating live prices" />
+            <Loader2 size={14} className="mt-1 animate-spin text-emerald-400" aria-label="Updating live prices" />
           )}
         </div>
 
         <p className="mt-4 mb-0 text-[22px] font-extrabold tracking-tight text-white">
-          {privacyMoney(privacyMode, totals.total, 0)}{" "}
+          {privacyMoney(privacyMode, totals.cash, 0)}
           {starterTarget > 0 && (
-            <span className="text-[14px] font-semibold text-slate-500">
+            <span className="ml-1.5 text-[14px] font-semibold text-slate-500">
               / {privacyMoney(privacyMode, starterTarget, 0)}
             </span>
           )}
         </p>
-        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-[#121212]">
+        <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[#121212]">
           <div
             className="h-full rounded-full bg-emerald-500 transition-[width] duration-200"
-            style={{ width: `${progressPct}%` }}
+            style={{ width: `${cashProgressPct}%` }}
           />
         </div>
-        <p className="mt-2 mb-0 text-[11px] font-semibold leading-snug text-neutral-500">
-          {monthlyExpenses <= 0
-            ? "Add monthly spending above to set a 3-month coverage target."
-            : `Target: ${privacyMoney(privacyMode, starterTarget, 0)} (${SAFETY_NET_STARTER_MONTHS} Months Coverage) • Monthly Expenses: ${privacyMoney(privacyMode, monthlyExpenses, 0)}`}
-        </p>
       </button>
 
       {open && (
@@ -608,7 +669,7 @@ export function SafetyNetSection({
                 </span>
                 <div className="min-w-0">
                   <h3 id="safety-net-title" className="m-0 text-sm font-extrabold text-white">
-                    Safety Net & Liquidity
+                    Emergency Safety Net
                   </h3>
                   <p className="mt-0.5 text-[11px] font-semibold text-neutral-500">
                     {privacyMoney(privacyMode, totals.total, 0)}
@@ -643,20 +704,45 @@ export function SafetyNetSection({
 
               <SafetyBucket
                 icon={<Wallet size={15} />}
-                title="Liquid Cash / Money Market"
-                hint="Bank cash, HYSA, or repo reserves you can tap immediately."
-                value={privacyMoney(privacyMode, totals.cash, 0)}
+                title="Liquid Cash Reserves"
+                hint="Checking, physical cash, or any account you keep ready for instant access — no yield assumed."
+                value={privacyMoney(privacyMode, totals.liquidCash, 0)}
               >
                 <div className="flex items-center gap-2">
                   <CurrencyField
                     value={cash}
                     onValueChange={onCashChange}
-                    aria-label="Liquid cash amount"
+                    aria-label="Liquid cash reserves"
                     className="min-w-0 flex-1"
                   />
                   <button
                     type="button"
                     onClick={() => onCashChange(cash + 100)}
+                    className="flex flex-shrink-0 items-center gap-1 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-2 text-[11px] font-extrabold text-emerald-400"
+                  >
+                    <Plus size={12} />
+                    $100
+                  </button>
+                </div>
+              </SafetyBucket>
+
+              <SafetyBucket
+                icon={<TrendingUp size={15} />}
+                title="HYSA & Yield Accounts"
+                hint="FDIC-insured high-yield savings and similar cash vehicles earning about 4.5% APY."
+                value={privacyMoney(privacyMode, totals.hysaCash, 0)}
+                badge={`${apyLabel} · FDIC insured · ~${privacyMoney(privacyMode, hysaYield, 0)}/yr`}
+              >
+                <div className="flex items-center gap-2">
+                  <CurrencyField
+                    value={hysaCash}
+                    onValueChange={setHysaCash}
+                    aria-label="HYSA and yield account balance"
+                    className="min-w-0 flex-1"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setHysaCash(hysaCash + 100)}
                     className="flex flex-shrink-0 items-center gap-1 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-2 text-[11px] font-extrabold text-emerald-400"
                   >
                     <Plus size={12} />
@@ -981,12 +1067,14 @@ function SafetyBucket({
   title,
   hint,
   value,
+  badge,
   children,
 }: {
   icon: React.ReactNode;
   title: string;
   hint: string;
   value: string;
+  badge?: string;
   children: React.ReactNode;
 }) {
   return (
@@ -999,6 +1087,11 @@ function SafetyBucket({
           <div className="min-w-0">
             <h4 className="m-0 text-[13px] font-extrabold text-white">{title}</h4>
             <p className="mt-0.5 mb-0 text-[11px] font-semibold leading-snug text-neutral-500">{hint}</p>
+            {badge ? (
+              <p className="mt-1 mb-0 text-[10px] font-extrabold uppercase tracking-[0.1em] text-emerald-400">
+                {badge}
+              </p>
+            ) : null}
           </div>
         </div>
         <p className="m-0 flex-shrink-0 text-[13px] font-extrabold text-white">{value}</p>

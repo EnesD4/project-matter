@@ -34,6 +34,7 @@ import {
   deletePortfolioItem,
   fetchPortfolio,
   getApiBaseUrl,
+  sellPortfolioItem,
   type PortfolioApiItem,
 } from "../lib/auth";
 import {
@@ -58,9 +59,16 @@ import {
   seriesChangePct,
 } from "../lib/priceSimulation";
 import { privacyAxis, privacyMoney, privacyShares, privacySignedMoney, formatMoney } from "../lib/privacy";
+import { todayISODate } from "../lib/age";
+import { parseAccountKind, type AccountKind } from "../lib/accountKind";
+import { clearPaperTickerIntent, peekPaperTickerIntent } from "../lib/lessonProgress";
+import { readLocalItem } from "../lib/storage";
+import { isoToUsDate, maskUsDateInput, parseToIsoDate } from "../lib/usDate";
 import { useMarketPolling } from "../hooks/useMarketPolling";
+import AccountKindBadge, { PortfolioOriginBadges } from "./AccountKindBadge";
 import AllocationRing from "./AllocationRing";
 import DailyReportScreen from "./DailyReportScreen";
+import DarkCalendar from "./DarkCalendar";
 import LiveStatusBadge from "./LiveStatusBadge";
 import SocratesPortfolioReport from "./SocratesPortfolioReport";
 import StockDetailPage from "./StockDetailPage";
@@ -87,6 +95,10 @@ export type StockHolding = {
   industry?: string;
   /** Trailing yield as a decimal (0.03 = 3%), when the quote provides it. */
   dividendYield?: number | null;
+  /** Calendar day the lot was purchased (YYYY-MM-DD), when known. */
+  purchasedAt?: string | null;
+  /** Manual lots are paper; only API-imported brokerage lots are verified. */
+  account: AccountKind;
 };
 
 type BrokerHolding = {
@@ -95,18 +107,21 @@ type BrokerHolding = {
   name: string;
   icon: LucideIcon;
   balance: number;
+  account: AccountKind;
 };
 
 export type Holding = StockHolding | BrokerHolding;
 
-const HOLDING_ORDER_KEY = "matterpro:portfolio-holding-order";
-const ASSETS_PERF_KEY = "matterpro:assets-perf-mode";
+const HOLDING_ORDER_KEY = "sprout_portfolio_holding_order";
+const LEGACY_HOLDING_ORDER_KEY = "matterpro:portfolio-holding-order";
+const ASSETS_PERF_KEY = "sprout_assets_perf_mode";
+const LEGACY_ASSETS_PERF_KEY = "matterpro:assets-perf-mode";
 
 type AssetsPerfMode = "daily" | "total";
 
 function readAssetsPerfMode(): AssetsPerfMode {
   try {
-    return localStorage.getItem(ASSETS_PERF_KEY) === "total" ? "total" : "daily";
+    return readLocalItem(ASSETS_PERF_KEY, LEGACY_ASSETS_PERF_KEY) === "total" ? "total" : "daily";
   } catch {
     return "daily";
   }
@@ -126,7 +141,7 @@ function holdingValue(h: Holding): number {
 
 function readHoldingOrder(): string[] {
   try {
-    const raw = localStorage.getItem(HOLDING_ORDER_KEY);
+    const raw = readLocalItem(HOLDING_ORDER_KEY, LEGACY_HOLDING_ORDER_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw) as unknown;
     return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : [];
@@ -371,9 +386,9 @@ function extractDomain(url?: string): string | undefined {
 }
 
 type InvestmentPortfolioCardProps = {
-  /** Mirrors the live holdings list up to the parent (e.g. so Matter AI can reference it). */
+  /** Mirrors the live holdings list up to the parent (e.g. so Sprout AI can reference it). */
   onHoldingsChange?: (holdings: Holding[]) => void;
-  /** Opens the Matter AI chat tab from the insights card. */
+  /** Opens the Sprout AI chat tab from the insights card. */
   onConsultSocrates?: () => void;
   /** Extra cash (e.g. emergency fund) rolled into portfolio value. */
   cashBalance?: number;
@@ -381,7 +396,16 @@ type InvestmentPortfolioCardProps = {
   privacyMode: boolean;
   onTogglePrivacy?: () => void;
   /** Rendered directly below the Connect Broker button (e.g. in-page Watchlist). */
-  belowHoldings?: React.ReactNode;
+  belowHoldings?:
+    | React.ReactNode
+    | ((ctx: {
+        onAddHolding: (holding: StockHolding) => void;
+        onSellHolding: (
+          holding: StockHolding,
+          shares: number,
+          sellPrice: number
+        ) => Promise<{ remainingShares: number }>;
+      }) => React.ReactNode);
   /** Rendered directly below the Asset Allocation ring. */
   belowAllocation?: React.ReactNode;
 };
@@ -450,6 +474,73 @@ async function enrichStockHolding(item: PortfolioApiItem): Promise<StockHolding>
     marketCap: profile?.marketCapitalization,
     industry: profile?.finnhubIndustry,
     dividendYield: quote?.dividendYield ?? null,
+    purchasedAt: isoDateFromApi(item.purchasedAt),
+    account: parseAccountKind(item.accountType),
+  };
+}
+
+function isoDateFromApi(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const match = String(value).trim().match(/^(\d{4}-\d{2}-\d{2})/);
+  return match ? match[1] : null;
+}
+
+function isPaperTicker(h: Holding, symbol: string): h is StockHolding {
+  return h.kind === "stock" && h.symbol.toUpperCase() === symbol.toUpperCase() && h.account === "paper";
+}
+
+/** Replace the paper row for this ticker (or insert it) so adding shares never creates a duplicate. */
+function upsertPaperHolding(prev: Holding[], next: StockHolding): Holding[] {
+  let replaced = false;
+  const out: Holding[] = [];
+  for (const h of prev) {
+    if (!isPaperTicker(h, next.symbol)) {
+      out.push(h);
+      continue;
+    }
+    if (!replaced) {
+      out.push(next);
+      replaced = true;
+    }
+  }
+  if (!replaced) out.unshift(next);
+  return out;
+}
+
+function formatSessionDate(iso: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (!match) return iso;
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  return date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+
+type HistoryMeta = {
+  requestedDate: string;
+  sessionDate: string;
+  source: "live" | "history" | "fallback";
+  closePrice?: number;
+};
+
+async function fetchHistoricalPrice(
+  symbol: string,
+  date: string
+): Promise<{ price: number; date: string; requestedDate: string; source: string } | null> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/stocks/${encodeURIComponent(symbol)}/history?date=${encodeURIComponent(date)}`
+  );
+  if (!res.ok) return null;
+  const data = (await res.json()) as {
+    price?: number | null;
+    date?: string | null;
+    requestedDate?: string;
+    source?: string;
+  };
+  if (typeof data.price !== "number" || !(data.price > 0)) return null;
+  return {
+    price: data.price,
+    date: data.date || date,
+    requestedDate: data.requestedDate || date,
+    source: data.source || "history",
   };
 }
 
@@ -498,8 +589,9 @@ export default function InvestmentPortfolioCard({
   const [removingId, setRemovingId] = useState<string | null>(null);
 
   useEffect(() => {
+    if (portfolioLoading) return;
     onHoldingsChange?.(holdings);
-  }, [holdings, onHoldingsChange]);
+  }, [holdings, onHoldingsChange, portfolioLoading]);
   const [holdingsExpanded, setHoldingsExpanded] = useState(true);
   const [selectedHolding, setSelectedHolding] = useState<StockHolding | null>(null);
   const [dailyReportOpen, setDailyReportOpen] = useState(false);
@@ -521,11 +613,16 @@ export default function InvestmentPortfolioCard({
 
   const [quantity, setQuantity] = useState("");
   const [purchasePrice, setPurchasePrice] = useState("");
+  const [purchaseDate, setPurchaseDate] = useState(() => isoToUsDate(todayISODate()));
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyMeta, setHistoryMeta] = useState<HistoryMeta | null>(null);
   const [chartAnimate, setChartAnimate] = useState(true);
 
   const holdingsRef = useRef(holdings);
   holdingsRef.current = holdings;
   const holdingsListRef = useRef<HTMLDivElement>(null);
+  const historySeqRef = useRef(0);
+  const priceTouchedRef = useRef(false);
   const draggingIdRef = useRef<string | null>(null);
   const pendingDragRef = useRef<{
     id: string;
@@ -677,7 +774,7 @@ export default function InvestmentPortfolioCard({
           value: h.balance,
           holdingId: h.id,
           holdingLabel: h.name,
-          holdingDetail: "Connected account",
+          holdingDetail: h.account === "verified" ? "Verified brokerage" : "Paper cash account",
         };
       }
       return {
@@ -691,7 +788,7 @@ export default function InvestmentPortfolioCard({
         value: holdingValue(h),
         holdingId: h.id,
         holdingLabel: h.symbol,
-        holdingDetail: h.description,
+        holdingDetail: h.account === "verified" ? `${h.description} · Verified` : `${h.description} · Paper`,
       };
     });
     if (cashBalance > 0) {
@@ -903,6 +1000,10 @@ export default function InvestmentPortfolioCard({
     setQuoteError(null);
     setQuantity("");
     setPurchasePrice("");
+    setPurchaseDate(isoToUsDate(todayISODate()));
+    setHistoryLoading(false);
+    setHistoryMeta(null);
+    priceTouchedRef.current = false;
   };
 
   const openModal = (tab: "connect" | "manual" = "connect") => {
@@ -912,15 +1013,93 @@ export default function InvestmentPortfolioCard({
   };
 
   const closeModal = () => {
+    clearPaperTickerIntent();
     setModalOpen(false);
   };
 
-  const selectTicker = async (result: StockSearchResult) => {
+  const fillCostForDate = async (symbol: string, date: string, live?: StockQuote | null) => {
+    const seq = ++historySeqRef.current;
+    setHistoryLoading(true);
+    const today = todayISODate();
+    const iso = parseToIsoDate(date) ?? (/^\d{4}-\d{2}-\d{2}$/.test(date) ? date : null);
+    const useDate = iso && iso <= today ? iso : today;
+
+    const applyLive = (reason: "live" | "fallback") => {
+      if (!(live && live.c > 0)) return false;
+      if (!priceTouchedRef.current) setPurchasePrice(live.c.toFixed(2));
+      setHistoryMeta({ requestedDate: useDate, sessionDate: today, source: reason, closePrice: live.c });
+      setQuoteError(null);
+      return true;
+    };
+
+    if (useDate >= today) {
+      if (seq === historySeqRef.current) {
+        if (!applyLive("live")) setHistoryMeta(null);
+        setHistoryLoading(false);
+      }
+      return;
+    }
+
+    try {
+      const hist = await fetchHistoricalPrice(symbol, useDate);
+      if (seq !== historySeqRef.current) return;
+      if (hist && hist.source !== "fallback") {
+        if (!priceTouchedRef.current) setPurchasePrice(hist.price.toFixed(2));
+        setHistoryMeta({
+          requestedDate: useDate,
+          sessionDate: hist.date,
+          source: "history",
+          closePrice: hist.price,
+        });
+        setQuoteError(null);
+      } else if (hist) {
+        if (!priceTouchedRef.current) setPurchasePrice(hist.price.toFixed(2));
+        setHistoryMeta({
+          requestedDate: useDate,
+          sessionDate: hist.date,
+          source: "fallback",
+          closePrice: hist.price,
+        });
+        setQuoteError(null);
+      } else if (!applyLive("fallback")) {
+        setHistoryMeta(null);
+        setQuoteError("Couldn't find a close for that date. Enter your price per share.");
+      }
+    } catch {
+      if (seq !== historySeqRef.current) return;
+      if (!applyLive("fallback")) {
+        setHistoryMeta(null);
+        setQuoteError("Couldn't fetch the historical price. Enter your price per share.");
+      }
+    } finally {
+      if (seq === historySeqRef.current) setHistoryLoading(false);
+    }
+  };
+
+  const applyPurchaseDate = (nextText: string, live?: StockQuote | null) => {
+    const masked = maskUsDateInput(nextText);
+    let iso = parseToIsoDate(masked);
+    const today = todayISODate();
+    if (iso && iso > today) {
+      iso = today;
+      setPurchaseDate(isoToUsDate(today));
+    } else {
+      setPurchaseDate(masked);
+    }
+    if (!iso) return;
+    priceTouchedRef.current = false;
+    if (selectedTicker) {
+      void fillCostForDate(selectedTicker.symbol, iso, live ?? selectedQuote);
+    }
+  };
+
+  const selectTicker = async (result: StockSearchResult, costDate = parseToIsoDate(purchaseDate) ?? todayISODate()) => {
     const symbol = result.displaySymbol || result.symbol;
     setSelectedTicker({ symbol, description: result.description, type: result.type });
     setSearchQuery("");
     setSearchResults([]);
     setPurchasePrice("");
+    priceTouchedRef.current = false;
     setSelectedQuote(null);
     setSelectedProfile(null);
     setQuoteError(null);
@@ -938,7 +1117,6 @@ export default function InvestmentPortfolioCard({
     ]);
 
     if (quoteResult.status === "fulfilled" && quoteResult.value.c > 0) {
-      setPurchasePrice(quoteResult.value.c.toFixed(2));
       setSelectedQuote(quoteResult.value);
     } else {
       setQuoteError("Couldn't fetch the live price. You can enter it manually.");
@@ -949,7 +1127,43 @@ export default function InvestmentPortfolioCard({
     }
 
     setQuoteLoading(false);
+    await fillCostForDate(
+      symbol,
+      costDate,
+      quoteResult.status === "fulfilled" ? quoteResult.value : null
+    );
   };
+
+  const openAddForHolding = (holding: StockHolding) => {
+    setModalTab("manual");
+    resetManualForm();
+    setModalOpen(true);
+    void selectTicker(
+      {
+        symbol: holding.symbol,
+        displaySymbol: holding.symbol,
+        description: holding.description,
+        type: holding.instrumentType || "",
+      },
+      todayISODate()
+    );
+  };
+
+  useEffect(() => {
+    const intent = peekPaperTickerIntent();
+    if (!intent) return;
+    setModalTab("manual");
+    resetManualForm();
+    setModalOpen(true);
+    void selectTicker({
+      symbol: intent.symbol,
+      displaySymbol: intent.symbol,
+      description: intent.description,
+      type: "ETF",
+    });
+    // Open once when the dashboard remounts after a lesson CTA.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const clearSelectedTicker = () => {
     setSelectedTicker(null);
@@ -958,17 +1172,32 @@ export default function InvestmentPortfolioCard({
     setQuoteError(null);
     setQuoteLoading(false);
     setPurchasePrice("");
+    setHistoryMeta(null);
+    priceTouchedRef.current = false;
+    historySeqRef.current += 1;
   };
 
   const parsedQuantity = Number(quantity);
   const parsedPrice = Number(purchasePrice);
   const manualValue =
     Number.isFinite(parsedQuantity) && Number.isFinite(parsedPrice) ? parsedQuantity * parsedPrice : 0;
+  const liveMark = selectedQuote && selectedQuote.c > 0 ? selectedQuote.c : null;
+  const previewMarketValue =
+    liveMark != null && Number.isFinite(parsedQuantity) && parsedQuantity > 0 ? parsedQuantity * liveMark : 0;
+  const previewReturnAbs =
+    liveMark != null && parsedPrice > 0 && parsedQuantity > 0 ? (liveMark - parsedPrice) * parsedQuantity : null;
+  const previewReturnPct = liveMark != null && parsedPrice > 0 ? ((liveMark - parsedPrice) / parsedPrice) * 100 : null;
   const canSubmitManual = !!selectedTicker && parsedQuantity > 0 && parsedPrice > 0;
 
   const submitManualAsset = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canSubmitManual || !selectedTicker || savingAsset) return;
+
+    const purchaseIso = parseToIsoDate(purchaseDate) || (purchaseDate.trim() ? null : todayISODate());
+    if (purchaseDate.trim() && !purchaseIso) {
+      setQuoteError("Enter a valid purchase date as MM/DD/YYYY.");
+      return;
+    }
 
     setSavingAsset(true);
     setQuoteError(null);
@@ -977,35 +1206,49 @@ export default function InvestmentPortfolioCard({
         symbol: selectedTicker.symbol,
         shares: parsedQuantity,
         buyPrice: parsedPrice,
+        purchasedAt: purchaseIso || null,
       });
 
-      const currentPrice = selectedQuote && selectedQuote.c > 0 ? selectedQuote.c : parsedPrice;
+      const existing = holdings.find((h) => isPaperTicker(h, selectedTicker.symbol));
+      const currentPrice =
+        selectedQuote && selectedQuote.c > 0
+          ? selectedQuote.c
+          : existing?.currentPrice && existing.currentPrice > 0
+            ? existing.currentPrice
+            : parsedPrice;
       const holding: StockHolding = {
         id: saved.id,
         kind: "stock",
         symbol: selectedTicker.symbol,
-        description: selectedTicker.description || selectedProfile?.name || selectedTicker.symbol,
-        quantity: parsedQuantity,
-        avgCost: parsedPrice,
+        description:
+          existing?.description || selectedTicker.description || selectedProfile?.name || selectedTicker.symbol,
+        quantity: saved.shares,
+        avgCost: saved.buyPrice,
         currentPrice,
-        dayChangePct: selectedQuote?.dp ?? 0,
-        dayChangeAbs: selectedQuote?.d ?? 0,
-        open: selectedQuote?.o ?? currentPrice,
-        high: selectedQuote?.h ?? currentPrice,
-        low: selectedQuote?.l ?? currentPrice,
-        prevClose: selectedQuote?.pc ?? currentPrice,
-        logo: selectedProfile?.logo,
-        domain: extractDomain(selectedProfile?.weburl),
-        marketCap: selectedProfile?.marketCapitalization,
-        instrumentType: selectedTicker.type,
-        industry: selectedProfile?.finnhubIndustry,
-        dividendYield: selectedQuote?.dividendYield ?? null,
+        dayChangePct: selectedQuote?.dp ?? existing?.dayChangePct ?? 0,
+        dayChangeAbs: selectedQuote?.d ?? existing?.dayChangeAbs ?? 0,
+        open: selectedQuote?.o ?? existing?.open ?? currentPrice,
+        high: selectedQuote?.h ?? existing?.high ?? currentPrice,
+        low: selectedQuote?.l ?? existing?.low ?? currentPrice,
+        prevClose: selectedQuote?.pc ?? existing?.prevClose ?? currentPrice,
+        logo: selectedProfile?.logo ?? existing?.logo,
+        domain: extractDomain(selectedProfile?.weburl) ?? existing?.domain,
+        marketCap: selectedProfile?.marketCapitalization ?? existing?.marketCap,
+        instrumentType: selectedTicker.type || existing?.instrumentType,
+        industry: selectedProfile?.finnhubIndustry ?? existing?.industry,
+        dividendYield: selectedQuote?.dividendYield ?? existing?.dividendYield ?? null,
+        purchasedAt: isoDateFromApi(saved.purchasedAt) ?? purchaseIso ?? existing?.purchasedAt ?? null,
+        account: "paper",
       };
 
-      setHoldings((prev) => [holding, ...prev]);
+      setHoldings((prev) => upsertPaperHolding(prev, holding));
+      setSelectedHolding((prev) =>
+        prev && prev.symbol.toUpperCase() === holding.symbol.toUpperCase() ? { ...prev, ...holding } : prev
+      );
       markUpdated();
       resetManualForm();
       setJustAddedId(holding.id);
+      clearPaperTickerIntent();
       setModalOpen(false);
       setHoldingsExpanded(true);
       window.setTimeout(() => setJustAddedId(null), 2000);
@@ -1153,6 +1396,31 @@ export default function InvestmentPortfolioCard({
     } finally {
       setRemovingId(null);
     }
+  };
+
+  const sellHolding = async (
+    holding: StockHolding,
+    shares: number,
+    sellPrice: number
+  ): Promise<{ remainingShares: number }> => {
+    const result = await sellPortfolioItem(holding.id, { shares, sellPrice });
+    if (result.deleted) {
+      setHoldings((prev) => prev.filter((h) => h.id !== holding.id));
+      if (selectedHolding?.id === holding.id) setSelectedHolding(null);
+      return { remainingShares: 0 };
+    }
+
+    const remaining = result.item.shares;
+    const avgCost = result.item.buyPrice;
+    setHoldings((prev) =>
+      prev.map((h) =>
+        h.kind === "stock" && h.id === holding.id ? { ...h, quantity: remaining, avgCost } : h
+      )
+    );
+    setSelectedHolding((prev) =>
+      prev && prev.id === holding.id ? { ...prev, quantity: remaining, avgCost } : prev
+    );
+    return { remainingShares: remaining };
   };
 
   return (
@@ -1435,24 +1703,27 @@ export default function InvestmentPortfolioCard({
           {/* Asset list — Midas style */}
           <div className="mt-5">
             <div className="flex items-center justify-between gap-2">
-              <button
-                type="button"
-                onClick={() => setHoldingsExpanded((v) => !v)}
-                aria-expanded={holdingsExpanded}
-                className="flex min-w-0 items-center gap-2 text-left"
-              >
-                <span className="text-[11px] font-bold uppercase tracking-wide text-[#9CA3AF]">
-                  Assets
-                </span>
-                <span className="rounded-full bg-[#1F2937] px-2 py-0.5 text-[10px] font-bold text-[#9CA3AF]">
-                  {holdings.length}
-                </span>
-                {holdingsExpanded ? (
-                  <ChevronUp size={16} className="text-[#9CA3AF]" />
-                ) : (
-                  <ChevronDown size={16} className="text-[#9CA3AF]" />
-                )}
-              </button>
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                {hasHoldings ? <PortfolioOriginBadges holdings={holdings} className="flex-shrink-0" /> : null}
+                <button
+                  type="button"
+                  onClick={() => setHoldingsExpanded((v) => !v)}
+                  aria-expanded={holdingsExpanded}
+                  className="flex min-w-0 items-center gap-2 text-left"
+                >
+                  <span className="text-[11px] font-bold uppercase tracking-wide text-[#9CA3AF]">
+                    Assets
+                  </span>
+                  <span className="rounded-full bg-[#1F2937] px-2 py-0.5 text-[10px] font-bold text-[#9CA3AF]">
+                    {holdings.length}
+                  </span>
+                  {holdingsExpanded ? (
+                    <ChevronUp size={16} className="text-[#9CA3AF]" />
+                  ) : (
+                    <ChevronDown size={16} className="text-[#9CA3AF]" />
+                  )}
+                </button>
+              </div>
               <div
                 role="group"
                 aria-label="Asset performance period"
@@ -1464,7 +1735,11 @@ export default function InvestmentPortfolioCard({
                     <button
                       key={mode}
                       type="button"
-                      title={mode === "daily" ? "Today's gain/loss" : "Profit vs. average cost"}
+                      title={
+                        mode === "daily"
+                          ? "Today's gain/loss"
+                          : "Total return vs. purchase price since your buy date"
+                      }
                       aria-pressed={active}
                       onClick={() => {
                         setAssetsPerfMode(mode);
@@ -1599,7 +1874,9 @@ export default function InvestmentPortfolioCard({
                           ) : (
                             <>
                               <p className="truncate text-sm font-bold text-white">{h.name}</p>
-                              <p className="text-[11px] text-[#9CA3AF]">Connected account</p>
+                              <p className="text-[11px] text-[#9CA3AF]">
+                                {h.account === "verified" ? "Verified brokerage account" : "Paper cash account"}
+                              </p>
                             </>
                           )}
                         </div>
@@ -1612,6 +1889,14 @@ export default function InvestmentPortfolioCard({
                               {perfAbs == null || perfPct == null
                                 ? "—"
                                 : `${privacySignedMoney(privacyMode, perfAbs)} (${dayUp ? "+" : ""}${perfPct.toFixed(2)}%)`}
+                              {h.kind === "stock" &&
+                              assetsPerfMode === "total" &&
+                              h.purchasedAt ? (
+                                <span className="font-semibold text-[#6B7280]">
+                                  {" "}
+                                  since {formatSessionDate(h.purchasedAt)}
+                                </span>
+                              ) : null}
                             </p>
                           )}
                         </div>
@@ -1631,11 +1916,13 @@ export default function InvestmentPortfolioCard({
         onConnectBroker={() => openModal("connect")}
       />
 
-      {belowHoldings}
+      {typeof belowHoldings === "function"
+        ? belowHoldings({ onAddHolding: openAddForHolding, onSellHolding: sellHolding })
+        : belowHoldings}
 
       {modalOpen && (
         <div
-          className="fixed inset-0 z-[60] flex items-end justify-center bg-slate-950/75 p-4 sm:items-center"
+          className="fixed inset-0 z-[80] flex items-end justify-center bg-slate-950/75 p-4 sm:items-center"
           onClick={closeModal}
           role="presentation"
         >
@@ -1664,12 +1951,12 @@ export default function InvestmentPortfolioCard({
                 )}
                 <div className="min-w-0">
                   <h3 id="portfolio-modal-title" className="text-sm font-extrabold leading-snug text-white">
-                    {modalTab === "manual" ? "Add assets manually" : "Connect Broker"}
+                    {modalTab === "manual" ? "Add to Paper Account" : "Connect Broker"}
                   </h3>
                   <p className="mt-0.5 text-[11px] leading-snug text-slate-500">
                     {modalTab === "manual"
-                      ? "Search a ticker and log shares you already own."
-                      : "Link a top US brokerage via our partner network."}
+                      ? "Manual lots are tagged Paper Account. Investment badges unlock only from API-verified brokerage data."
+                      : "Verified Brokerage Portfolio requires an API-linked account. Partner links do not import holdings."}
                   </p>
                 </div>
               </div>
@@ -1685,6 +1972,10 @@ export default function InvestmentPortfolioCard({
 
             {modalTab === "connect" && (
               <div className="mt-4 space-y-2.5">
+                <div className="rounded-xl border border-amber-500/25 bg-amber-500/8 px-3 py-2.5 text-[11px] leading-relaxed text-amber-100/90">
+                  Partner links open the broker in a new tab. They do not import a Verified Brokerage
+                  Portfolio, so investment achievement badges stay locked until API sync is connected.
+                </div>
                 {BROKER_PLATFORMS.map((platform) => {
                   const isLinked = connectedPlatformNames.has(platform.name);
                   return (
@@ -1722,6 +2013,13 @@ export default function InvestmentPortfolioCard({
 
             {modalTab === "manual" && (
               <form onSubmit={submitManualAsset} className="mt-4 space-y-3">
+                <div className="flex items-start gap-2 rounded-xl border border-amber-500/25 bg-amber-500/8 px-3 py-2.5">
+                  <AccountKindBadge kind="paper" />
+                  <p className="text-[11px] leading-relaxed text-amber-100/85">
+                    This lot is saved to your Paper Account. Portfolio milestone and ticker badges
+                    require a verified brokerage import.
+                  </p>
+                </div>
                 <div>
                   <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
                     Search Stock
@@ -1810,9 +2108,12 @@ export default function InvestmentPortfolioCard({
                       {quoteLoading && (
                         <p className="text-[11px] text-slate-500">Fetching live market price…</p>
                       )}
-                      {!quoteLoading && !quoteError && purchasePrice && (
+                      {historyLoading && !quoteLoading && (
+                        <p className="text-[11px] text-slate-500">Looking up the close for that date…</p>
+                      )}
+                      {!quoteLoading && !historyLoading && historyMeta?.source === "live" && historyMeta.closePrice ? (
                         <p className="text-[11px] font-semibold text-emerald-300">
-                          Live price: ${purchasePrice}
+                          Live price: ${historyMeta.closePrice.toFixed(2)}
                           {selectedQuote && (
                             <span className={selectedQuote.dp >= 0 ? "text-emerald-300" : "text-rose-400"}>
                               {" "}
@@ -1821,8 +2122,26 @@ export default function InvestmentPortfolioCard({
                             </span>
                           )}
                         </p>
-                      )}
-                      {quoteError && <p className="text-[11px] text-rose-400">{quoteError}</p>}
+                      ) : null}
+                      {!quoteLoading && !historyLoading && historyMeta?.source === "history" && historyMeta.closePrice ? (
+                        <p className="text-[11px] font-semibold text-emerald-300">
+                          Close on {formatSessionDate(historyMeta.sessionDate)}: $
+                          {historyMeta.closePrice.toFixed(2)}
+                          {historyMeta.sessionDate !== historyMeta.requestedDate ? (
+                            <span className="font-medium text-slate-500">
+                              {" "}
+                              · nearest session (markets closed that day)
+                            </span>
+                          ) : null}
+                        </p>
+                      ) : null}
+                      {!quoteLoading && !historyLoading && historyMeta?.source === "fallback" && historyMeta.closePrice ? (
+                        <p className="text-[11px] font-semibold text-amber-300">
+                          No close for {formatSessionDate(historyMeta.requestedDate)} (weekend, holiday, or data gap).
+                          Using ${historyMeta.closePrice.toFixed(2)} — enter your price per share if that isn&apos;t your fill.
+                        </p>
+                      ) : null}
+                      {quoteError && <p className="mt-1 text-[11px] text-rose-400">{quoteError}</p>}
                     </div>
                   )}
                 </div>
@@ -1843,28 +2162,94 @@ export default function InvestmentPortfolioCard({
                     />
                   </div>
                   <div>
-                    <label htmlFor="asset-price" className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                      Purchase Price
+                    <label id="asset-date-label" htmlFor="asset-date" className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                      Purchase Date
                     </label>
                     <div className="mt-1 flex items-center gap-2 rounded-xl border border-[#1F1F1F] bg-black/20 px-3 py-2 focus-within:border-emerald-500/50">
-                      <Banknote size={14} className="flex-shrink-0 text-slate-500" />
                       <input
-                        id="asset-price"
+                        id="asset-date"
                         type="text"
-                        inputMode="decimal"
-                        value={purchasePrice}
-                        onChange={(e) => setPurchasePrice(e.target.value.replace(/[^0-9.]/g, ""))}
-                        placeholder="185.50"
-                        className="w-full bg-transparent text-xs font-semibold text-white outline-none placeholder:text-slate-600"
+                        inputMode="numeric"
+                        autoComplete="off"
+                        placeholder="MM/DD/YYYY"
+                        maxLength={10}
+                        value={purchaseDate}
+                        onChange={(e) => applyPurchaseDate(e.target.value)}
+                        onBlur={() => {
+                          const iso = parseToIsoDate(purchaseDate);
+                          if (iso) setPurchaseDate(isoToUsDate(iso));
+                        }}
+                        className="w-full bg-transparent text-xs font-semibold tabular-nums text-white outline-none placeholder:text-slate-600"
+                      />
+                      <DarkCalendar
+                        value={parseToIsoDate(purchaseDate) ?? ""}
+                        min="1970-01-01"
+                        max={todayISODate()}
+                        labelledBy="asset-date-label"
+                        onChange={(iso) => applyPurchaseDate(isoToUsDate(iso))}
                       />
                     </div>
+                    <p className="mt-1 text-[10px] text-slate-500">Type MM/DD/YYYY or pick from the calendar.</p>
                   </div>
                 </div>
 
-                {selectedTicker && manualValue > 0 && (
-                  <p className="text-[11px] font-semibold text-emerald-300">
-                    Estimated value: {privacyMoney(privacyMode, manualValue)}
+                <div>
+                  <label htmlFor="asset-price" className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                    Price Per Share
+                  </label>
+                  <div className="mt-1 flex items-center gap-2 rounded-xl border border-[#1F1F1F] bg-black/20 px-3 py-2 focus-within:border-emerald-500/50">
+                    <Banknote size={14} className="flex-shrink-0 text-slate-500" />
+                    <input
+                      id="asset-price"
+                      type="text"
+                      inputMode="decimal"
+                      value={purchasePrice}
+                      onChange={(e) => {
+                        priceTouchedRef.current = true;
+                        setPurchasePrice(e.target.value.replace(/[^0-9.]/g, ""));
+                      }}
+                      placeholder="185.50"
+                      className="w-full bg-transparent text-xs font-semibold text-white outline-none placeholder:text-slate-600"
+                    />
+                  </div>
+                  <p className="mt-1 text-[10px] text-slate-500">
+                    Auto-filled from the close on your purchase date. Override with your average fill if needed.
                   </p>
+                </div>
+
+                {selectedTicker && manualValue > 0 && (
+                  <div className="space-y-0.5 rounded-xl border border-[#1F1F1F] bg-black/30 px-3 py-2.5">
+                    <p className="text-[11px] font-semibold text-white">
+                      Cost basis: {privacyMoney(privacyMode, manualValue)}
+                      <span className="font-medium text-slate-500">
+                        {" "}
+                        · {privacyShares(privacyMode, parsedQuantity)} × ${formatMoney(parsedPrice)}
+                      </span>
+                    </p>
+                    {previewMarketValue > 0 && previewReturnAbs != null && previewReturnPct != null && (
+                      <>
+                        <p className="text-[11px] text-slate-400">
+                          Market value: {privacyMoney(privacyMode, previewMarketValue)}
+                        </p>
+                        <p
+                          className={`text-[11px] font-bold ${
+                            previewReturnPct > 0
+                              ? "text-emerald-300"
+                              : previewReturnPct < 0
+                                ? "text-rose-400"
+                                : "text-slate-400"
+                          }`}
+                        >
+                          Total return: {privacySignedMoney(privacyMode, previewReturnAbs)} (
+                          {previewReturnPct > 0 ? "+" : ""}
+                          {previewReturnPct.toFixed(2)}%)
+                          {purchaseDate && parseToIsoDate(purchaseDate)
+                            ? ` since ${formatSessionDate(parseToIsoDate(purchaseDate)!)}`
+                            : ""}
+                        </p>
+                      </>
+                    )}
+                  </div>
                 )}
 
                 <button
@@ -1877,7 +2262,7 @@ export default function InvestmentPortfolioCard({
                   }`}
                 >
                   {savingAsset ? <Loader2 size={15} className="animate-spin" /> : <Plus size={15} />}
-                  {savingAsset ? "Saving…" : "Add to Portfolio"}
+                  {savingAsset ? "Saving…" : "Add to Paper Account"}
                 </button>
               </form>
             )}
@@ -1891,6 +2276,12 @@ export default function InvestmentPortfolioCard({
           totalPortfolioValue={totalValue}
           privacyMode={privacyMode}
           onBack={() => setSelectedHolding(null)}
+          onAddMore={openAddForHolding}
+          onSell={
+            selectedHolding.quantity > 0 && selectedHolding.account !== "verified"
+              ? sellHolding
+              : undefined
+          }
           onRemove={selectedHolding.quantity > 0 ? removeHolding : undefined}
           removing={removingId === selectedHolding.id}
         />

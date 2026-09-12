@@ -1,6 +1,9 @@
-export const CERTIFICATE_TIERS = ["gold", "ocean", "flame"] as const;
+import { curriculumIsComplete, PHASE_ORDER, type PhaseId } from "./lessons";
+import { readLocalItem } from "./storage";
+
+export const CERTIFICATE_TIERS = ["gold"] as const;
 export type CertificateTier = (typeof CERTIFICATE_TIERS)[number];
-export type AcademyPhaseId = "phase-1" | "phase-2" | "phase-3";
+export type AcademyPhaseId = PhaseId;
 
 export type Certificate = {
   tier: CertificateTier;
@@ -31,35 +34,19 @@ export const CERTIFICATE_META: Record<
   }
 > = {
   gold: {
-    title: "Gold Certificate",
-    pathLabel: "Beginner path · Phase 1",
+    title: "Sprout Gold Financial Master Certificate",
+    pathLabel: "All 5 Curriculum Phases",
     accent: "#E8C547",
     accentSoft: "rgba(232, 197, 71, 0.18)",
     glow: "rgba(232, 197, 71, 0.55)",
   },
-  ocean: {
-    title: "Ocean Blue Certificate",
-    pathLabel: "Intermediate path · Phase 2",
-    accent: "#0EA5E9",
-    accentSoft: "rgba(14, 165, 233, 0.18)",
-    glow: "rgba(14, 165, 233, 0.55)",
-  },
-  flame: {
-    title: "Flame Red Certificate",
-    pathLabel: "Advanced path · Phase 3",
-    accent: "#EF4444",
-    accentSoft: "rgba(239, 68, 68, 0.18)",
-    glow: "rgba(239, 68, 68, 0.55)",
-  },
 };
 
-export function certificateTierForStartPhase(phase: AcademyPhaseId): CertificateTier {
-  if (phase === "phase-2") return "ocean";
-  if (phase === "phase-3") return "flame";
-  return "gold";
+function storageKey(userId: string) {
+  return `sprout_academy_certificates_${userId || "anon"}`;
 }
 
-function storageKey(userId: string) {
+function legacyStorageKey(userId: string) {
   return `matterpro:academy-certificates:${userId || "anon"}`;
 }
 
@@ -68,16 +55,16 @@ function emptyPersist(): CertificatePersist {
 }
 
 function isPhaseId(value: unknown): value is AcademyPhaseId {
-  return value === "phase-1" || value === "phase-2" || value === "phase-3";
+  return typeof value === "string" && (PHASE_ORDER as readonly string[]).includes(value);
 }
 
 function isTier(value: unknown): value is CertificateTier {
-  return value === "gold" || value === "ocean" || value === "flame";
+  return value === "gold";
 }
 
 function loadPersist(userId: string): CertificatePersist {
   try {
-    const raw = localStorage.getItem(storageKey(userId));
+    const raw = readLocalItem(storageKey(userId), legacyStorageKey(userId));
     if (!raw) return emptyPersist();
     const parsed = JSON.parse(raw) as Partial<CertificatePersist>;
     const certificates: Partial<Record<CertificateTier, Certificate>> = {};
@@ -209,15 +196,11 @@ function awardCertificate(
   return certificate;
 }
 
-/** Testing shortcut: completing Phase 1 awards the Gold Certificate and fires the celebration. */
-export function awardGoldCertificateForPhase1(userId: string, userName: string): Certificate | null {
-  return awardCertificate(userId, "gold", userName, "phase-1");
-}
-
-export function awardAcademyCertificate(
+export function maybeAwardGoldMasterCertificate(
   userId: string,
   userName: string,
-  startPhase: AcademyPhaseId = loadAcademyStartPhase(userId)
+  completed: Record<string, boolean>
 ): Certificate | null {
-  return awardCertificate(userId, certificateTierForStartPhase(startPhase), userName, startPhase);
+  if (!curriculumIsComplete(completed)) return null;
+  return awardCertificate(userId, "gold", userName, "phase-1");
 }

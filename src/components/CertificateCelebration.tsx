@@ -7,6 +7,7 @@ import {
   subscribeCertificateUnlocks,
   type Certificate,
 } from "../lib/certificates";
+import { playAchievementFanfare } from "../lib/audioService";
 import { CertificateArt } from "./CertificateArt";
 
 export default function CertificateCelebration() {
@@ -18,6 +19,10 @@ export default function CertificateCelebration() {
       setCertificate(next);
     });
   }, []);
+
+  useEffect(() => {
+    if (certificate) playAchievementFanfare();
+  }, [certificate]);
 
   useEffect(() => {
     if (!certificate) return;

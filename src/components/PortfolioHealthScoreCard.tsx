@@ -271,12 +271,12 @@ export default function PortfolioHealthScoreCard({
   return (
     <section
       className="mt-4 rounded-2xl border border-[#1F2937] bg-[#000000] p-4"
-      aria-label="Mater AI portfolio health score"
+      aria-label="Sprout AI portfolio health score"
     >
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
           <h2 className="text-[11px] font-bold uppercase tracking-wide text-[#9CA3AF]">
-            Mater AI Health Score
+            Sprout AI Health Score
           </h2>
           <p className="mt-0.5 truncate text-[11px] font-semibold text-[#6B7280]">
             {report.empty ? "Add holdings to score risk" : report.rating}

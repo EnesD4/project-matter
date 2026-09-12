@@ -34,14 +34,16 @@ export default function InvestmentScreen({
       belowAllocation={
         <PortfolioHealthScoreCard holdings={holdings} cashBalance={cashBalance} />
       }
-      belowHoldings={
+      belowHoldings={({ onAddHolding, onSellHolding }) => (
         <WatchlistScreen
           holdings={holdings}
           totalPortfolioValue={totalPortfolioValue}
           privacyMode={privacyMode}
           embedded
+          onAddHolding={onAddHolding}
+          onSellHolding={onSellHolding}
         />
-      }
+      )}
     />
   );
 }

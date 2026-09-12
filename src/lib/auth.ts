@@ -1,12 +1,15 @@
 import { emptySafetyNet, parseSafetyNet, type SafetyNetConfig } from "./safetyNet";
+import { readLocalItem } from "./storage";
 
 export type { SafetyNetConfig };
 
 const API_BASE_URL =
   (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() || "http://localhost:5000";
 
-const TOKEN_KEY = "matterpro_jwt";
-const USER_KEY = "matterpro_user";
+const TOKEN_KEY = "sprout_jwt";
+const USER_KEY = "sprout_user_profile";
+const LEGACY_TOKEN_KEY = "matterpro_jwt";
+const LEGACY_USER_KEY = "matterpro_user";
 
 export type UserSettings = {
   hasCompletedOnboarding: boolean;
@@ -42,7 +45,7 @@ export function getApiBaseUrl() {
 
 export function getToken(): string | null {
   try {
-    return localStorage.getItem(TOKEN_KEY);
+    return readLocalItem(TOKEN_KEY, LEGACY_TOKEN_KEY);
   } catch {
     return null;
   }
@@ -50,7 +53,7 @@ export function getToken(): string | null {
 
 export function getStoredUser(): AuthUser | null {
   try {
-    const raw = localStorage.getItem(USER_KEY);
+    const raw = readLocalItem(USER_KEY, LEGACY_USER_KEY);
     if (!raw) return null;
     return JSON.parse(raw) as AuthUser;
   } catch {
@@ -168,6 +171,9 @@ export type PortfolioApiItem = {
   symbol: string;
   shares: number;
   buyPrice: number;
+  purchasedAt?: string | null;
+  /** "paper" (manual) or "verified" (API brokerage). Missing values are paper. */
+  accountType?: string | null;
   createdAt: string;
 };
 
@@ -177,10 +183,12 @@ export async function fetchPortfolio(): Promise<PortfolioApiItem[]> {
   return (await res.json()) as PortfolioApiItem[];
 }
 
+/** Add a paper lot, or merge into the existing paper position for that ticker. */
 export async function createPortfolioItem(input: {
   symbol: string;
   shares: number;
   buyPrice: number;
+  purchasedAt?: string | null;
 }): Promise<PortfolioApiItem> {
   const res = await authFetch("/api/portfolio", {
     method: "POST",
@@ -195,6 +203,44 @@ export async function deletePortfolioItem(id: string): Promise<void> {
     method: "DELETE",
   });
   if (!res.ok) throw new Error(await parseError(res));
+}
+
+export type SellPortfolioResult =
+  | { deleted: true; id: string; sharesSold: number; sellPrice: number }
+  | { deleted: false; item: PortfolioApiItem; sharesSold: number; sellPrice: number };
+
+/** Reduce a paper position. Remaining shares keep the current average cost; 0 shares deletes the row. */
+export async function sellPortfolioItem(
+  id: string,
+  input: { shares: number; sellPrice: number }
+): Promise<SellPortfolioResult> {
+  const res = await authFetch(`/api/portfolio/${encodeURIComponent(id)}/sell`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+  const data = (await res.json()) as PortfolioApiItem & {
+    deleted?: boolean;
+    id?: string;
+    sharesSold?: number;
+    sellPrice?: number;
+  };
+  const sharesSold = Number(data.sharesSold);
+  const sellPrice = Number(data.sellPrice);
+  if (data.deleted) {
+    return {
+      deleted: true,
+      id: data.id || id,
+      sharesSold: Number.isFinite(sharesSold) ? sharesSold : input.shares,
+      sellPrice: Number.isFinite(sellPrice) ? sellPrice : input.sellPrice,
+    };
+  }
+  return {
+    deleted: false,
+    item: data,
+    sharesSold: Number.isFinite(sharesSold) ? sharesSold : input.shares,
+    sellPrice: Number.isFinite(sellPrice) ? sellPrice : input.sellPrice,
+  };
 }
 
 export type WatchlistApiItem = {
@@ -215,12 +261,17 @@ export type WatchlistApiList = {
 
 function watchlistCacheKey() {
   const user = getStoredUser();
+  return `sprout_watchlists_${user?.id ?? "anon"}`;
+}
+
+function watchlistCacheLegacyKey() {
+  const user = getStoredUser();
   return `matterpro_watchlists_${user?.id ?? "anon"}`;
 }
 
 export function readWatchlistCache(): WatchlistApiList[] {
   try {
-    const raw = localStorage.getItem(watchlistCacheKey());
+    const raw = readLocalItem(watchlistCacheKey(), watchlistCacheLegacyKey());
     if (!raw) return [];
     const parsed = JSON.parse(raw) as WatchlistApiList[];
     return Array.isArray(parsed) ? parsed : [];
@@ -316,6 +367,10 @@ export function emptyCashFlow(): CashFlowSnapshot {
 }
 
 function cashFlowCacheKey(userId?: string | null) {
+  return `sprout_cashflow_${userId || getStoredUser()?.id || "anon"}`;
+}
+
+function cashFlowCacheLegacyKey(userId?: string | null) {
   return `matterpro_cashflow_${userId || getStoredUser()?.id || "anon"}`;
 }
 
@@ -370,7 +425,7 @@ function parseCashFlowSnapshot(raw: unknown): CashFlowSnapshot | null {
 
 export function readCashFlowCache(userId?: string | null): CashFlowSnapshot {
   try {
-    const raw = localStorage.getItem(cashFlowCacheKey(userId));
+    const raw = readLocalItem(cashFlowCacheKey(userId), cashFlowCacheLegacyKey(userId));
     if (!raw) return emptyCashFlow();
     return parseCashFlowSnapshot(JSON.parse(raw)) ?? emptyCashFlow();
   } catch {

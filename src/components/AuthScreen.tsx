@@ -106,7 +106,7 @@ export default function AuthScreen({ onAuthenticated }: AuthScreenProps) {
 
       <div style={styles.shell}>
         <header style={styles.brandBlock}>
-          <p style={styles.brand}>MatterPro</p>
+          <p style={styles.brand}>Sprout</p>
           <h1 style={styles.headline}>{isSignup ? "Create your account" : "Welcome back"}</h1>
           <p style={styles.subhead}>
             {isSignup
@@ -216,7 +216,7 @@ export default function AuthScreen({ onAuthenticated }: AuthScreenProps) {
         </button>
 
         <p style={styles.footerHint}>
-          {isSignup ? "Already have an account?" : "New to MatterPro?"}{" "}
+          {isSignup ? "Already have an account?" : "New to Sprout?"}{" "}
           <button
             type="button"
             style={styles.linkBtn}

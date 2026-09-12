@@ -1,18 +1,23 @@
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   ArrowUpRight,
   Calendar,
   Castle,
+  ChevronLeft,
   ChevronRight,
   Coins,
+  Compass,
   Crown,
   Flag,
+  Flame,
   Gem,
+  GraduationCap,
   Heart,
   Landmark,
   Layers,
   LayoutGrid,
+  List,
   Lock,
   type LucideIcon,
   Medal,
@@ -24,18 +29,19 @@ import {
   Shuffle,
   Sparkles,
   Sprout,
-  Target,
   TrendingUp,
   Trophy,
   Wallet,
   X,
 } from "lucide-react";
 import {
+  buildTrophyCabinetPages,
   formatTrophyUnlockedDate,
   trophyCompletionPct,
-  TROPHY_SHELF_CAPACITY,
+  TROPHY_CABINET_CAPACITY,
   TROPHY_SLOTS,
   type Trophy as TrophyItem,
+  type TrophyCabinetPage,
   type TrophyId,
 } from "../lib/achievements";
 
@@ -62,6 +68,9 @@ const ICON_BY_ID: Record<TrophyId, LucideIcon> = {
   hundredK: Rocket,
   fullRoster: Medal,
   millionPath: Sparkles,
+  consistentLearner: Flame,
+  financeScholar: GraduationCap,
+  marketStrategist: Compass,
 };
 
 const PREVIEW_COUNT = 5;
@@ -69,16 +78,6 @@ const PREVIEW_COUNT = 5;
 function TrophyGlyph({ id }: { id: TrophyId }) {
   const Icon = ICON_BY_ID[id];
   return <Icon strokeWidth={2.25} />;
-}
-
-function chunkShelves(trophies: TrophyItem[]): Array<Array<TrophyItem | null>> {
-  const padded: Array<TrophyItem | null> = trophies.slice(0, TROPHY_SLOTS);
-  while (padded.length < TROPHY_SLOTS) padded.push(null);
-  const shelves: Array<Array<TrophyItem | null>> = [];
-  for (let i = 0; i < padded.length; i += TROPHY_SHELF_CAPACITY) {
-    shelves.push(padded.slice(i, i + TROPHY_SHELF_CAPACITY));
-  }
-  return shelves;
 }
 
 export function BadgeDisk({
@@ -171,6 +170,11 @@ function BadgeDetailModal({
             </span>
           )}
           <p className="mt-3 text-[13px] leading-relaxed text-[#9CA3AF]">{trophy.requirement}</p>
+          {!trophy.unlocked && trophy.requiresVerified ? (
+            <p className="mt-2 rounded-xl border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-100/90">
+              Paper Account lots don&apos;t count. Connect an API-verified brokerage to unlock this badge.
+            </p>
+          ) : null}
           <p className="mt-2 text-[13px] font-semibold leading-snug text-white">
             {trophy.title} — {trophy.metric}
           </p>
@@ -201,28 +205,22 @@ function BadgeDetailModal({
   );
 }
 
-function UpcomingList({
+function AllBadgesList({
   trophies,
   onOpen,
 }: {
   trophies: TrophyItem[];
   onOpen: (trophy: TrophyItem) => void;
 }) {
-  const ranked = useMemo(
-    () =>
-      [...trophies]
-        .filter((trophy) => !trophy.unlocked)
-        .sort((a, b) => trophyCompletionPct(b) - trophyCompletionPct(a)),
-    [trophies]
-  );
-
-  if (ranked.length === 0) {
-    return (
-      <p className="m-0 px-1 py-8 text-center text-[12px] font-semibold text-[#9CA3AF]">
-        Every badge is unlocked. Cabinet complete.
-      </p>
-    );
-  }
+  const ranked = useMemo(() => {
+    const unlocked = trophies
+      .filter((trophy) => trophy.unlocked)
+      .sort((a, b) => (b.unlockedAt || "").localeCompare(a.unlockedAt || ""));
+    const locked = trophies
+      .filter((trophy) => !trophy.unlocked)
+      .sort((a, b) => trophyCompletionPct(b) - trophyCompletionPct(a));
+    return [...unlocked, ...locked];
+  }, [trophies]);
 
   return (
     <ul className="m-0 flex list-none flex-col gap-2 p-0">
@@ -239,19 +237,30 @@ function UpcomingList({
               <span className="min-w-0 flex-1">
                 <span className="flex items-start justify-between gap-2">
                   <span className="text-[13px] font-extrabold leading-snug text-[#E5E7EB]">{trophy.title}</span>
-                  <span className="flex-shrink-0 text-[10px] font-extrabold tabular-nums text-[#9CA3AF]">
-                    {Math.round(pct)}% Complete
+                  <span
+                    className={`flex-shrink-0 text-[10px] font-extrabold tabular-nums ${
+                      trophy.unlocked ? "text-emerald-300/90" : "text-[#9CA3AF]"
+                    }`}
+                  >
+                    {trophy.unlocked ? "Unlocked" : `${Math.round(pct)}%`}
                   </span>
                 </span>
-                <span className="mt-0.5 block text-[11px] font-medium tabular-nums text-[#6B7280]">
-                  {trophy.progress.label}
+                <span className="mt-0.5 block text-[11px] font-medium text-[#6B7280]">
+                  {trophy.unlocked ? trophy.metric : trophy.requirement}
                 </span>
-                <span className="mt-1.5 block h-1 overflow-hidden rounded-full bg-[#1F2937]">
-                  <span
-                    className="block h-full rounded-full bg-[#6B7280] transition-[width] duration-500 ease-out"
-                    style={{ width: `${Math.max(3, pct)}%` }}
-                  />
-                </span>
+                {!trophy.unlocked ? (
+                  <>
+                    <span className="mt-0.5 block text-[11px] font-medium tabular-nums text-[#9CA3AF]">
+                      {trophy.progress.label}
+                    </span>
+                    <span className="mt-1.5 block h-1 overflow-hidden rounded-full bg-[#1F2937]">
+                      <span
+                        className="block h-full rounded-full bg-[#6B7280] transition-[width] duration-500 ease-out"
+                        style={{ width: `${Math.max(3, pct)}%` }}
+                      />
+                    </span>
+                  </>
+                ) : null}
               </span>
             </button>
           </li>
@@ -262,17 +271,27 @@ function UpcomingList({
 }
 
 function ShelfDisplay({
-  shelves,
+  cabinet,
   onOpen,
 }: {
-  shelves: Array<Array<TrophyItem | null>>;
+  cabinet: TrophyCabinetPage;
   onOpen: (trophy: TrophyItem) => void;
 }) {
   return (
-    <div className="trophy-cabinet-case" role="list" aria-label="Trophy badge display">
-      {shelves.map((shelf, shelfIndex) => (
+    <div
+      className="trophy-cabinet-case"
+      role="list"
+      aria-label={`Trophy cabinet ${cabinet.number}, ${cabinet.filled} of ${TROPHY_CABINET_CAPACITY} badges`}
+    >
+      <p className="trophy-cabinet-plaque">Cabinet {cabinet.number}</p>
+      {cabinet.filled === 0 ? (
+        <p className="trophy-cabinet-empty">
+          Only earned badges are displayed here. Paper Account lots don&apos;t unlock investment trophies.
+        </p>
+      ) : null}
+      {cabinet.shelves.map((shelf, shelfIndex) => (
         <div key={shelfIndex} className="trophy-shelf" role="presentation">
-          <div className="trophy-shelf__row">
+          <div className="trophy-shelf__row trophy-shelf__row--earned">
             {shelf.map((trophy, slotIndex) =>
               trophy ? (
                 <button
@@ -281,12 +300,16 @@ function ShelfDisplay({
                   role="listitem"
                   onClick={() => onOpen(trophy)}
                   className="trophy-shelf__slot"
-                  aria-label={`${trophy.title}, ${trophy.unlocked ? "unlocked" : "locked"}. ${trophy.metric}`}
+                  aria-label={`${trophy.title}, unlocked. ${trophy.metric}`}
                 >
                   <BadgeDisk trophy={trophy} size="shelf" />
                 </button>
               ) : (
-                <span key={`empty-${shelfIndex}-${slotIndex}`} className="trophy-shelf__slot" role="presentation">
+                <span
+                  key={`empty-${shelfIndex}-${slotIndex}`}
+                  className="trophy-shelf__slot trophy-shelf__slot--empty"
+                  aria-hidden="true"
+                >
                   <BadgeDisk trophy={null} size="shelf" />
                 </span>
               )
@@ -299,27 +322,134 @@ function ShelfDisplay({
   );
 }
 
+function CabinetPager({
+  cabinets,
+  index,
+  onGoTo,
+}: {
+  cabinets: TrophyCabinetPage[];
+  index: number;
+  onGoTo: (next: number) => void;
+}) {
+  if (cabinets.length < 2) return null;
+  const atStart = index <= 0;
+  const atEnd = index >= cabinets.length - 1;
+
+  return (
+    <div className="trophy-cabinet-pager">
+      <button
+        type="button"
+        className="trophy-cabinet-pager__arrow"
+        aria-label="Previous cabinet"
+        disabled={atStart}
+        onClick={() => onGoTo(index - 1)}
+      >
+        <ChevronLeft size={16} aria-hidden="true" />
+      </button>
+      <div className="trophy-cabinet-pager__dots" role="tablist" aria-label="Trophy cabinets">
+        {cabinets.map((cabinet, cabinetIndex) => {
+          const active = cabinetIndex === index;
+          return (
+            <button
+              key={cabinet.number}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              aria-label={`Cabinet ${cabinet.number}`}
+              className={`trophy-cabinet-pager__dot${active ? " trophy-cabinet-pager__dot--active" : ""}`}
+              onClick={() => onGoTo(cabinetIndex)}
+            />
+          );
+        })}
+      </div>
+      <button
+        type="button"
+        className="trophy-cabinet-pager__arrow"
+        aria-label="Next cabinet"
+        disabled={atEnd}
+        onClick={() => onGoTo(index + 1)}
+      >
+        <ChevronRight size={16} aria-hidden="true" />
+      </button>
+    </div>
+  );
+}
+
 function CabinetModal({
   trophies,
-  shelves,
+  cabinets,
   unlockedCount,
   dialogId,
   titleId,
-  upcoming,
-  onToggleUpcoming,
+  catalog,
+  onToggleCatalog,
   onClose,
   onOpenBadge,
+  navigationLocked,
 }: {
   trophies: TrophyItem[];
-  shelves: Array<Array<TrophyItem | null>>;
+  cabinets: TrophyCabinetPage[];
   unlockedCount: number;
   dialogId: string;
   titleId: string;
-  upcoming: boolean;
-  onToggleUpcoming: () => void;
+  catalog: boolean;
+  onToggleCatalog: () => void;
   onClose: () => void;
   onOpenBadge: (trophy: TrophyItem) => void;
+  navigationLocked?: boolean;
 }) {
+  const [cabinetIndex, setCabinetIndex] = useState(0);
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const cabinetIndexRef = useRef(cabinetIndex);
+  cabinetIndexRef.current = cabinetIndex;
+  const current = cabinets[Math.min(cabinetIndex, cabinets.length - 1)] ?? cabinets[0];
+
+  const goToCabinet = (next: number) => {
+    const clamped = Math.max(0, Math.min(cabinets.length - 1, next));
+    setCabinetIndex(clamped);
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    scroller.scrollTo({ left: clamped * scroller.clientWidth, behavior: "smooth" });
+  };
+
+  useEffect(() => {
+    setCabinetIndex((index) => Math.min(index, Math.max(0, cabinets.length - 1)));
+  }, [cabinets.length]);
+
+  useLayoutEffect(() => {
+    if (catalog) return;
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    const sync = () => {
+      scroller.scrollTo({ left: cabinetIndexRef.current * scroller.clientWidth, behavior: "auto" });
+    };
+    sync();
+    window.addEventListener("resize", sync);
+    return () => window.removeEventListener("resize", sync);
+  }, [catalog, cabinets.length]);
+
+  useEffect(() => {
+    if (catalog || navigationLocked) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        goToCabinet(cabinetIndex - 1);
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        goToCabinet(cabinetIndex + 1);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [catalog, navigationLocked, cabinetIndex, cabinets.length]);
+
+  const onScrollerScroll = () => {
+    const scroller = scrollerRef.current;
+    if (!scroller || scroller.clientWidth === 0) return;
+    const next = Math.round(scroller.scrollLeft / scroller.clientWidth);
+    if (next !== cabinetIndex) setCabinetIndex(Math.max(0, Math.min(cabinets.length - 1, next)));
+  };
+
   return (
     <div
       className="fixed inset-0 z-[70] flex items-end justify-center bg-slate-950/80 p-4 sm:items-center"
@@ -351,33 +481,49 @@ function CabinetModal({
               </h3>
               <p className="mt-0.5 text-[11px] font-bold tabular-nums text-[#6B7280]">
                 {unlockedCount} of {TROPHY_SLOTS} unlocked
+                {!catalog && cabinets.length > 1 && current
+                  ? ` · Cabinet ${current.number} of ${cabinets.length}`
+                  : null}
               </p>
             </div>
           </div>
           <button
             type="button"
-            aria-pressed={upcoming}
-            aria-label={upcoming ? "Show trophy shelves" : "Show upcoming badges"}
-            onClick={onToggleUpcoming}
+            aria-pressed={catalog}
+            aria-label={catalog ? "Show trophy shelves" : "View all badges"}
+            onClick={onToggleCatalog}
             className={`inline-flex flex-shrink-0 items-center gap-1 rounded-full border px-2.5 py-1 text-[10px] font-extrabold transition ${
-              upcoming
+              catalog
                 ? "border-emerald-500/40 bg-emerald-500/15 text-[#10B981]"
                 : "border-[#1F2937] bg-black/40 text-[#9CA3AF] hover:border-[#374151] hover:text-white"
             }`}
           >
-            <Target size={11} aria-hidden="true" />
-            Upcoming Badges
+            <List size={11} aria-hidden="true" />
+            {catalog ? "Cabinet" : "View All Badges"}
           </button>
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3.5">
-          <div key={upcoming ? "upcoming" : "shelves"} className="trophy-cabinet-view">
-            {upcoming ? (
+          <div key={catalog ? "catalog" : "shelves"} className="trophy-cabinet-view">
+            {catalog ? (
               <div className="trophy-cabinet-case trophy-cabinet-case--list">
-                <UpcomingList trophies={trophies} onOpen={onOpenBadge} />
+                <AllBadgesList trophies={trophies} onOpen={onOpenBadge} />
               </div>
             ) : (
-              <ShelfDisplay shelves={shelves} onOpen={onOpenBadge} />
+              <>
+                <div
+                  ref={scrollerRef}
+                  className="trophy-cabinet-scroller"
+                  onScroll={onScrollerScroll}
+                >
+                  {cabinets.map((cabinet) => (
+                    <div key={cabinet.number} className="trophy-cabinet-page">
+                      <ShelfDisplay cabinet={cabinet} onOpen={onOpenBadge} />
+                    </div>
+                  ))}
+                </div>
+                <CabinetPager cabinets={cabinets} index={cabinetIndex} onGoTo={goToCabinet} />
+              </>
             )}
           </div>
         </div>
@@ -388,7 +534,7 @@ function CabinetModal({
 
 export default function TrophyCabinet({ trophies }: { trophies: TrophyItem[] }) {
   const [open, setOpen] = useState(false);
-  const [upcoming, setUpcoming] = useState(false);
+  const [catalog, setCatalog] = useState(false);
   const [selected, setSelected] = useState<TrophyItem | null>(null);
   const dialogId = useId();
   const titleId = useId();
@@ -396,12 +542,12 @@ export default function TrophyCabinet({ trophies }: { trophies: TrophyItem[] }) 
   const badgeTitleId = useId();
   const unlockedCount = trophies.filter((trophy) => trophy.unlocked).length;
   const lockedCount = trophies.length - unlockedCount;
-  const shelves = useMemo(() => chunkShelves(trophies), [trophies]);
-  const preview = trophies.slice(0, PREVIEW_COUNT);
+  const cabinets = useMemo(() => buildTrophyCabinetPages(trophies), [trophies]);
+  const preview = trophies.filter((trophy) => trophy.unlocked).slice(0, PREVIEW_COUNT);
 
   const closeCabinet = () => {
     setOpen(false);
-    setUpcoming(false);
+    setCatalog(false);
     setSelected(null);
   };
 
@@ -445,14 +591,22 @@ export default function TrophyCabinet({ trophies }: { trophies: TrophyItem[] }) 
           <span className="block text-[14px] font-bold text-white">Trophy Cabinet</span>
           <span className="mt-0.5 block text-[12px] text-[#9CA3AF]">
             {unlockedCount} of {TROPHY_SLOTS} unlocked
-            {lockedCount > 0 ? ` · ${lockedCount} remaining` : " · Cabinet complete"}
+            {lockedCount > 0
+              ? ` · ${lockedCount} remaining`
+              : cabinets.length > 1
+                ? ` · ${cabinets.length} cabinets`
+                : " · Cabinet complete"}
           </span>
           <span className="mt-2 flex items-center" aria-hidden="true">
-            {preview.map((trophy, index) => (
-              <span key={trophy.id} className="relative" style={{ marginLeft: index === 0 ? 0 : -8, zIndex: PREVIEW_COUNT - index }}>
-                <BadgeDisk trophy={trophy} size="preview" />
-              </span>
-            ))}
+            {preview.length > 0 ? (
+              preview.map((trophy, index) => (
+                <span key={trophy.id} className="relative" style={{ marginLeft: index === 0 ? 0 : -8, zIndex: PREVIEW_COUNT - index }}>
+                  <BadgeDisk trophy={trophy} size="preview" />
+                </span>
+              ))
+            ) : (
+              <span className="text-[11px] font-semibold text-[#6B7280]">No earned badges yet</span>
+            )}
           </span>
         </span>
         <span className="flex flex-shrink-0 items-center gap-1">
@@ -467,17 +621,18 @@ export default function TrophyCabinet({ trophies }: { trophies: TrophyItem[] }) 
         ? createPortal(
             <CabinetModal
               trophies={trophies}
-              shelves={shelves}
+              cabinets={cabinets}
               unlockedCount={unlockedCount}
               dialogId={dialogId}
               titleId={titleId}
-              upcoming={upcoming}
-              onToggleUpcoming={() => {
+              catalog={catalog}
+              onToggleCatalog={() => {
                 setSelected(null);
-                setUpcoming((value) => !value);
+                setCatalog((value) => !value);
               }}
               onClose={closeCabinet}
               onOpenBadge={setSelected}
+              navigationLocked={Boolean(selected)}
             />,
             document.body
           )

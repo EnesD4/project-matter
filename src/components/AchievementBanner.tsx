@@ -7,6 +7,7 @@ import {
   trophyUnlockMessage,
   type Trophy,
 } from "../lib/achievements";
+import { playAchievementFanfare } from "../lib/audioService";
 import { BadgeDisk } from "./TrophyCabinet";
 
 const AUTO_DISMISS_MS = 15_000;
@@ -72,6 +73,7 @@ export default function AchievementBanner({ userName }: AchievementBannerProps) 
     resetDrag();
     setCurrent(next);
     if (!next) return;
+    playAchievementFanfare();
     dismissTimerRef.current = window.setTimeout(() => dismissRef.current("up"), AUTO_DISMISS_MS);
   };
 

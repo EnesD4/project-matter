@@ -484,7 +484,7 @@ function buildInsights(ctx: {
   } else if (!hasIndexCore && stocks.length > 0 && etfPct < 40) {
     items.push({
       priority: 70,
-      text: `There is no broad S&P 500 / total-market ETF (VOO, SPY, VTI) on the book. That baseline holding is what Mater AI uses as the risk anchor.`,
+      text: `There is no broad S&P 500 / total-market ETF (VOO, SPY, VTI) on the book. That baseline holding is what Sprout AI uses as the risk anchor.`,
     });
   }
 

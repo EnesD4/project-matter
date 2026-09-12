@@ -22,6 +22,7 @@ function stubHoldingFromWatchlist(pick: WatchlistStockPick): StockHolding {
     prevClose,
     logo: pick.logo,
     domain: pick.domain,
+    account: "paper",
   };
 }
 
@@ -31,6 +32,12 @@ export type WatchlistScreenProps = {
   privacyMode?: boolean;
   /** Drop the outer card chrome when nested inside the Investment screen. */
   embedded?: boolean;
+  onAddHolding?: (holding: StockHolding) => void;
+  onSellHolding?: (
+    holding: StockHolding,
+    shares: number,
+    sellPrice: number
+  ) => Promise<{ remainingShares: number }>;
 };
 
 export default function WatchlistScreen({
@@ -38,6 +45,8 @@ export default function WatchlistScreen({
   totalPortfolioValue,
   privacyMode = false,
   embedded = false,
+  onAddHolding,
+  onSellHolding,
 }: WatchlistScreenProps) {
   const [selectedHolding, setSelectedHolding] = useState<StockHolding | null>(null);
 
@@ -58,6 +67,22 @@ export default function WatchlistScreen({
           totalPortfolioValue={totalPortfolioValue}
           privacyMode={privacyMode}
           onBack={() => setSelectedHolding(null)}
+          onAddMore={onAddHolding}
+          onSell={
+            onSellHolding && selectedHolding.quantity > 0 && selectedHolding.account !== "verified"
+              ? async (holding, shares, sellPrice) => {
+                  const result = await onSellHolding(holding, shares, sellPrice);
+                  if (result.remainingShares <= 1e-8) {
+                    setSelectedHolding(null);
+                  } else {
+                    setSelectedHolding((prev) =>
+                      prev ? { ...prev, quantity: result.remainingShares } : prev
+                    );
+                  }
+                  return result;
+                }
+              : undefined
+          }
         />
       )}
     </div>

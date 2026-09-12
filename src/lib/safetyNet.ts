@@ -1,3 +1,5 @@
+import { readLocalItem } from "./storage";
+
 const API_BASE_URL =
   (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() || "http://localhost:5000";
 
@@ -5,7 +7,8 @@ export const TROY_OZ_GRAMS = 31.1034768;
 export const SAFETY_NET_STARTER_MONTHS = 3;
 export const SAFETY_NET_RECOMMENDED_MONTHS = 6;
 export const GOLD_QUOTE_SYMBOLS = ["GC=F", "XAUUSD=X"] as const;
-export const GOLD_PRICE_CACHE_KEY = "matterpro_gold_oz_usd";
+export const GOLD_PRICE_CACHE_KEY = "sprout_gold_oz_usd";
+const LEGACY_GOLD_PRICE_CACHE_KEY = "matterpro_gold_oz_usd";
 
 const MAX_BONDS = 50;
 const MAX_ID_LEN = 64;
@@ -29,10 +32,15 @@ export type SafetyNetConfig = {
   goldAmount: number;
   goldUnit: GoldUnit;
   bonds: SafetyNetBond[];
+  /** FDIC-insured HYSA / T-bill / yield-account cash, separate from checking. */
+  hysaCash: number;
 };
 
 export type SafetyNetTotals = {
+  /** Combined checking + HYSA cash (backwards-compatible total). */
   cash: number;
+  liquidCash: number;
+  hysaCash: number;
   stocks: number;
   gold: number;
   bonds: number;
@@ -79,6 +87,7 @@ export function emptySafetyNet(): SafetyNetConfig {
     goldAmount: 0,
     goldUnit: "oz",
     bonds: [],
+    hysaCash: 0,
   };
 }
 
@@ -122,6 +131,7 @@ export function parseSafetyNet(raw: unknown): SafetyNetConfig {
     goldAmount: asMoney(rec.goldAmount),
     goldUnit: rec.goldUnit === "g" ? "g" : "oz",
     bonds,
+    hysaCash: asMoney(rec.hysaCash),
   };
 }
 
@@ -143,7 +153,9 @@ export function computeSafetyNetTotals(input: {
   goldPricePerOz: number | null;
   bondPrices: Record<string, number>;
 }): SafetyNetTotals {
-  const cash = Math.max(0, input.cash);
+  const liquidCash = Math.max(0, input.cash);
+  const hysaCash = Math.max(0, input.config.hysaCash ?? 0);
+  const cash = liquidCash + hysaCash;
   const stocks = Math.max(0, input.portfolioValue) * (Math.min(100, Math.max(0, input.config.portfolioPct)) / 100);
   const ounces = goldOunces(input.config.goldAmount, input.config.goldUnit);
   const gold = input.goldPricePerOz && input.goldPricePerOz > 0 ? ounces * input.goldPricePerOz : 0;
@@ -157,6 +169,8 @@ export function computeSafetyNetTotals(input: {
 
   return {
     cash,
+    liquidCash,
+    hysaCash,
     stocks,
     gold,
     bonds,
@@ -180,7 +194,7 @@ export function coverageProgressPct(
 
 export function readCachedGoldPrice(): number | null {
   try {
-    const raw = localStorage.getItem(GOLD_PRICE_CACHE_KEY);
+    const raw = readLocalItem(GOLD_PRICE_CACHE_KEY, LEGACY_GOLD_PRICE_CACHE_KEY);
     const n = raw ? Number(raw) : NaN;
     return Number.isFinite(n) && n > 0 ? n : null;
   } catch {

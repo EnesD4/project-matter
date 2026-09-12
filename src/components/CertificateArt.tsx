@@ -8,8 +8,6 @@ import {
 
 const TIER_CLASS: Record<CertificateTier, string> = {
   gold: "certificate--gold",
-  ocean: "certificate--ocean",
-  flame: "certificate--flame",
 };
 
 export function CertificateArt({
@@ -30,14 +28,14 @@ export function CertificateArt({
     >
       <div className="certificate__frame">
         <div className="certificate__inner">
-          <p className="certificate__brand">Matter Academy</p>
+          <p className="certificate__brand">Sprout Academy</p>
           <span className="certificate__ornament" aria-hidden="true">
             <Sparkles size={preview ? 10 : 14} />
           </span>
           <h3 className="certificate__title">Certificate of Completion</h3>
           <p className="certificate__tier">{meta.title}</p>
           <p className="certificate__body">
-            Congratulations <strong>{name}</strong>, you finished Matter Academy successfully in{" "}
+            Congratulations <strong>{name}</strong>, you finished Sprout Academy successfully in{" "}
             <strong>{date}</strong>.
           </p>
           <div className="certificate__seal" aria-hidden="true">

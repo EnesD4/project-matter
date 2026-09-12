@@ -1,536 +1,462 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
+  Brain,
+  Building2,
+  Calculator,
+  CalendarDays,
   Check,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
+  Coins,
   Compass,
-  CreditCard,
-  Flame,
+  FileText,
+  HeartPulse,
   HelpCircle,
-  Lightbulb,
+  Landmark,
+  Layers,
   Lock,
-  LucideIcon,
-  ShieldCheck,
-  Star,
+  type LucideIcon,
+  Percent,
+  PieChart,
+  Scale,
+  ScrollText,
+  Search,
+  Sparkles,
+  Sprout,
   Swords,
+  ShieldCheck,
   Trophy,
+  Wallet,
   X,
-  XCircle,
 } from "lucide-react";
+import { playSuccessChime } from "../lib/audioService";
 import { getStoredUser } from "../lib/auth";
-import { awardGoldCertificateForPhase1 } from "../lib/certificates";
+import { maybeAwardGoldMasterCertificate } from "../lib/certificates";
+import {
+  CARD_XP,
+  QUIZ_XP,
+  readLessonProgress,
+  requestPaperTicker,
+  writeLessonProgress,
+  type LessonProgress,
+} from "../lib/lessonProgress";
+import {
+  getLessonStreak,
+  msUntilNextLocalMidnight,
+  recordLessonCompletion,
+  STREAK_UPDATED_EVENT,
+} from "../lib/streakService";
+import {
+  LESSON_MODULES,
+  OPEN_LESSON_EVENT,
+  PHASES,
+  PHASE_ORDER,
+  curriculumIsComplete,
+  isPhaseUnlocked,
+  lessonXpPossible,
+  modulesForPhase,
+  nextPhaseId,
+  phaseIsComplete,
+  previousPhaseId,
+  type LessonIconName,
+  type LessonModuleDef,
+  type OpenLessonDetail,
+  type PhaseIconName,
+  type PhaseId,
+} from "../lib/lessons";
+import { LessonDeck, LessonQuiz } from "./LessonCard";
+import LessonsHeader from "./LessonsHeader";
+import StreakBadge from "./StreakBadge";
 
-type ModuleId = "cashflow" | "credit" | "debt-battles" | "emergency-fund";
+export type { PhaseId };
 
-type QuizOption = {
-  id: string;
-  label: string;
-  correct: boolean;
-  explanation: string;
+const ICONS: Record<LessonIconName, LucideIcon> = {
+  swords: Swords,
+  percent: Percent,
+  shield: ShieldCheck,
+  sprout: Sprout,
+  building: Building2,
+  scale: Scale,
+  heart: HeartPulse,
+  landmark: Landmark,
+  layers: Layers,
+  scroll: ScrollText,
+  "file-text": FileText,
+  calculator: Calculator,
+  coins: Coins,
+  calendar: CalendarDays,
+  "pie-chart": PieChart,
+  brain: Brain,
+  wallet: Wallet,
 };
 
-type QuizQuestion = {
-  scenario: string;
-  question: string;
-  options: QuizOption[];
+const PHASE_ICONS: Record<PhaseIconName, LucideIcon> = {
+  shield: ShieldCheck,
+  landmark: Landmark,
+  layers: Layers,
+  search: Search,
+  compass: Compass,
 };
 
-type KnowledgeCard = {
-  title: string;
-  body: string;
+type PlayerPhase = "cards" | "quiz" | "complete";
+
+type LessonCelebration = {
+  xpEarned: number;
+  streak: number;
+  incremented: boolean;
 };
 
-type LessonModuleDef = {
-  id: ModuleId;
-  index: number;
-  title: string;
-  subtitle: string;
-  icon: LucideIcon;
-  accent: string;
-  knowledge: KnowledgeCard;
-  quiz: [QuizQuestion, QuizQuestion];
-  actionCard: string;
-  xpReward: number;
-};
+function hydrateProgress(userId?: string): LessonProgress {
+  const streak = getLessonStreak(userId);
+  const progress = readLessonProgress(userId);
+  return {
+    ...progress,
+    streak: streak.current,
+    longestStreak: streak.longest,
+    lastActiveDate: streak.lastCompletedDate,
+  };
+}
 
-const MODULES: LessonModuleDef[] = [
-  {
-    id: "cashflow",
-    index: 1,
-    title: "Module 1: Mapping Your Money",
-    subtitle: "Cash Flow & Income vs. Expenses",
-    icon: Compass,
-    accent: "#10B981",
-    knowledge: {
-      title: "What is Cash Flow?",
-      body: "Cash flow is simply: Income − Expenses = What's Left. If that number is positive, you have room to save or pay down debt. If it's negative, you're spending more than you earn — and that gap usually gets covered by debt. Tracking it every month is the first step to taking control of your money.",
-    },
-    quiz: [
-      {
-        scenario:
-          "Maya earns $3,000 a month. Her rent is $1,200, bills are $400, groceries are $600, and she spends $500 going out.",
-        question: "What is Maya's monthly cash flow, and what does it tell her?",
-        options: [
-          {
-            id: "a",
-            label: "+$300 — she has a positive cash flow",
-            correct: true,
-            explanation:
-              "$3,000 − ($1,200 + $400 + $600 + $500) = $300. A positive cash flow means she's earning more than she spends — that extra $300 can go toward debt payoff or savings.",
-          },
-          {
-            id: "b",
-            label: "−$300 — she's running a deficit",
-            correct: false,
-            explanation:
-              "Subtract her expenses from her income again: she actually has $300 left over, not a deficit.",
-          },
-          {
-            id: "c",
-            label: "$3,000 — as if she spent nothing",
-            correct: false,
-            explanation: "Cash flow means income minus ALL expenses, not just the income by itself.",
-          },
-        ],
-      },
-      {
-        scenario: "Maya wants to save $1,800 for a trip in 6 months, using only her leftover cash flow.",
-        question: "At her current $300/month cash flow, will she hit her goal?",
-        options: [
-          {
-            id: "a",
-            label: "Yes — $300 × 6 months = $1,800, right on target",
-            correct: true,
-            explanation:
-              "$300 × 6 = $1,800 exactly. If she keeps her spending steady, she's on pace — no changes needed.",
-          },
-          {
-            id: "b",
-            label: "No — she needs to cut $100/month more",
-            correct: false,
-            explanation: "Do the math again: $300 × 6 = $1,800, which already matches her goal.",
-          },
-          {
-            id: "c",
-            label: "It doesn't matter — she should just use a credit card",
-            correct: false,
-            explanation: "Charging the trip means paying interest later — better to reach the goal with cash she already has.",
-          },
-        ],
-      },
-    ],
-    actionCard: "Today, write down everything you earned and spent this month — even loosely. See what your real cash flow number is.",
-    xpReward: 30,
-  },
-  {
-    id: "credit",
-    index: 2,
-    title: "Module 2: The Credit Score Game",
-    subtitle: "FICO 101, APR & Credit Utilization",
-    icon: CreditCard,
-    accent: "#3B82F6",
-    knowledge: {
-      title: "How APR Quietly Grows Your Balance",
-      body: "APR (Annual Percentage Rate) is the yearly cost of carrying a balance, but it's charged monthly. Carry $1,000 at 24% APR and that's roughly 2% a month — about $20 added to your balance before you even make a payment. Two habits move your FICO score the most: paying on time, and keeping your credit utilization (balance ÷ limit) under 30%.",
-    },
-    quiz: [
-      {
-        scenario: "Alex has a $10,000 credit limit and carries an $8,000 balance, but always pays on time.",
-        question: "What's most likely to boost Alex's FICO score fastest?",
-        options: [
-          {
-            id: "a",
-            label: "Paying down the balance to get utilization under 30%",
-            correct: true,
-            explanation:
-              "Alex's utilization is 80% — way too high. Getting the balance under $3,000 (30% of $10,000) is one of the fastest ways to raise a score.",
-          },
-          {
-            id: "b",
-            label: "Closing the card since it's almost maxed out",
-            correct: false,
-            explanation:
-              "Closing a card lowers your total available credit, which can actually push utilization higher and hurt your score.",
-          },
-          {
-            id: "c",
-            label: "Applying for a second credit card immediately",
-            correct: false,
-            explanation: "A new application triggers a hard inquiry, which can ding your score short-term.",
-          },
-        ],
-      },
-      {
-        scenario: "Alex's card charges 24% APR. He carries that $8,000 balance and only pays the $160 minimum payment each month.",
-        question: "What happens to Alex's balance if he keeps paying only the minimum?",
-        options: [
-          {
-            id: "a",
-            label: "It barely shrinks — most of the payment covers interest, not the balance",
-            correct: true,
-            explanation:
-              "At 24% APR, $8,000 accrues about $160/month in interest alone. Paying just the minimum means he's mostly treading water.",
-          },
-          {
-            id: "b",
-            label: "It disappears within a year automatically",
-            correct: false,
-            explanation: "Balances don't vanish — without extra payments above the minimum, high-APR debt can take years to clear.",
-          },
-          {
-            id: "c",
-            label: "APR doesn't matter as long as he pays on time",
-            correct: false,
-            explanation: "APR charges interest regardless of whether you pay on time — paying on time protects your score, not your balance.",
-          },
-        ],
-      },
-    ],
-    actionCard: "Check your credit card statement for your current APR and utilization (balance ÷ limit). Is your utilization under 30%?",
-    xpReward: 30,
-  },
-  {
-    id: "debt-battles",
-    index: 3,
-    title: "Module 3: Debt Wars",
-    subtitle: "Snowball vs. Avalanche Strategies",
-    icon: Swords,
-    accent: "#F59E0B",
-    knowledge: {
-      title: "Snowball vs. Avalanche",
-      body: "Both strategies have you pay minimums on everything, then throw extra cash at one target debt. Snowball targets the smallest balance first — fast wins that build motivation. Avalanche targets the highest interest rate first — the mathematically optimal path that saves the most money. Neither is \"wrong\"; pick the one you'll actually stick with.",
-    },
-    quiz: [
-      {
-        scenario: "John has $5,000 in credit card debt at 22% APR and $1,000 in student loan debt at 4% APR.",
-        question: "Which method saves John the most money in total interest?",
-        options: [
-          {
-            id: "a",
-            label: "Avalanche — pay off the 22% APR debt first",
-            correct: true,
-            explanation:
-              "Avalanche targets the highest interest rate first, which is mathematically optimal and minimizes total interest paid over time.",
-          },
-          {
-            id: "b",
-            label: "Snowball — pay off the $1,000 loan first",
-            correct: false,
-            explanation:
-              "Snowball feels motivating since the small balance disappears fast, but that 22% APR debt keeps racking up interest while it waits.",
-          },
-          {
-            id: "c",
-            label: "They save the exact same amount",
-            correct: false,
-            explanation: "Since the interest rates are so different (22% vs. 4%), the order you pay them off in changes your total interest significantly.",
-          },
-        ],
-      },
-      {
-        scenario: "John decides to pay off his student loan first (Snowball) instead of the credit card.",
-        question: "What's the real trade-off he's making?",
-        options: [
-          {
-            id: "a",
-            label: "A fast psychological win, but more total interest paid",
-            correct: true,
-            explanation:
-              "Snowball isn't \"wrong\" — the quick win keeps many people motivated to keep going. The trade-off is a higher total interest cost compared to Avalanche.",
-          },
-          {
-            id: "b",
-            label: "He actually saves more money than Avalanche would",
-            correct: false,
-            explanation: "Since the credit card's 22% APR is much higher, delaying it costs more in interest, not less.",
-          },
-          {
-            id: "c",
-            label: "There's no trade-off at all",
-            correct: false,
-            explanation: "Every extra month the 22% APR debt lingers, it accrues more interest than the 4% loan would.",
-          },
-        ],
-      },
-    ],
-    actionCard: "Pull up your credit card statement today and write down your highest-APR balance. That's your Avalanche target.",
-    xpReward: 35,
-  },
-  {
-    id: "emergency-fund",
-    index: 4,
-    title: "Module 4: The Safety Net",
-    subtitle: "Emergency Fund Essentials",
-    icon: ShieldCheck,
-    accent: "#8B5CF6",
-    knowledge: {
-      title: "Why 3–6 Months?",
-      body: "An emergency fund is cash set aside for the unexpected — job loss, medical bills, car repairs — so a surprise expense doesn't turn into new debt. Most experts recommend saving 3 to 6 months of essential expenses (rent, food, utilities — not takeout). It's not about being rich; it's about buying yourself time when life gets messy.",
-    },
-    quiz: [
-      {
-        scenario: "Zoe's essential monthly expenses are $2,000. She currently has $2,000 saved.",
-        question: "What should Zoe's emergency fund target be?",
-        options: [
-          {
-            id: "a",
-            label: "$6,000 – $12,000 (3–6 months of expenses)",
-            correct: true,
-            explanation:
-              "3–6 months of essential expenses gives Zoe a real cushion if she loses income or faces a big unexpected cost.",
-          },
-          {
-            id: "b",
-            label: "$2,000 is already enough",
-            correct: false,
-            explanation: "One month covers a small hiccup, but most financial emergencies (like job loss) last longer than that.",
-          },
-          {
-            id: "c",
-            label: "$20,000 (10 months of expenses)",
-            correct: false,
-            explanation: "That's overly cautious — money beyond 6 months is usually better off invested or growing elsewhere.",
-          },
-        ],
-      },
-      {
-        scenario: "Zoe gets a $1,000 bonus at work.",
-        question: "What's the smartest first move for that bonus, given she's still building her emergency fund?",
-        options: [
-          {
-            id: "a",
-            label: "Add it to her emergency fund until she hits 3–6 months",
-            correct: true,
-            explanation:
-              "Until your safety net is fully funded, extra cash is best used to close that gap — it protects you from going into debt later.",
-          },
-          {
-            id: "b",
-            label: "Invest all of it in stocks right away",
-            correct: false,
-            explanation: "Investments can lose value short-term — not ideal for money you might need on short notice.",
-          },
-          {
-            id: "c",
-            label: "Spend it since it's \"bonus\" money",
-            correct: false,
-            explanation: "Bonus money is still money — it can meaningfully speed up reaching your safety net goal.",
-          },
-        ],
-      },
-    ],
-    actionCard: "Calculate your essential monthly expenses and multiply by 3 to find your emergency fund starter goal.",
-    xpReward: 35,
-  },
-];
-
-export type PhaseId = "phase-1" | "phase-2" | "phase-3";
-
-type PhaseDef = {
-  id: PhaseId;
-  title: string;
-  subtitle: string;
-  locked?: boolean;
-};
-
-const PHASES: PhaseDef[] = [
-  { id: "phase-1", title: "Phase 1: Put Out the Fire", subtitle: "Core Literacy & Debt Basics" },
-  { id: "phase-2", title: "Phase 2: Build Momentum", subtitle: "Intermediate strategies — unlocks after Phase 1", locked: true },
-  { id: "phase-3", title: "Phase 3: Mastery Certificate", subtitle: "Advanced strategies & highest certificate", locked: true },
-];
-
-type Phase = "knowledge" | "q1" | "q1-feedback" | "q2" | "q2-feedback" | "complete";
-
-type Answer = { optionId: string; correct: boolean };
+function progressToCompleted(progress: LessonProgress): Record<string, boolean> {
+  return Object.fromEntries(progress.completed.map((id) => [id, true]));
+}
 
 export default function LessonsPhase1({
   recommendedPhaseId,
+  phaseOrder,
+  lockedPhaseIds,
+  lockReason,
+  unlockAllPhases,
   userId,
   userName,
+  onOpenPaperPortfolio,
 }: {
   recommendedPhaseId?: PhaseId;
+  phaseOrder?: PhaseId[];
+  lockedPhaseIds?: PhaseId[];
+  lockReason?: string | null;
+  unlockAllPhases?: boolean;
   userId?: string;
   userName?: string;
+  onOpenPaperPortfolio?: () => void;
 }) {
-  const [completed, setCompleted] = useState<Record<ModuleId, boolean>>({
-    cashflow: false,
-    credit: false,
-    "debt-battles": false,
-    "emergency-fund": false,
-  });
-  const [xp, setXp] = useState(0);
-  const [streak, setStreak] = useState(0);
+  const [progress, setProgress] = useState<LessonProgress>(() => hydrateProgress(userId));
+  const completed = useMemo(() => progressToCompleted(progress), [progress.completed]);
 
-  const [activeModuleId, setActiveModuleId] = useState<ModuleId | null>(null);
-  const [phase, setPhase] = useState<Phase>("knowledge");
-  const [answer1, setAnswer1] = useState<Answer | null>(null);
-  const [answer2, setAnswer2] = useState<Answer | null>(null);
+  const [activeModuleId, setActiveModuleId] = useState<string | null>(null);
+  const [playerPhase, setPlayerPhase] = useState<PlayerPhase>("cards");
+  const [cardIndex, setCardIndex] = useState(0);
+  const [quizSolved, setQuizSolved] = useState(false);
+  const [celebration, setCelebration] = useState<LessonCelebration | null>(null);
+  const awardedCardsRef = useRef<Set<string>>(new Set());
+  const quizAwardedRef = useRef(false);
+  const sessionXpRef = useRef(0);
+  const finishingRef = useRef(false);
 
-  // Accordion: the current active (next-up) module starts expanded; others start collapsed.
-  const [expandedModuleId, setExpandedModuleId] = useState<ModuleId | null>(MODULES[0]?.id ?? null);
+  const [expandedModuleId, setExpandedModuleId] = useState<string | null>(
+    () => modulesForPhase(recommendedPhaseId ?? "phase-1")[0]?.id ?? null
+  );
+  const [expandedPhaseId, setExpandedPhaseId] = useState<PhaseId | null>(recommendedPhaseId ?? "phase-1");
 
-  // Accordion: Phase 1 starts expanded; future phases start collapsed.
-  const [expandedPhaseId, setExpandedPhaseId] = useState<PhaseId | null>("phase-1");
+  const grantXp = (amount: number) => {
+    if (amount <= 0) return;
+    sessionXpRef.current += amount;
+    setProgress((prev) => {
+      const next = { ...prev, xp: prev.xp + amount };
+      writeLessonProgress(next, userId);
+      return next;
+    });
+  };
 
-  const completedCount = MODULES.filter((m) => completed[m.id]).length;
-  const phasePct = Math.round((completedCount / MODULES.length) * 100);
+  useEffect(() => {
+    let midnightTimer = 0;
+    const refresh = () => {
+      window.clearTimeout(midnightTimer);
+      midnightTimer = window.setTimeout(refresh, msUntilNextLocalMidnight());
+      if (finishingRef.current) return;
+      setProgress(hydrateProgress(userId));
+    };
+    refresh();
+    window.addEventListener(STREAK_UPDATED_EVENT, refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.removeEventListener(STREAK_UPDATED_EVENT, refresh);
+      document.removeEventListener("visibilitychange", refresh);
+      window.clearTimeout(midnightTimer);
+    };
+  }, [userId]);
 
-  const isUnlocked = (index: number) => index === 0 || completed[MODULES[index - 1].id];
+  useEffect(() => {
+    if (!recommendedPhaseId) return;
+    setExpandedPhaseId(recommendedPhaseId);
+    setExpandedModuleId(modulesForPhase(recommendedPhaseId)[0]?.id ?? null);
+  }, [recommendedPhaseId]);
+
+  useEffect(() => {
+    const onOpenLesson = (event: Event) => {
+      const detail = (event as CustomEvent<OpenLessonDetail>).detail ?? {};
+      const moduleDef = detail.moduleId
+        ? LESSON_MODULES.find((item) => item.id === detail.moduleId)
+        : undefined;
+      const phaseId = moduleDef?.phaseId ?? detail.phaseId;
+      if (phaseId) setExpandedPhaseId(phaseId);
+      if (!moduleDef) return;
+      setExpandedModuleId(moduleDef.id);
+
+      awardedCardsRef.current = new Set();
+      quizAwardedRef.current = false;
+      sessionXpRef.current = 0;
+      finishingRef.current = false;
+      setCelebration(null);
+      setActiveModuleId(moduleDef.id);
+      setPlayerPhase("cards");
+      setCardIndex(0);
+      setQuizSolved(false);
+    };
+    window.addEventListener(OPEN_LESSON_EVENT, onOpenLesson);
+    return () => window.removeEventListener(OPEN_LESSON_EVENT, onOpenLesson);
+  }, []);
+
+  const unlockOptions = { recommendedPhaseId, lockedPhaseIds, phaseOrder, unlockAllPhases };
+  const orderedPhases = useMemo(() => {
+    if (unlockAllPhases && phaseOrder?.length) {
+      return [...PHASES].sort((a, b) => phaseOrder.indexOf(a.id) - phaseOrder.indexOf(b.id));
+    }
+    return PHASES;
+  }, [phaseOrder, unlockAllPhases]);
+
+  const isModuleUnlocked = (moduleDef: LessonModuleDef, siblings: LessonModuleDef[]) => {
+    if (!isPhaseUnlocked(moduleDef.phaseId, completed, recommendedPhaseId, unlockOptions)) return false;
+    const index = siblings.findIndex((item) => item.id === moduleDef.id);
+    return index === 0 || Boolean(completed[siblings[index - 1]?.id]);
+  };
 
   const activeModule = useMemo(
-    () => MODULES.find((m) => m.id === activeModuleId) ?? null,
+    () => LESSON_MODULES.find((moduleDef) => moduleDef.id === activeModuleId) ?? null,
     [activeModuleId]
   );
 
-  const stepIndex =
-    phase === "knowledge" ? 0 : phase === "q1" || phase === "q1-feedback" ? 1 : phase === "q2" || phase === "q2-feedback" ? 2 : 3;
-
-  const openModule = (moduleDef: LessonModuleDef, index: number) => {
-    if (!isUnlocked(index)) return;
+  const openModule = (moduleDef: LessonModuleDef, unlocked: boolean) => {
+    if (!unlocked) return;
+    awardedCardsRef.current = new Set();
+    quizAwardedRef.current = false;
+    sessionXpRef.current = 0;
+    finishingRef.current = false;
+    setCelebration(null);
     setActiveModuleId(moduleDef.id);
-    setPhase("knowledge");
-    setAnswer1(null);
-    setAnswer2(null);
+    setPlayerPhase("cards");
+    setCardIndex(0);
+    setQuizSolved(false);
   };
 
   const closeModal = () => {
+    finishingRef.current = false;
+    setCelebration(null);
     setActiveModuleId(null);
   };
 
-  const toggleExpand = (id: ModuleId, unlocked: boolean) => {
-    if (!unlocked) return;
-    setExpandedModuleId((prev) => (prev === id ? null : id));
+  const onCardAdvance = (fromIndex: number) => {
+    if (!activeModule || completed[activeModule.id]) return;
+    const card = activeModule.cards[fromIndex];
+    if (!card || awardedCardsRef.current.has(card.id)) return;
+    awardedCardsRef.current.add(card.id);
+    grantXp(CARD_XP);
   };
 
-  const togglePhase = (id: PhaseId, locked?: boolean) => {
-    if (locked) return;
-    setExpandedPhaseId((prev) => (prev === id ? null : id));
-  };
-
-  const selectOption = (questionNumber: 1 | 2, option: QuizOption) => {
-    const result: Answer = { optionId: option.id, correct: option.correct };
-    if (questionNumber === 1) {
-      setAnswer1(result);
-      setPhase("q1-feedback");
-    } else {
-      setAnswer2(result);
-      setPhase("q2-feedback");
+  const onQuizSolved = () => {
+    if (!activeModule || quizAwardedRef.current) {
+      setQuizSolved(true);
+      return;
     }
+    quizAwardedRef.current = true;
+    setQuizSolved(true);
+    playSuccessChime();
+    if (!completed[activeModule.id]) grantXp(QUIZ_XP);
+  };
+
+  const persistCompletion = () => {
+    if (!activeModule || finishingRef.current) return null;
+    finishingRef.current = true;
+    const alreadyDone = completed[activeModule.id];
+    const nextCompleted = alreadyDone || progress.completed.includes(activeModule.id)
+      ? progress.completed
+      : [...progress.completed, activeModule.id];
+    const result = recordLessonCompletion(userId);
+
+    setProgress((prev) => {
+      const completedIds = alreadyDone || prev.completed.includes(activeModule.id)
+        ? prev.completed
+        : [...prev.completed, activeModule.id];
+      const next = {
+        ...prev,
+        completed: completedIds,
+        streak: result.streak.current,
+        longestStreak: result.streak.longest,
+        lastActiveDate: result.streak.lastCompletedDate,
+      };
+      writeLessonProgress(next, userId);
+      return next;
+    });
+
+    const siblings = modulesForPhase(activeModule.phaseId);
+    const currentIdx = siblings.findIndex((item) => item.id === activeModule.id);
+    const nextModule = siblings[currentIdx + 1];
+    setExpandedModuleId(nextModule ? nextModule.id : activeModule.id);
+
+    const completedMap = Object.fromEntries(nextCompleted.map((lessonId) => [lessonId, true]));
+    const user = getStoredUser();
+    const id = userId || user?.id || "anon";
+    const name = userName || user?.name || "Investor";
+    maybeAwardGoldMasterCertificate(id, name, completedMap);
+    if (phaseIsComplete(activeModule.phaseId, completedMap)) {
+      const upcoming = nextPhaseId(activeModule.phaseId, unlockAllPhases ? phaseOrder : PHASE_ORDER);
+      if (upcoming) setExpandedPhaseId(upcoming);
+    }
+
+    return result;
   };
 
   const finishModule = () => {
     if (!activeModule) return;
-    const correctCount = (answer1?.correct ? 1 : 0) + (answer2?.correct ? 1 : 0);
-    const bonus = correctCount * 10;
-    setXp((prev) => prev + activeModule.xpReward + bonus);
-    setStreak((prev) => prev + 1);
-    const nextCompleted = { ...completed, [activeModule.id]: true };
-    setCompleted(nextCompleted);
-
-    // Auto-advance the accordion to the next module so it becomes the new "active" one.
-    const currentIdx = MODULES.findIndex((m) => m.id === activeModule.id);
-    const nextModule = MODULES[currentIdx + 1];
-    setExpandedModuleId(nextModule ? nextModule.id : activeModule.id);
-
-    closeModal();
-
-    const phase1Complete = MODULES.every((moduleDef) => nextCompleted[moduleDef.id]);
-    if (phase1Complete) {
-      const user = getStoredUser();
-      awardGoldCertificateForPhase1(
-        userId || user?.id || "anon",
-        userName || user?.name || "Investor"
-      );
+    if (celebration) {
+      closeModal();
+      return;
     }
+    playSuccessChime();
+    const result = persistCompletion();
+    if (!result) {
+      closeModal();
+      return;
+    }
+    setCelebration({
+      xpEarned: sessionXpRef.current,
+      streak: result.streak.current,
+      incremented: result.incremented,
+    });
   };
 
-  const correctCount = (answer1?.correct ? 1 : 0) + (answer2?.correct ? 1 : 0);
+  const openPaperCta = () => {
+    if (!activeModule?.cta) return;
+    requestPaperTicker({ symbol: activeModule.cta.symbol, description: activeModule.cta.description });
+    persistCompletion();
+    closeModal();
+    onOpenPaperPortfolio?.();
+  };
+
+  const playerSteps = activeModule ? activeModule.cards.length + 2 : 0;
+  const playerStep =
+    playerPhase === "cards" ? cardIndex : playerPhase === "quiz" ? (activeModule?.cards.length ?? 0) : playerSteps - 1;
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between gap-3 rounded-2xl border border-[#1F1F1F] bg-[#0A0A0A] px-4 py-3">
-        <div className="flex items-center gap-2.5">
-          <span className="grid h-9 w-9 flex-shrink-0 place-items-center rounded-xl bg-amber-500/15 text-amber-400">
-            <Star size={16} />
-          </span>
-          <div>
-            <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Daily XP Earned</p>
-            <p className="text-base font-extrabold leading-tight text-white">{xp} XP</p>
-          </div>
-        </div>
-        <div className="flex flex-shrink-0 items-center gap-1.5 rounded-full border border-orange-500/30 bg-orange-500/10 px-3 py-1.5 text-xs font-bold text-orange-300">
-          <span aria-hidden="true">🔥</span>
-          {streak}-day streak
-        </div>
-      </div>
+      <LessonsHeader xp={progress.xp} streak={progress.streak} />
 
-      {PHASES.map((phaseDef) => {
-        const isPhase1 = phaseDef.id === "phase-1";
+      {orderedPhases.map((phaseDef) => {
+        const unlockedPhase = isPhaseUnlocked(phaseDef.id, completed, recommendedPhaseId, unlockOptions);
+        const locked = !unlockedPhase;
         const phaseExpanded = expandedPhaseId === phaseDef.id;
+        const siblings = modulesForPhase(phaseDef.id);
+        const doneCount = siblings.filter((moduleDef) => completed[moduleDef.id]).length;
+        const phasePct = siblings.length ? Math.round((doneCount / siblings.length) * 100) : 0;
+        const PhaseIcon = PHASE_ICONS[phaseDef.icon];
+        const previous = previousPhaseId(phaseDef.id, PHASE_ORDER);
+        const previousTitle = previous ? `Phase ${PHASES.find((item) => item.id === previous)?.number}` : "the previous phase";
+        const profileLocked = Boolean(lockedPhaseIds?.includes(phaseDef.id) && !unlockedPhase);
+        const progressLabel = locked
+          ? `Phase ${phaseDef.number}: Locked`
+          : `Phase ${phaseDef.number}: ${doneCount}/${siblings.length} Completed`;
+        const certificateNote =
+          phaseDef.id === "phase-5" && curriculumIsComplete(completed)
+            ? " · Sprout Gold Financial Master Certificate unlocked"
+            : "";
 
         return (
           <div
             key={phaseDef.id}
-            className={`overflow-hidden rounded-2xl border transition-colors ${
-              phaseDef.locked
-                ? "border-[#1F1F1F]/60 bg-[#0A0A0A]/50"
-                : "border-[#1F1F1F] bg-gradient-to-br from-orange-500/10 via-[#0A0A0A] to-[#0A0A0A]"
-            }`}
+            className="overflow-hidden rounded-2xl border transition-colors"
+            style={
+              locked
+                ? { borderColor: "rgba(31,31,31,0.6)", background: "rgba(10,10,10,0.5)" }
+                : {
+                    borderColor: "#1F1F1F",
+                    background: `linear-gradient(to bottom right, ${phaseDef.accent}1A, #0A0A0A 42%, #0A0A0A)`,
+                  }
+            }
           >
             <button
               type="button"
-              onClick={() => togglePhase(phaseDef.id, phaseDef.locked)}
-              disabled={phaseDef.locked}
+              onClick={() => {
+                if (locked) return;
+                setExpandedPhaseId((prev) => (prev === phaseDef.id ? null : phaseDef.id));
+              }}
+              disabled={locked}
               aria-expanded={phaseExpanded}
               className={`flex w-full items-start justify-between gap-3 p-4 text-left sm:p-5 ${
-                phaseDef.locked ? "cursor-default opacity-60" : "cursor-pointer"
+                locked ? "cursor-default opacity-60" : "cursor-pointer"
               }`}
             >
-              <div>
+              <div className="min-w-0">
                 <p
-                  className={`text-[11px] font-semibold uppercase tracking-wider ${
-                    phaseDef.locked ? "text-slate-500" : "text-orange-400"
-                  }`}
+                  className="text-[11px] font-semibold uppercase tracking-wider"
+                  style={{ color: locked ? "#64748B" : phaseDef.accent }}
                 >
                   {phaseDef.title}
                 </p>
                 <h2 className="mt-1 text-lg font-extrabold tracking-tight text-white">{phaseDef.subtitle}</h2>
-                {recommendedPhaseId === phaseDef.id && (
-                  <span className="mt-1.5 inline-flex rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold text-emerald-300">
-                    Recommended for you
-                  </span>
-                )}
-                {isPhase1 && (
-                  <p className="mt-1 text-[11px] text-slate-500">
-                    {completedCount} / {MODULES.length} modules completed
-                    {phasePct === 100 ? " · Gold Certificate unlocked" : ""}
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  {phaseOrder?.[0] === phaseDef.id && (
+                    <span className="inline-flex rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[10px] font-bold text-amber-300">
+                      Top priority
+                    </span>
+                  )}
+                  {recommendedPhaseId === phaseDef.id && (
+                    <span className="inline-flex rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold text-emerald-300">
+                      Recommended for you
+                    </span>
+                  )}
+                </div>
+                <p className="mt-1 text-[11px] font-semibold text-slate-400">
+                  {progressLabel}
+                  {!locked ? certificateNote : ""}
+                </p>
+                {locked && (
+                  <p className="mt-0.5 text-[11px] text-slate-500">
+                    {profileLocked && lockReason
+                      ? lockReason
+                      : `Complete ${previousTitle} to unlock.`}
                   </p>
                 )}
               </div>
               <div className="flex flex-shrink-0 items-center gap-2">
                 <div
-                  className={`grid h-11 w-11 place-items-center rounded-xl ${
-                    phaseDef.locked ? "bg-black/20 text-slate-500" : "bg-orange-500/15 text-orange-400"
-                  }`}
+                  className="grid h-11 w-11 place-items-center rounded-xl"
+                  style={
+                    locked
+                      ? { background: "rgba(0,0,0,0.2)", color: "#64748B" }
+                      : { background: `${phaseDef.accent}26`, color: phaseDef.accent }
+                  }
                 >
-                  {phaseDef.locked ? <Lock size={18} /> : <Flame size={22} />}
+                  {locked ? <Lock size={18} /> : <PhaseIcon size={22} />}
                 </div>
-                {!phaseDef.locked &&
+                {!locked &&
                   (phaseExpanded ? (
-                    <ChevronUp size={18} className="text-slate-400 transition-transform duration-300" />
+                    <ChevronUp size={18} className="text-slate-400" />
                   ) : (
-                    <ChevronDown size={18} className="text-slate-400 transition-transform duration-300" />
+                    <ChevronDown size={18} className="text-slate-400" />
                   ))}
               </div>
             </button>
 
-            {isPhase1 && (
+            {!locked && siblings.length > 0 && (
               <div className="px-4 pb-4 sm:px-5">
                 <div className="h-2 w-full overflow-hidden rounded-full bg-black/30">
                   <div
-                    className="h-full rounded-full bg-gradient-to-r from-orange-500 to-emerald-500 transition-all duration-500"
-                    style={{ width: `${phasePct}%` }}
+                    className="h-full rounded-full transition-all duration-500"
+                    style={{
+                      width: `${phasePct}%`,
+                      background: `linear-gradient(to right, ${phaseDef.accent}, #10B981)`,
+                    }}
                   />
                 </div>
               </div>
@@ -538,17 +464,21 @@ export default function LessonsPhase1({
 
             <div
               className={`overflow-hidden transition-all duration-300 ease-in-out ${
-                phaseExpanded ? "max-h-[3000px] opacity-100" : "max-h-0 opacity-0"
+                phaseExpanded ? "max-h-[5200px] opacity-100" : "max-h-0 opacity-0"
               }`}
             >
               <div className="space-y-3 px-4 pb-4 sm:px-5">
-                {isPhase1 ? (
-                  MODULES.map((moduleDef, idx) => {
-                    const unlocked = isUnlocked(idx);
-                    const done = completed[moduleDef.id];
-                    const Icon = moduleDef.icon;
-                    const pct = done ? 100 : 0;
+                {locked ? (
+                  <p className="py-2 text-center text-[11px] font-semibold text-slate-500">
+                    Complete {previousTitle} to unlock these lessons.
+                  </p>
+                ) : (
+                  siblings.map((moduleDef) => {
+                    const unlocked = isModuleUnlocked(moduleDef, siblings);
+                    const done = Boolean(completed[moduleDef.id]);
+                    const Icon = ICONS[moduleDef.icon];
                     const expanded = expandedModuleId === moduleDef.id;
+                    const xpPossible = lessonXpPossible(moduleDef);
 
                     return (
                       <div
@@ -559,7 +489,10 @@ export default function LessonsPhase1({
                       >
                         <button
                           type="button"
-                          onClick={() => toggleExpand(moduleDef.id, unlocked)}
+                          onClick={() => {
+                            if (!unlocked) return;
+                            setExpandedModuleId((prev) => (prev === moduleDef.id ? null : moduleDef.id));
+                          }}
                           disabled={!unlocked}
                           aria-expanded={expanded}
                           className={`flex w-full items-start justify-between gap-3 p-4 pb-0 text-left ${
@@ -583,13 +516,13 @@ export default function LessonsPhase1({
                               className="rounded-full px-2 py-1 text-[10px] font-bold"
                               style={{ background: `${moduleDef.accent}22`, color: moduleDef.accent }}
                             >
-                              +{moduleDef.xpReward} XP
+                              +{xpPossible} XP
                             </span>
                             {unlocked &&
                               (expanded ? (
-                                <ChevronUp size={16} className="text-slate-500 transition-transform duration-300" />
+                                <ChevronUp size={16} className="text-slate-500" />
                               ) : (
-                                <ChevronDown size={16} className="text-slate-500 transition-transform duration-300" />
+                                <ChevronDown size={16} className="text-slate-500" />
                               ))}
                           </div>
                         </button>
@@ -598,11 +531,15 @@ export default function LessonsPhase1({
                           <div className="h-1.5 w-full overflow-hidden rounded-full bg-black/30">
                             <div
                               className="h-full rounded-full transition-all duration-500"
-                              style={{ width: `${pct}%`, background: moduleDef.accent }}
+                              style={{ width: `${done ? 100 : 0}%`, background: moduleDef.accent }}
                             />
                           </div>
                           <p className="mt-1.5 pb-3 text-[11px] font-semibold text-slate-400">
-                            {done ? "Completed ✓" : unlocked ? "Start → 3 min" : "Complete the previous module"}
+                            {done
+                              ? "Completed ✓"
+                              : unlocked
+                                ? `${moduleDef.cards.length} cards · ${moduleDef.minutes} min`
+                                : "Complete the previous lesson"}
                           </p>
                         </div>
 
@@ -612,21 +549,20 @@ export default function LessonsPhase1({
                           }`}
                         >
                           <div className="space-y-3 border-t border-[#1F1F1F] px-4 py-3">
-                            <div className="flex items-start gap-2">
-                              <Lightbulb size={13} className="mt-0.5 flex-shrink-0 text-amber-400" />
-                              <p className="text-[11px] leading-relaxed text-slate-400">{moduleDef.knowledge.title}</p>
-                            </div>
                             <div className="flex items-center gap-3 text-[11px] text-slate-500">
                               <span className="flex items-center gap-1">
-                                <HelpCircle size={12} /> 2 scenario questions
+                                <Sparkles size={12} /> {moduleDef.cards.length} story cards
                               </span>
                               <span className="flex items-center gap-1">
-                                <Trophy size={12} /> +{moduleDef.xpReward} XP
+                                <HelpCircle size={12} /> 1 check
+                              </span>
+                              <span className="flex items-center gap-1">
+                                <Trophy size={12} /> +{xpPossible} XP
                               </span>
                             </div>
                             <button
                               type="button"
-                              onClick={() => openModule(moduleDef, idx)}
+                              onClick={() => openModule(moduleDef, unlocked)}
                               className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-emerald-500 px-4 py-2.5 text-xs font-bold text-[#042F2E] transition hover:bg-emerald-400 active:scale-[0.99]"
                             >
                               {done ? "Review Lesson" : "Start Lesson"}
@@ -636,12 +572,6 @@ export default function LessonsPhase1({
                       </div>
                     );
                   })
-                ) : (
-                  <p className="py-2 text-center text-[11px] font-semibold text-slate-500">
-                    {phaseDef.id === "phase-3"
-                      ? "Certification modules unlock here once you complete Phase 2."
-                      : "New modules unlock here once you complete Phase 1. 🚀"}
-                  </p>
                 )}
               </div>
             </div>
@@ -651,24 +581,24 @@ export default function LessonsPhase1({
 
       {activeModule && (
         <div
-          className="fixed inset-0 z-[60] flex items-end justify-center bg-slate-950/75 p-4 sm:items-center"
+          className="fixed inset-0 z-[60] flex items-end justify-center bg-slate-950/80 p-3 sm:items-center"
           onClick={closeModal}
           role="presentation"
         >
           <div
-            className="matter-pop w-full max-w-sm rounded-2xl border border-[#1F1F1F] bg-[#0A0A0A] p-5"
+            className="matter-pop flex max-h-[min(94vh,820px)] w-full max-w-md flex-col overflow-y-auto rounded-2xl border border-[#1F1F1F] bg-[#0A0A0A] p-4 sm:p-5"
             onClick={(e) => e.stopPropagation()}
             role="dialog"
             aria-modal="true"
             aria-labelledby="lesson-modal-title"
           >
             <div className="flex items-start justify-between gap-2">
-              <div className="flex items-center gap-2">
+              <div className="flex min-w-0 items-center gap-2">
                 <span
-                  className="grid h-9 w-9 place-items-center rounded-lg"
+                  className="grid h-9 w-9 flex-shrink-0 place-items-center rounded-lg"
                   style={{ background: `${activeModule.accent}26`, color: activeModule.accent }}
                 >
-                  <activeModule.icon size={17} />
+                  {React.createElement(ICONS[activeModule.icon], { size: 17 })}
                 </span>
                 <h3 id="lesson-modal-title" className="text-sm font-extrabold leading-snug text-white">
                   {activeModule.title}
@@ -684,76 +614,119 @@ export default function LessonsPhase1({
               </button>
             </div>
 
-            <div className="mt-3 flex items-center gap-1.5">
-              {["Concept", "Q1", "Q2", "Reward"].map((label, i) => (
+            <div className="mt-3">
+              <LessonsHeader xp={progress.xp} streak={progress.streak} compact />
+            </div>
+
+            <div className="mt-3 flex items-center gap-1">
+              {Array.from({ length: playerSteps }).map((_, i) => (
                 <span
-                  key={label}
-                  className={`h-1.5 flex-1 rounded-full transition-all duration-300 ${
-                    i <= stepIndex ? "bg-emerald-500" : "bg-black/30"
+                  key={i}
+                  className={`h-1 flex-1 rounded-full transition-all duration-300 ${
+                    i <= playerStep ? "bg-emerald-500" : "bg-black/30"
                   }`}
-                  aria-hidden="true"
                 />
               ))}
             </div>
 
-            {phase === "knowledge" && (
-              <div className="mt-4">
-                <div className="flex items-center gap-2">
-                  <span className="grid h-7 w-7 flex-shrink-0 place-items-center rounded-lg bg-amber-500/15 text-amber-400">
-                    <Lightbulb size={14} />
-                  </span>
-                  <p className="text-sm font-bold text-white">{activeModule.knowledge.title}</p>
-                </div>
-                <p className="mt-2.5 text-xs leading-relaxed text-slate-300">{activeModule.knowledge.body}</p>
+            {playerPhase === "cards" && (
+              <>
+                <LessonDeck
+                  cards={activeModule.cards}
+                  index={cardIndex}
+                  accent={activeModule.accent}
+                  onIndexChange={setCardIndex}
+                  onCardAdvance={onCardAdvance}
+                  onComplete={() => setPlayerPhase("quiz")}
+                />
+                {cardIndex === activeModule.cards.length - 1 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onCardAdvance(cardIndex);
+                      setPlayerPhase("quiz");
+                    }}
+                    className="mt-4 flex w-full items-center justify-center rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-bold text-[#042F2E] transition hover:bg-emerald-400 active:scale-[0.99]"
+                  >
+                    Check the idea
+                  </button>
+                )}
+              </>
+            )}
 
+            {playerPhase === "quiz" && (
+              <>
+                <LessonQuiz key={activeModule.id} quiz={activeModule.quiz} onSolved={onQuizSolved} />
+                {quizSolved && (
+                  <button
+                    type="button"
+                    onClick={() => setPlayerPhase("complete")}
+                    className="mt-4 flex w-full items-center justify-center rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-bold text-[#042F2E] transition hover:bg-emerald-400 active:scale-[0.99]"
+                  >
+                    See your reward
+                  </button>
+                )}
+              </>
+            )}
+
+            {playerPhase === "complete" && celebration && (
+              <div className="lesson-celebrate mt-4 text-center">
+                <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">Lesson complete</p>
+                <div className="mt-3 flex items-center justify-center gap-2">
+                  <span className="lesson-celebrate-xp rounded-full border border-emerald-500/35 bg-emerald-500/12 px-3 py-1 text-sm font-extrabold text-emerald-300">
+                    {celebration.xpEarned > 0 ? `+${celebration.xpEarned} XP` : "XP already earned"}
+                  </span>
+                </div>
+                <div className="relative mx-auto mt-5 flex flex-col items-center">
+                  <StreakBadge streak={celebration.streak} size="lg" bump={celebration.incremented} />
+                  {celebration.incremented ? (
+                    <p className="lesson-streak-plus-lg mt-3 text-base font-extrabold text-orange-300">+1 Day!</p>
+                  ) : (
+                    <p className="mt-3 text-sm font-semibold text-slate-400">
+                      {celebration.streak > 0 ? "Streak already counted today" : "Start your streak"}
+                    </p>
+                  )}
+                  <p className="mt-1 text-[11px] font-semibold text-slate-500">
+                    Keep a lesson going tomorrow to protect the flame.
+                  </p>
+                </div>
                 <button
                   type="button"
-                  onClick={() => setPhase("q1")}
-                  className="mt-4 flex w-full items-center justify-center gap-1.5 rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-bold text-[#042F2E] transition hover:bg-emerald-400 active:scale-[0.99]"
+                  onClick={closeModal}
+                  className="mt-5 flex w-full items-center justify-center gap-1.5 rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-bold text-[#042F2E] transition hover:bg-emerald-400 active:scale-[0.99]"
                 >
-                  Let's Practice
+                  <Check size={15} />
+                  Continue
                 </button>
               </div>
             )}
 
-            {(phase === "q1" || phase === "q1-feedback") && (
-              <QuestionStep
-                quiz={activeModule.quiz[0]}
-                phase={phase === "q1" ? "question" : "feedback"}
-                answer={answer1}
-                onSelect={(option) => selectOption(1, option)}
-                onContinue={() => setPhase("q2")}
-                continueLabel="Next Question →"
-              />
-            )}
-
-            {(phase === "q2" || phase === "q2-feedback") && (
-              <QuestionStep
-                quiz={activeModule.quiz[1]}
-                phase={phase === "q2" ? "question" : "feedback"}
-                answer={answer2}
-                onSelect={(option) => selectOption(2, option)}
-                onContinue={() => setPhase("complete")}
-                continueLabel="See Your Reward"
-              />
-            )}
-
-            {phase === "complete" && (
+            {playerPhase === "complete" && !celebration && (
               <div className="mt-4">
                 <div className="flex items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2">
                   <Trophy size={16} className="text-amber-400" />
                   <p className="text-xs font-bold text-amber-300">
-                    +{activeModule.xpReward} XP earned
-                    {correctCount > 0 ? ` + ${correctCount * 10} Bonus XP (${correctCount}/2 correct!)` : ""}
+                    +{lessonXpPossible(activeModule)} XP path
+                    {completed[activeModule.id] ? " · review, no extra XP" : " · finish to update your streak"}
                   </p>
                 </div>
-
-                <p className="mt-4 text-[11px] font-bold uppercase tracking-wide text-slate-400">
-                  Real-World Action
-                </p>
+                <p className="mt-4 text-[11px] font-bold uppercase tracking-wide text-slate-400">Real-world action</p>
                 <div className="mt-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3">
                   <p className="text-sm leading-relaxed text-emerald-100">{activeModule.actionCard}</p>
                 </div>
+
+                {activeModule.cta && (
+                  <div className="mt-3 rounded-xl border border-cyan-500/25 bg-cyan-500/[0.07] p-3">
+                    <p className="text-sm font-semibold leading-relaxed text-cyan-50">{activeModule.cta.prompt}</p>
+                    <button
+                      type="button"
+                      onClick={openPaperCta}
+                      className="mt-3 flex w-full items-center justify-center rounded-xl bg-cyan-400 px-4 py-2.5 text-sm font-bold text-[#082F49] transition hover:bg-cyan-300 active:scale-[0.99]"
+                    >
+                      Add {activeModule.cta.symbol} to Paper Portfolio
+                    </button>
+                  </div>
+                )}
 
                 <button
                   type="button"
@@ -761,88 +734,11 @@ export default function LessonsPhase1({
                   className="mt-4 flex w-full items-center justify-center gap-1.5 rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-bold text-[#042F2E] transition hover:bg-emerald-400 active:scale-[0.99]"
                 >
                   <Check size={15} />
-                  Complete Challenge
+                  {activeModule.cta ? "Maybe later" : "Complete lesson"}
                 </button>
               </div>
             )}
           </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function QuestionStep({
-  quiz,
-  phase,
-  answer,
-  onSelect,
-  onContinue,
-  continueLabel,
-}: {
-  quiz: QuizQuestion;
-  phase: "question" | "feedback";
-  answer: Answer | null;
-  onSelect: (option: QuizOption) => void;
-  onContinue: () => void;
-  continueLabel: string;
-}) {
-  const chosen = answer ? quiz.options.find((o) => o.id === answer.optionId) ?? null : null;
-
-  return (
-    <div className="mt-4">
-      <div className="rounded-xl border border-[#1F1F1F] bg-black/20 p-3">
-        <p className="text-xs leading-relaxed text-slate-300">{quiz.scenario}</p>
-      </div>
-      <p className="mt-3 text-sm font-bold text-white">{quiz.question}</p>
-
-      {phase === "question" && (
-        <div className="mt-3 space-y-2">
-          {quiz.options.map((option) => (
-            <button
-              key={option.id}
-              type="button"
-              onClick={() => onSelect(option)}
-              className="w-full rounded-xl border border-[#1F1F1F] bg-black/20 px-3 py-2.5 text-left text-xs font-semibold text-slate-200 transition hover:border-emerald-500/40 hover:bg-emerald-500/5 active:scale-[0.99]"
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {phase === "feedback" && chosen && (
-        <div className="mt-3">
-          <div
-            className={`rounded-xl border p-3 ${
-              answer?.correct ? "border-emerald-500/40 bg-emerald-500/10" : "border-rose-500/40 bg-rose-500/10"
-            }`}
-          >
-            <div className="flex items-center gap-2">
-              {answer?.correct ? (
-                <CheckCircle2 size={16} className="text-emerald-400" />
-              ) : (
-                <XCircle size={16} className="text-rose-400" />
-              )}
-              <p className={`text-sm font-extrabold ${answer?.correct ? "text-emerald-300" : "text-rose-300"}`}>
-                {answer?.correct ? "Correct! Here's why:" : "Not quite! Remember:"}
-              </p>
-            </div>
-            <p className="mt-2 text-xs leading-relaxed text-slate-300">{chosen.explanation}</p>
-            {!answer?.correct && (
-              <p className="mt-2 text-xs leading-relaxed text-emerald-300">
-                Correct answer: {quiz.options.find((o) => o.correct)?.label}
-              </p>
-            )}
-          </div>
-
-          <button
-            type="button"
-            onClick={onContinue}
-            className="mt-4 flex w-full items-center justify-center gap-1.5 rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-bold text-[#042F2E] transition hover:bg-emerald-400 active:scale-[0.99]"
-          >
-            {continueLabel}
-          </button>
         </div>
       )}
     </div>

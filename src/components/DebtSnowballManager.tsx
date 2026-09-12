@@ -166,7 +166,7 @@ const EMPTY_FORM: FormState = { title: "", balance: "", minPayment: "", apr: "" 
 type DebtSnowballManagerProps = {
   /** Called when the user wants to jump over to the Lessons tab (investing tips / course). */
   onOpenLessons?: () => void;
-  /** Mirrors the live debt list up to the parent (e.g. so Socrates AI can reference it). */
+  /** Mirrors the live debt list up to the parent (e.g. so Sprout AI can reference it). */
   onDebtsChange?: (debts: Debt[]) => void;
 };
 

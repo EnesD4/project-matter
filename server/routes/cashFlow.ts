@@ -34,6 +34,7 @@ type SafetyNetConfig = {
   goldAmount: number;
   goldUnit: 'oz' | 'g';
   bonds: SafetyNetBond[];
+  hysaCash: number;
 };
 
 const MAX_BONDS = 50;
@@ -141,6 +142,7 @@ function parseSafetyNetObject(raw: unknown): SafetyNetConfig {
     goldAmount: asMoney(rec?.goldAmount),
     goldUnit: rec?.goldUnit === 'g' ? 'g' : 'oz',
     bonds,
+    hysaCash: asMoney(rec?.hysaCash),
   };
 }
 

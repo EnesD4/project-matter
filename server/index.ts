@@ -651,7 +651,7 @@ async function generateStockAnalysis(
       ? `Current price: $${extras.price.toFixed(2)}${extras.changePct != null ? ` (${extras.changePct >= 0 ? '+' : ''}${extras.changePct.toFixed(2)}%)` : ''}`
       : 'Current price: not provided.';
 
-  const prompt = `You are Mater AI, a senior equity analyst writing a concise stock briefing for a retail investor inside the MatterPro app.
+  const prompt = `You are Sprout AI, a senior equity analyst writing a concise stock briefing for a retail investor inside the Sprout Finance app.
 
 Stock: ${symbol} (${name})
 ${priceLine}
@@ -682,12 +682,12 @@ Rules:
     const text = result.response.text().trim();
     const parsed = parseStockAnalysisJson(text);
     if (!parsed) {
-      console.error('Mater stock analysis JSON parse failed. Raw:', text.slice(0, 400));
+      console.error('Sprout stock analysis JSON parse failed. Raw:', text.slice(0, 400));
       return null;
     }
     return { ...parsed, source: 'ai' };
   } catch (error) {
-    console.error('Error generating Mater stock analysis:', error);
+    console.error('Error generating Sprout stock analysis:', error);
     return null;
   }
 }
@@ -734,7 +734,7 @@ app.post('/api/stocks/analysis', async (req, res) => {
     }
     return res.json({
       ...fallbackStockAnalysis(symbol, name, fundamentals),
-      warning: 'Live Mater AI synthesis was unavailable. Showing a fundamentals-based briefing.',
+      warning: 'Live Sprout AI synthesis was unavailable. Showing a fundamentals-based briefing.',
     });
   } catch (error) {
     console.error('Error building stock analysis:', error);
@@ -751,7 +751,7 @@ app.post('/api/stocks/analysis', async (req, res) => {
         peTag: 'N/A',
         recommendation: null,
       }),
-      warning: 'Mater AI was unavailable. Showing a high-level fallback briefing.',
+      warning: 'Sprout AI was unavailable. Showing a high-level fallback briefing.',
     });
   }
 });

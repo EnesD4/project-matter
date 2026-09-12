@@ -1,12 +1,16 @@
+import { holdingAccount, type AccountKind } from "./accountKind";
 import { isEtfAsset } from "./etfIcons";
 import { SAFETY_NET_STARTER_MONTHS } from "./safetyNet";
+import { readLocalItem } from "./storage";
+import { getLessonStreak, STREAK_MILESTONES } from "./streakService";
 
 export const HISTORICAL_ANNUAL_RETURN = 0.08;
 export const COMPOUNDER_MIN_DAYS = 365;
 export const THOUSAND_MILESTONE = 1000;
 export const EMERGENCY_SHIELD_USD = 300;
-export const TROPHY_SLOTS = 24;
 export const TROPHY_SHELF_CAPACITY = 4;
+export const TROPHY_SHELVES_PER_CABINET = 5;
+export const TROPHY_CABINET_CAPACITY = TROPHY_SHELF_CAPACITY * TROPHY_SHELVES_PER_CABINET;
 
 export const TROPHY_IDS = [
   "firstStep",
@@ -31,9 +35,41 @@ export const TROPHY_IDS = [
   "hundredK",
   "fullRoster",
   "millionPath",
+  "consistentLearner",
+  "financeScholar",
+  "marketStrategist",
 ] as const;
 
 export type TrophyId = (typeof TROPHY_IDS)[number];
+export const TROPHY_SLOTS = TROPHY_IDS.length;
+
+/** Portfolio / equity trophies — paper (manual) lots cannot unlock these. */
+export const INVESTMENT_TROPHY_IDS = [
+  "firstStep",
+  "tickerScout",
+  "cashCushion",
+  "thousand",
+  "trio",
+  "inTheGreen",
+  "compounder",
+  "fiveK",
+  "fiveTickers",
+  "indexBeliever",
+  "tenK",
+  "doubleDigit",
+  "yearIn",
+  "eightHoldings",
+  "twentyFiveK",
+  "hundredK",
+  "fullRoster",
+  "millionPath",
+] as const satisfies readonly TrophyId[];
+
+const INVESTMENT_TROPHY_ID_SET = new Set<TrophyId>(INVESTMENT_TROPHY_IDS);
+
+export function isInvestmentTrophy(id: TrophyId): boolean {
+  return INVESTMENT_TROPHY_ID_SET.has(id);
+}
 
 export type TrophyProgress = {
   current: number;
@@ -49,7 +85,43 @@ export type Trophy = {
   unlockedAt?: string;
   progress: TrophyProgress;
   metric: string;
+  requiresVerified: boolean;
 };
+
+export type TrophyCabinetPage = {
+  number: number;
+  filled: number;
+  shelves: (Trophy | null)[][];
+};
+
+/** Split earned badges into cabinets of 5 shelves × 4 slots. A new cabinet appears once the previous one is full. */
+export function buildTrophyCabinetPages(trophies: Trophy[]): TrophyCabinetPage[] {
+  const unlocked = trophies.filter((trophy) => trophy.unlocked);
+  const cabinetCount = Math.max(1, Math.ceil(unlocked.length / TROPHY_CABINET_CAPACITY));
+  const pages: TrophyCabinetPage[] = [];
+
+  for (let cabinetIndex = 0; cabinetIndex < cabinetCount; cabinetIndex += 1) {
+    const start = cabinetIndex * TROPHY_CABINET_CAPACITY;
+    const slice = unlocked.slice(start, start + TROPHY_CABINET_CAPACITY);
+    const shelves: (Trophy | null)[][] = [];
+
+    for (let shelfIndex = 0; shelfIndex < TROPHY_SHELVES_PER_CABINET; shelfIndex += 1) {
+      const shelf: (Trophy | null)[] = [];
+      for (let slot = 0; slot < TROPHY_SHELF_CAPACITY; slot += 1) {
+        shelf.push(slice[shelfIndex * TROPHY_SHELF_CAPACITY + slot] ?? null);
+      }
+      shelves.push(shelf);
+    }
+
+    pages.push({
+      number: cabinetIndex + 1,
+      filled: slice.length,
+      shelves,
+    });
+  }
+
+  return pages;
+}
 
 type HoldingLike =
   | {
@@ -59,8 +131,9 @@ type HoldingLike =
       currentPrice: number;
       symbol?: string;
       description?: string;
+      account?: AccountKind | null;
     }
-  | { kind: "broker"; balance: number };
+  | { kind: "broker"; balance: number; account?: AccountKind | null };
 
 export type TrophyFacts = {
   userId: string;
@@ -71,10 +144,13 @@ export type TrophyFacts = {
   safetyNetValue?: number;
   monthlyExpenses?: number;
   now?: Date;
+  /** False while the portfolio request is in flight so paper lots aren't judged from an empty snapshot. */
+  holdingsReady?: boolean;
 };
 
 type TrophyPersist = {
   firstInvestedAt?: string;
+  firstVerifiedInvestedAt?: string;
   unlockedAt: Partial<Record<TrophyId, string>>;
 };
 
@@ -93,18 +169,18 @@ export type TrophyUnlockedDetail = {
 const CATALOG: Record<TrophyId, { title: string; requirement: string; unlockLead: string }> = {
   firstStep: {
     title: "First Step",
-    requirement: "Log your first stock or cash asset.",
-    unlockLead: "You logged your first asset",
+    requirement: "Hold your first stock or cash asset in a verified brokerage account. Paper trades don't count.",
+    unlockLead: "You logged your first verified asset",
   },
   tickerScout: {
     title: "Ticker Scout",
-    requirement: "Own at least one equity position.",
-    unlockLead: "You picked up your first equity",
+    requirement: "Own at least one equity position in a verified brokerage account.",
+    unlockLead: "You picked up your first verified equity",
   },
   cashCushion: {
     title: "Cash Cushion",
-    requirement: "Log a brokerage or cash balance.",
-    unlockLead: "You logged a cash balance",
+    requirement: "Hold a cash balance in a verified brokerage account.",
+    unlockLead: "You logged a verified cash balance",
   },
   emergencyShield: {
     title: "Emergency Shield",
@@ -123,38 +199,38 @@ const CATALOG: Record<TrophyId, { title: string; requirement: string; unlockLead
   },
   thousand: {
     title: "$1,000 Milestone",
-    requirement: "Grow net worth or portfolio to $1,000.",
+    requirement: "Grow a verified brokerage portfolio to $1,000. Paper Account value is excluded.",
     unlockLead: "You crossed the $1,000 milestone",
   },
   trio: {
     title: "The Trio",
-    requirement: "Hold three distinct equity tickers.",
-    unlockLead: "You now hold three distinct tickers",
+    requirement: "Hold three distinct equity tickers in a verified brokerage account.",
+    unlockLead: "You now hold three distinct verified tickers",
   },
   inTheGreen: {
     title: "In the Green",
-    requirement: "Push portfolio market value above cost basis.",
-    unlockLead: "You pushed your portfolio above cost basis",
+    requirement: "Push verified brokerage market value above cost basis.",
+    unlockLead: "You pushed your verified portfolio above cost basis",
   },
   compounder: {
     title: "The 8% Compounder",
-    requirement: "Beat the historical 8% annual average after one year.",
+    requirement: "Beat the historical 8% annual average after one year in a verified brokerage account.",
     unlockLead: "You beat the historical 8% annual average",
   },
   fiveK: {
     title: "$5,000 Club",
-    requirement: "Grow net worth or portfolio to $5,000.",
+    requirement: "Grow a verified brokerage portfolio to $5,000. Paper Account value is excluded.",
     unlockLead: "You reached the $5,000 club",
   },
   fiveTickers: {
     title: "Five Tickers",
-    requirement: "Hold five distinct equity tickers.",
-    unlockLead: "You now hold five distinct tickers",
+    requirement: "Hold five distinct equity tickers in a verified brokerage account.",
+    unlockLead: "You now hold five distinct verified tickers",
   },
   indexBeliever: {
     title: "Index Believer",
-    requirement: "Own at least one ETF or index fund.",
-    unlockLead: "You added an ETF to your portfolio",
+    requirement: "Own at least one ETF or index fund in a verified brokerage account.",
+    unlockLead: "You added a verified ETF to your portfolio",
   },
   habitStacker: {
     title: "Habit Stacker",
@@ -163,43 +239,58 @@ const CATALOG: Record<TrophyId, { title: string; requirement: string; unlockLead
   },
   tenK: {
     title: "Five Figures",
-    requirement: "Grow net worth or portfolio to $10,000.",
+    requirement: "Grow a verified brokerage portfolio to $10,000. Paper Account value is excluded.",
     unlockLead: "You reached five figures",
   },
   doubleDigit: {
     title: "Double Digits",
-    requirement: "Reach a 10% simple return on equities.",
+    requirement: "Reach a 10% simple return on verified brokerage equities.",
     unlockLead: "You reached a 10% return on equities",
   },
   yearIn: {
     title: "One Year In",
-    requirement: "Stay invested for 365 days.",
+    requirement: "Stay invested for 365 days in a verified brokerage account.",
     unlockLead: "You've stayed invested for a full year",
   },
   eightHoldings: {
     title: "Spread Out",
-    requirement: "Hold eight distinct positions.",
-    unlockLead: "You spread out across eight positions",
+    requirement: "Hold eight distinct verified brokerage positions.",
+    unlockLead: "You spread out across eight verified positions",
   },
   twentyFiveK: {
     title: "$25,000 Club",
-    requirement: "Grow net worth or portfolio to $25,000.",
+    requirement: "Grow a verified brokerage portfolio to $25,000. Paper Account value is excluded.",
     unlockLead: "You reached the $25,000 club",
   },
   hundredK: {
     title: "Six Figures",
-    requirement: "Grow net worth or portfolio to $100,000.",
+    requirement: "Grow a verified brokerage portfolio to $100,000. Paper Account value is excluded.",
     unlockLead: "You hit six figures",
   },
   fullRoster: {
     title: "Full Roster",
-    requirement: "Hold twelve distinct positions.",
-    unlockLead: "You filled twelve positions",
+    requirement: "Hold twelve distinct verified brokerage positions.",
+    unlockLead: "You filled twelve verified positions",
   },
   millionPath: {
     title: "Freedom Number",
-    requirement: "Grow net worth or portfolio to $1,000,000.",
+    requirement: "Grow a verified brokerage portfolio to $1,000,000. Paper Account value is excluded.",
     unlockLead: "You reached your $1,000,000 freedom number",
+  },
+  consistentLearner: {
+    title: "Consistent Learner",
+    requirement: "Complete at least one lesson module on 3 consecutive calendar days.",
+    unlockLead: "You locked in a 3-day learning streak",
+  },
+  financeScholar: {
+    title: "Finance Scholar",
+    requirement: "Complete at least one lesson module on 7 consecutive calendar days.",
+    unlockLead: "You built a 7-day learning streak",
+  },
+  marketStrategist: {
+    title: "Market Strategist",
+    requirement: "Complete at least one lesson module on 30 consecutive calendar days.",
+    unlockLead: "You sustained a 30-day learning streak",
   },
 };
 
@@ -239,17 +330,26 @@ function publishUnlocks(trophies: Trophy[]) {
 }
 
 function storageKey(userId: string) {
+  return `sprout_trophy_cabinet_${userId || "anon"}`;
+}
+
+function legacyStorageKey(userId: string) {
   return `matterpro:trophy-cabinet:${userId || "anon"}`;
 }
 
 function loadPersist(userId: string): TrophyPersist {
   try {
-    const raw = localStorage.getItem(storageKey(userId));
+    const raw = readLocalItem(storageKey(userId), legacyStorageKey(userId));
     if (!raw) return { unlockedAt: {} };
     const parsed = JSON.parse(raw) as Partial<TrophyPersist>;
     const firstInvestedAt =
       typeof parsed.firstInvestedAt === "string" && !Number.isNaN(Date.parse(parsed.firstInvestedAt))
         ? parsed.firstInvestedAt
+        : undefined;
+    const firstVerifiedInvestedAt =
+      typeof parsed.firstVerifiedInvestedAt === "string" &&
+      !Number.isNaN(Date.parse(parsed.firstVerifiedInvestedAt))
+        ? parsed.firstVerifiedInvestedAt
         : undefined;
     const unlockedAt: Partial<Record<TrophyId, string>> = {};
     const rawUnlocks = parsed.unlockedAt && typeof parsed.unlockedAt === "object" ? parsed.unlockedAt : {};
@@ -257,7 +357,7 @@ function loadPersist(userId: string): TrophyPersist {
       const value = rawUnlocks[id];
       if (typeof value === "string" && !Number.isNaN(Date.parse(value))) unlockedAt[id] = value;
     }
-    return { firstInvestedAt, unlockedAt };
+    return { firstInvestedAt, firstVerifiedInvestedAt, unlockedAt };
   } catch {
     return { unlockedAt: {} };
   }
@@ -271,9 +371,71 @@ function savePersist(userId: string, state: TrophyPersist) {
   }
 }
 
-function holdingIsAsset(holding: HoldingLike): boolean {
-  if (holding.kind === "stock") return holding.quantity > 0;
-  return holding.balance > 0;
+function isVerifiedHolding(holding: HoldingLike): boolean {
+  return holdingAccount(holding) === "verified";
+}
+
+type HoldingStats = {
+  hasFirstAsset: boolean;
+  hasEquity: boolean;
+  hasEtf: boolean;
+  tickerCount: number;
+  positionCount: number;
+  cashBalance: number;
+  wealth: number;
+  cost: number;
+  value: number;
+  simple: number | null;
+};
+
+function summarizeHoldings(holdings: HoldingLike[]): HoldingStats {
+  const tickers = new Set<string>();
+  let hasEtf = false;
+  let cashBalance = 0;
+  let positionCount = 0;
+  let hasFirstAsset = false;
+
+  for (const holding of holdings) {
+    if (holding.kind === "broker") {
+      const balance = Number.isFinite(holding.balance) ? Math.max(0, holding.balance) : 0;
+      cashBalance += balance;
+      if (balance > 0) {
+        positionCount += 1;
+        hasFirstAsset = true;
+      }
+      continue;
+    }
+    if (holding.quantity <= 0) continue;
+    hasFirstAsset = true;
+    positionCount += 1;
+    const symbol = (holding.symbol || "").trim().toUpperCase();
+    if (symbol) tickers.add(symbol);
+    if (isEtfAsset(symbol, { name: holding.description })) hasEtf = true;
+  }
+
+  const { cost, value, simple } = portfolioReturn(holdings);
+  return {
+    hasFirstAsset,
+    hasEquity: tickers.size > 0,
+    hasEtf,
+    tickerCount: tickers.size,
+    positionCount,
+    cashBalance,
+    wealth: value + cashBalance,
+    cost,
+    value,
+    simple,
+  };
+}
+
+function paperNote(paperCount: number, unit: string): string {
+  if (paperCount <= 0) return "";
+  return ` · ${paperCount} paper ${unit} excluded`;
+}
+
+function paperUsdNote(paperWealth: number): string {
+  if (paperWealth <= 0) return "";
+  return ` · ${formatUsd(paperWealth)} paper excluded`;
 }
 
 function portfolioReturn(holdings: HoldingLike[]): { cost: number; value: number; simple: number | null } {
@@ -358,6 +520,20 @@ function countProgress(
   };
 }
 
+function streakProgress(current: number, longest: number, target: number): EvalResult {
+  const earned = longest >= target;
+  const label = `${current} / ${target} day streak`;
+  return {
+    earned,
+    progress: {
+      current: Math.min(earned ? Math.max(current, target) : current, target),
+      target,
+      label: earned ? `${longest}-day streak reached` : label,
+    },
+    metric: earned ? `Longest learning streak: ${longest} days` : label,
+  };
+}
+
 function booleanProgress(earned: boolean, doneLabel: string, pendingLabel: string): EvalResult {
   return {
     earned,
@@ -395,36 +571,23 @@ export function evaluateTrophies(facts: TrophyFacts): Trophy[] {
   const snapshot = JSON.stringify(persist);
   const unlockedAt = { ...persist.unlockedAt };
 
-  const hasFirstAsset = facts.holdings.some(holdingIsAsset);
-  const tickers = new Set<string>();
-  let hasEtf = false;
-  let cashBalance = 0;
-  let positionCount = 0;
+  const verifiedHoldings = facts.holdings.filter(isVerifiedHolding);
+  const paperHoldings = facts.holdings.filter((holding) => !isVerifiedHolding(holding));
+  const verified = summarizeHoldings(verifiedHoldings);
+  const paper = summarizeHoldings(paperHoldings);
 
-  for (const holding of facts.holdings) {
-    if (holding.kind === "broker") {
-      const balance = Number.isFinite(holding.balance) ? Math.max(0, holding.balance) : 0;
-      cashBalance += balance;
-      if (balance > 0) positionCount += 1;
-      continue;
-    }
-    if (holding.quantity <= 0) continue;
-    positionCount += 1;
-    const symbol = (holding.symbol || "").trim().toUpperCase();
-    if (symbol) tickers.add(symbol);
-    if (isEtfAsset(symbol, { name: holding.description })) hasEtf = true;
-  }
-
-  const tickerCount = tickers.size;
-  const hasEquity = tickerCount > 0;
-  if (!persist.firstInvestedAt && hasEquity) {
+  if (!persist.firstInvestedAt && (verified.hasEquity || paper.hasEquity)) {
     persist.firstInvestedAt = nowISO;
   }
+  if (!persist.firstVerifiedInvestedAt && verified.hasEquity) {
+    persist.firstVerifiedInvestedAt = nowISO;
+  }
 
-  const daysInvested = persist.firstInvestedAt ? daysBetween(persist.firstInvestedAt, now) : 0;
-  const { cost, value, simple } = portfolioReturn(facts.holdings);
+  const daysInvested = persist.firstVerifiedInvestedAt
+    ? daysBetween(persist.firstVerifiedInvestedAt, now)
+    : 0;
   const years = daysInvested / COMPOUNDER_MIN_DAYS;
-  const growth = simple != null ? 1 + simple : null;
+  const growth = verified.simple != null ? 1 + verified.simple : null;
   const annualReturn =
     growth != null && years >= 1 && growth > 0 ? Math.pow(growth, 1 / years) - 1 : null;
   const compounderEarned =
@@ -432,29 +595,32 @@ export function evaluateTrophies(facts: TrophyFacts): Trophy[] {
     annualReturn != null &&
     annualReturn > HISTORICAL_ANNUAL_RETURN;
 
-  const wealth = Math.max(0, facts.netWorth, facts.portfolioValue);
   const depositCount = Math.max(0, Math.floor(facts.retirementDeposits));
   const safetyNetValue = Math.max(0, facts.safetyNetValue ?? 0);
   const monthlyExpenses = Math.max(0, facts.monthlyExpenses ?? 0);
   const fortressTarget = monthlyExpenses * SAFETY_NET_STARTER_MONTHS;
+  const lessonStreak = getLessonStreak(facts.userId, now);
 
   const compounderEval = ((): EvalResult => {
-    if (simple == null) {
+    if (verified.simple == null) {
+      const pending = paper.simple != null
+        ? "Requires verified brokerage equity (paper lots excluded)"
+        : "Hold verified equity with a cost basis";
       return {
         earned: false,
-        progress: { current: 0, target: COMPOUNDER_MIN_DAYS, label: "Log equity with a cost basis" },
-        metric: "Log equity with a cost basis",
+        progress: { current: 0, target: COMPOUNDER_MIN_DAYS, label: pending },
+        metric: pending,
       };
     }
     if (daysInvested < COMPOUNDER_MIN_DAYS) {
-      const label = `${daysInvested} / ${COMPOUNDER_MIN_DAYS} days · ${formatPct(simple)} so far`;
+      const label = `${daysInvested} / ${COMPOUNDER_MIN_DAYS} days · ${formatPct(verified.simple)} so far`;
       return {
         earned: false,
         progress: { current: daysInvested, target: COMPOUNDER_MIN_DAYS, label },
         metric: label,
       };
     }
-    const shown = annualReturn ?? simple;
+    const shown = annualReturn ?? verified.simple;
     const label = `${formatPct(shown)} annual vs 8% benchmark`;
     return {
       earned: compounderEarned,
@@ -470,43 +636,103 @@ export function evaluateTrophies(facts: TrophyFacts): Trophy[] {
   })();
 
   const greenEval = ((): EvalResult => {
-    if (cost <= 0) {
-      return booleanProgress(false, "Portfolio is above cost", "Log equities with a cost basis");
+    if (verified.cost <= 0) {
+      return booleanProgress(
+        false,
+        "Verified portfolio is above cost",
+        paper.cost > 0
+          ? "Requires verified brokerage equities (paper lots excluded)"
+          : "Hold verified equities with a cost basis"
+      );
     }
-    const earned = value > cost;
-    const label = `${formatUsd(value)} / ${formatUsd(cost)} cost`;
+    const earned = verified.value > verified.cost;
+    const label = `${formatUsd(verified.value)} / ${formatUsd(verified.cost)} cost`;
     return {
       earned,
-      progress: { current: Math.min(value, cost), target: cost, label },
-      metric: earned ? `Portfolio value reached ${formatUsd(value)}` : label,
+      progress: { current: Math.min(verified.value, verified.cost), target: verified.cost, label },
+      metric: earned ? `Verified portfolio value reached ${formatUsd(verified.value)}` : label,
     };
   })();
 
   const doubleDigitEval = ((): EvalResult => {
-    if (simple == null) {
+    if (verified.simple == null) {
+      const pending = paper.simple != null
+        ? "Requires verified brokerage equity (paper lots excluded)"
+        : "Hold verified equity with a cost basis";
       return {
         earned: false,
-        progress: { current: 0, target: 10, label: "Log equity with a cost basis" },
-        metric: "Log equity with a cost basis",
+        progress: { current: 0, target: 10, label: pending },
+        metric: pending,
       };
     }
-    const pct = simple * 100;
-    const earned = simple >= 0.1;
-    const label = `${formatPct(simple)} / +10%`;
+    const pct = verified.simple * 100;
+    const earned = verified.simple >= 0.1;
+    const label = `${formatPct(verified.simple)} / +10%`;
     return {
       earned,
       progress: { current: Math.max(0, Math.min(pct, 10)), target: 10, label },
-      metric: earned ? `Simple return reached ${formatPct(simple)}` : label,
+      metric: earned ? `Simple return reached ${formatPct(verified.simple)}` : label,
     };
   })();
 
+  const wealthWithPaper = (target: number): EvalResult => {
+    const result = wealthProgress(verified.wealth, target);
+    if (result.earned || paper.wealth <= 0) return result;
+    const note = paperUsdNote(paper.wealth);
+    return {
+      ...result,
+      progress: { ...result.progress, label: `${result.progress.label}${note}` },
+      metric: `${result.metric}${note}`,
+    };
+  };
+
+  const tickersWithPaper = (target: number): EvalResult => {
+    const result = countProgress(
+      verified.tickerCount,
+      target,
+      "tickers",
+      `${verified.tickerCount} ${verified.tickerCount === 1 ? "ticker" : "tickers"} held`
+    );
+    if (result.earned || paper.tickerCount <= 0) return result;
+    const note = paperNote(paper.tickerCount, "tickers");
+    return {
+      ...result,
+      progress: { ...result.progress, label: `${result.progress.label}${note}` },
+      metric: `${result.metric}${note}`,
+    };
+  };
+
+  const positionsWithPaper = (target: number): EvalResult => {
+    const result = countProgress(
+      verified.positionCount,
+      target,
+      "positions",
+      `${verified.positionCount} positions held`
+    );
+    if (result.earned || paper.positionCount <= 0) return result;
+    const note = paperNote(paper.positionCount, "positions");
+    return {
+      ...result,
+      progress: { ...result.progress, label: `${result.progress.label}${note}` },
+      metric: `${result.metric}${note}`,
+    };
+  };
+
   const results: Record<TrophyId, EvalResult> = {
-    firstStep: booleanProgress(hasFirstAsset, "First asset logged", "Log your first stock or asset"),
-    tickerScout: countProgress(tickerCount, 1, "tickers", `${tickerCount} ${tickerCount === 1 ? "ticker" : "tickers"} held`),
+    firstStep: booleanProgress(
+      verified.hasFirstAsset,
+      "First verified asset logged",
+      paper.hasFirstAsset
+        ? "Requires a verified brokerage holding (paper lots excluded)"
+        : "Hold your first verified stock or asset"
+    ),
+    tickerScout: tickersWithPaper(1),
     cashCushion: booleanProgress(
-      cashBalance > 0,
-      `Cash balance ${formatUsd(cashBalance)}`,
-      "Log a brokerage or cash balance"
+      verified.cashBalance > 0,
+      `Verified cash balance ${formatUsd(verified.cashBalance)}`,
+      paper.cashBalance > 0
+        ? "Requires verified brokerage cash (paper balances excluded)"
+        : "Hold a verified brokerage cash balance"
     ),
     emergencyShield: (() => {
       const earned = safetyNetValue >= EMERGENCY_SHIELD_USD;
@@ -551,32 +777,48 @@ export function evaluateTrophies(facts: TrophyFacts): Trophy[] {
             metric: `${depositCount} ${depositCount === 1 ? "deposit" : "deposits"} logged`,
           }
         : booleanProgress(false, "Retirement deposit logged", "Log a retirement deposit"),
-    thousand: wealthProgress(wealth, THOUSAND_MILESTONE),
-    trio: countProgress(tickerCount, 3, "tickers", `${tickerCount} tickers held`),
+    thousand: wealthWithPaper(THOUSAND_MILESTONE),
+    trio: tickersWithPaper(3),
     inTheGreen: greenEval,
     compounder: compounderEval,
-    fiveK: wealthProgress(wealth, 5_000),
-    fiveTickers: countProgress(tickerCount, 5, "tickers", `${tickerCount} tickers held`),
-    indexBeliever: booleanProgress(hasEtf, "ETF position logged", "Own at least one ETF"),
+    fiveK: wealthWithPaper(5_000),
+    fiveTickers: tickersWithPaper(5),
+    indexBeliever: booleanProgress(
+      verified.hasEtf,
+      "Verified ETF position logged",
+      paper.hasEtf
+        ? "Requires a verified brokerage ETF (paper lots excluded)"
+        : "Own at least one verified ETF"
+    ),
     habitStacker: countProgress(
       depositCount,
       3,
       "deposits",
       `${depositCount} ${depositCount === 1 ? "deposit" : "deposits"} logged`
     ),
-    tenK: wealthProgress(wealth, 10_000),
+    tenK: wealthWithPaper(10_000),
     doubleDigit: doubleDigitEval,
     yearIn: countProgress(daysInvested, COMPOUNDER_MIN_DAYS, "days", `${daysInvested} days invested`),
-    eightHoldings: countProgress(positionCount, 8, "positions", `${positionCount} positions held`),
-    twentyFiveK: wealthProgress(wealth, 25_000),
-    hundredK: wealthProgress(wealth, 100_000),
-    fullRoster: countProgress(positionCount, 12, "positions", `${positionCount} positions held`),
-    millionPath: wealthProgress(wealth, 1_000_000),
+    eightHoldings: positionsWithPaper(8),
+    twentyFiveK: wealthWithPaper(25_000),
+    hundredK: wealthWithPaper(100_000),
+    fullRoster: positionsWithPaper(12),
+    millionPath: wealthWithPaper(1_000_000),
+    consistentLearner: streakProgress(lessonStreak.current, lessonStreak.longest, STREAK_MILESTONES[0].days),
+    financeScholar: streakProgress(lessonStreak.current, lessonStreak.longest, STREAK_MILESTONES[1].days),
+    marketStrategist: streakProgress(lessonStreak.current, lessonStreak.longest, STREAK_MILESTONES[2].days),
   };
 
   const newlyUnlockedIds: TrophyId[] = [];
+  const holdingsReady = facts.holdingsReady !== false;
   for (const id of TROPHY_IDS) {
-    if (latchUnlock(facts.userId, unlockedAt, id, results[id].earned, nowISO)) {
+    const earned = results[id].earned;
+    if (!earned && isInvestmentTrophy(id) && unlockedAt[id]) {
+      if (!holdingsReady) continue;
+      delete unlockedAt[id];
+      continue;
+    }
+    if (latchUnlock(facts.userId, unlockedAt, id, earned, nowISO)) {
       newlyUnlockedIds.push(id);
     }
   }
@@ -596,6 +838,7 @@ export function evaluateTrophies(facts: TrophyFacts): Trophy[] {
       unlockedAt: unlockedAt[id],
       progress: evalResult.progress,
       metric: evalResult.metric,
+      requiresVerified: isInvestmentTrophy(id),
     };
   });
 

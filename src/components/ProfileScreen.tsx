@@ -14,8 +14,11 @@ import {
   Moon,
   TrendingUp,
   User,
+  Volume2,
+  VolumeX,
 } from "lucide-react";
 import React, { useEffect, useState } from "react";
+import { useSoundEnabled } from "../lib/audioService";
 import {
   saveUserSettings,
   type AuthUser,
@@ -31,11 +34,19 @@ import {
 } from "../lib/age";
 import { evaluateTrophies, type Trophy } from "../lib/achievements";
 import {
+  getLessonStreak,
+  msUntilNextLocalMidnight,
+  STREAK_UPDATED_EVENT,
+} from "../lib/streakService";
+import {
   getRetirementDepositCount,
   RETIREMENT_UPDATED_EVENT,
 } from "./RetirementPlanner";
 import type { Holding } from "./InvestmentPortfolioCard";
+import { holdingAccount } from "../lib/accountKind";
 import CertificatesSection from "./CertificatesSection";
+import ProfileModal from "./ProfileModal";
+import StreakBadge from "./StreakBadge";
 import TrophyCabinet from "./TrophyCabinet";
 
 type ProfileScreenProps = {
@@ -44,10 +55,12 @@ type ProfileScreenProps = {
   onSettingsChange: (settings: UserSettings) => void;
   onLogout: () => void;
   holdings: Holding[];
+  holdingsReady?: boolean;
   netWorth: number;
   portfolioValue: number;
   safetyNetValue?: number;
   monthlyExpenses?: number;
+  onEditFinancialProfile?: () => void;
 };
 
 const PREFERENCE_ROWS: Array<{
@@ -166,10 +179,12 @@ export default function ProfileScreen({
   onSettingsChange,
   onLogout,
   holdings,
+  holdingsReady = false,
   netWorth,
   portfolioValue,
   safetyNetValue = 0,
   monthlyExpenses = 0,
+  onEditFinancialProfile,
 }: ProfileScreenProps) {
   const [biometricEnabled, setBiometricEnabled] = useState(false);
   const [personalInfoOpen, setPersonalInfoOpen] = useState(false);
@@ -180,6 +195,8 @@ export default function ProfileScreen({
   const [savingAge, setSavingAge] = useState(false);
   const [ageError, setAgeError] = useState<string | null>(null);
   const [trophies, setTrophies] = useState<Trophy[]>([]);
+  const [soundEnabled, setSoundEnabled] = useSoundEnabled();
+  const [lessonStreak, setLessonStreak] = useState(() => getLessonStreak(user.id).current);
 
   useEffect(() => {
     setAgeDraft(settings?.age != null ? String(settings.age) : "");
@@ -187,6 +204,7 @@ export default function ProfileScreen({
   }, [settings?.age, settings?.birthDate]);
 
   useEffect(() => {
+    let midnightTimer = 0;
     const refresh = () => {
       setTrophies(
         evaluateTrophies({
@@ -197,27 +215,38 @@ export default function ProfileScreen({
           retirementDeposits: getRetirementDepositCount(user.id),
           safetyNetValue,
           monthlyExpenses,
+          holdingsReady,
         })
       );
+      setLessonStreak(getLessonStreak(user.id).current);
+      window.clearTimeout(midnightTimer);
+      midnightTimer = window.setTimeout(refresh, msUntilNextLocalMidnight());
     };
     refresh();
     window.addEventListener(RETIREMENT_UPDATED_EVENT, refresh);
+    window.addEventListener(STREAK_UPDATED_EVENT, refresh);
     window.addEventListener("storage", refresh);
+    document.addEventListener("visibilitychange", refresh);
     return () => {
       window.removeEventListener(RETIREMENT_UPDATED_EVENT, refresh);
+      window.removeEventListener(STREAK_UPDATED_EVENT, refresh);
       window.removeEventListener("storage", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+      window.clearTimeout(midnightTimer);
     };
-  }, [user.id, holdings, netWorth, portfolioValue, safetyNetValue, monthlyExpenses]);
+  }, [user.id, holdings, holdingsReady, netWorth, portfolioValue, safetyNetValue, monthlyExpenses]);
   const initials = (user.name || user.email || "?")
     .split(/\s+/)
     .filter(Boolean)
     .slice(0, 2)
     .map((part) => part[0]?.toUpperCase() || "")
     .join("") || "?";
+  const hasVerifiedHoldings = holdings.some((holding) => holdingAccount(holding) === "verified");
+  const hasPaperHoldings = holdings.some((holding) => holdingAccount(holding) === "paper");
 
   const sendFeedback = () => {
     window.location.href =
-      "mailto:feedback@matterpro.app?subject=MatterPro%20Beta%20Feedback";
+      "mailto:feedback@sprout.finance?subject=Sprout%20Finance%20Beta%20Feedback";
   };
 
   const updatePreference = async (key: keyof OnboardingChoices, value: boolean) => {
@@ -467,7 +496,10 @@ export default function ProfileScreen({
           <p style={styles.userEmail}>{user.email}</p>
           <span style={styles.planBadge}>Free Plan</span>
         </div>
+        <StreakBadge streak={lessonStreak} size="lg" />
       </section>
+
+      <ProfileModal onRecalculate={onEditFinancialProfile} />
 
       <CertificatesSection userId={user.id} />
       <TrophyCabinet trophies={trophies} />
@@ -514,8 +546,26 @@ export default function ProfileScreen({
         <SettingsRow
           icon={<Landmark size={16} color="#10B981" />}
           title="Connected Brokerage Accounts"
-          subtitle="No accounts connected"
-          trailing={<span style={styles.statusChip}>Demo</span>}
+          subtitle={
+            hasVerifiedHoldings
+              ? "Verified Brokerage Portfolio connected"
+              : hasPaperHoldings
+                ? "Paper Account only · no verified brokerage"
+                : "No accounts connected"
+          }
+          trailing={
+            <span
+              style={
+                hasVerifiedHoldings
+                  ? styles.statusChipActive
+                  : hasPaperHoldings
+                    ? styles.statusChipPaper
+                    : styles.statusChip
+              }
+            >
+              {hasVerifiedHoldings ? "Verified" : hasPaperHoldings ? "Paper" : "Demo"}
+            </span>
+          }
         />
       </section>
 
@@ -528,6 +578,25 @@ export default function ProfileScreen({
           subtitle="Matte Dark Mode · #000000"
           trailing={<span style={styles.statusChipActive}>Default</span>}
         />
+        <div style={styles.divider} />
+        <SettingsRow
+          icon={
+            soundEnabled ? (
+              <Volume2 size={16} color="#10B981" />
+            ) : (
+              <VolumeX size={16} color="#10B981" />
+            )
+          }
+          title="Sound effects"
+          subtitle={soundEnabled ? "Micro-interactions on" : "Audio feedback muted"}
+          trailing={
+            <Toggle
+              checked={soundEnabled}
+              onChange={setSoundEnabled}
+              label="Sound effects"
+            />
+          }
+        />
       </section>
 
       {/* Support */}
@@ -537,7 +606,7 @@ export default function ProfileScreen({
           <MessageSquare size={16} />
           Send Feedback
         </button>
-        <p style={styles.feedbackHint}>Help shape MatterPro during beta testing.</p>
+        <p style={styles.feedbackHint}>Help shape Sprout Finance during beta testing.</p>
       </section>
 
       {/* Log out */}
@@ -558,6 +627,7 @@ const styles: Record<string, React.CSSProperties> = {
   userCard: {
     display: "flex",
     alignItems: "center",
+    flexWrap: "wrap",
     gap: 14,
     background: "#0A0A0A",
     border: "1px solid #1F1F1F",
@@ -586,6 +656,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   userMeta: {
     minWidth: 0,
+    flex: 1,
     display: "flex",
     flexDirection: "column",
     gap: 4,
@@ -720,6 +791,15 @@ const styles: Record<string, React.CSSProperties> = {
     background: "rgba(156, 163, 175, 0.12)",
     border: "1px solid #2A2A2A",
     color: "#9CA3AF",
+    borderRadius: 999,
+    padding: "4px 10px",
+    fontSize: 11,
+    fontWeight: 700,
+  },
+  statusChipPaper: {
+    background: "rgba(245, 158, 11, 0.12)",
+    border: "1px solid rgba(245, 158, 11, 0.35)",
+    color: "#FCD34D",
     borderRadius: 999,
     padding: "4px 10px",
     fontSize: 11,

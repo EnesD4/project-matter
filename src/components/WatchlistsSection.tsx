@@ -24,6 +24,7 @@ import {
   type WatchlistApiList,
 } from "../lib/auth";
 import { privacyMoney } from "../lib/privacy";
+import { readLocalItem } from "../lib/storage";
 import StockLogo from "./StockLogo";
 
 const GAIN_GREEN = "#10B981";
@@ -93,6 +94,11 @@ function localId(prefix: string) {
 }
 
 function activeListStorageKey() {
+  const user = getStoredUser();
+  return `sprout_active_watchlist_${user?.id ?? "anon"}`;
+}
+
+function activeListLegacyKey() {
   const user = getStoredUser();
   return `matterpro_active_watchlist_${user?.id ?? "anon"}`;
 }
@@ -421,7 +427,7 @@ export default function WatchlistsSection({
   const [lists, setLists] = useState<WatchlistApiList[]>(() => readWatchlistCache());
   const [activeId, setActiveId] = useState<string | null>(() => {
     try {
-      return localStorage.getItem(activeListStorageKey());
+      return readLocalItem(activeListStorageKey(), activeListLegacyKey());
     } catch {
       return null;
     }
@@ -440,7 +446,7 @@ export default function WatchlistsSection({
   const [quotes, setQuotes] = useState<Record<string, LiveQuote>>({});
   const [openListIds, setOpenListIds] = useState<string[]>(() => {
     try {
-      const stored = localStorage.getItem(activeListStorageKey());
+      const stored = readLocalItem(activeListStorageKey(), activeListLegacyKey());
       return stored ? [stored] : [];
     } catch {
       return [];

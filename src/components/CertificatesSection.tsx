@@ -1,15 +1,14 @@
 import { useEffect, useId, useState } from "react";
 import { createPortal } from "react-dom";
-import { Award, ChevronDown, ChevronUp, Lock, X } from "lucide-react";
+import { Award, ChevronDown, ChevronUp, GraduationCap, X } from "lucide-react";
 import {
   CERTIFICATE_META,
-  CERTIFICATE_TIERS,
   CERTIFICATE_UNLOCKED_EVENT,
   certificateBodyText,
   loadCertificates,
   type Certificate,
-  type CertificateTier,
 } from "../lib/certificates";
+import { playAchievementFanfare } from "../lib/audioService";
 import { CertificateArt } from "./CertificateArt";
 
 export default function CertificatesSection({
@@ -35,6 +34,10 @@ export default function CertificatesSection({
       window.removeEventListener("storage", refresh);
     };
   }, [userId]);
+
+  useEffect(() => {
+    if (selected) playAchievementFanfare();
+  }, [selected]);
 
   useEffect(() => {
     if (!selected) return;
@@ -71,8 +74,8 @@ export default function CertificatesSection({
             </span>
             <span className="mt-0.5 block text-[12px] text-[#9CA3AF]">
               {count === 0
-                ? "Complete Matter Academy to earn a diploma"
-                : `${count} ${count === 1 ? "diploma" : "diplomas"} earned`}
+                ? "Earn the Sprout Gold Financial Master Certificate at 100% of all 5 phases"
+                : "Sprout Gold Financial Master Certificate earned"}
             </span>
           </span>
           <span className="flex flex-shrink-0 items-center gap-1">
@@ -99,19 +102,17 @@ export default function CertificatesSection({
         >
           <div className="overflow-hidden">
             <div className="space-y-2 border-t border-[#1F1F1F] px-3.5 pb-3.5 pt-3">
-              {CERTIFICATE_TIERS.map((tier) => {
-                const earned = certificates.find((certificate) => certificate.tier === tier);
-                if (earned) {
-                  return (
-                    <CertificatePreviewCard
-                      key={tier}
-                      certificate={earned}
-                      onOpen={() => setSelected(earned)}
-                    />
-                  );
-                }
-                return <LockedCertificateCard key={tier} tier={tier} />;
-              })}
+              {certificates.length === 0 ? (
+                <UnearnedCertificatePlaceholder />
+              ) : (
+                certificates.map((certificate) => (
+                  <CertificatePreviewCard
+                    key={certificate.tier}
+                    certificate={certificate}
+                    onOpen={() => setSelected(certificate)}
+                  />
+                ))
+              )}
             </div>
           </div>
         </div>
@@ -190,24 +191,20 @@ function CertificatePreviewCard({
   );
 }
 
-function LockedCertificateCard({ tier }: { tier: CertificateTier }) {
-  const meta = CERTIFICATE_META[tier];
+function UnearnedCertificatePlaceholder() {
   return (
-    <div
-      className="certificate-preview-card certificate-preview-card--locked"
-      style={{ boxShadow: `inset 3px 0 0 ${meta.accent}66` }}
-    >
+    <div className="certificate-preview-card certificate-preview-card--empty">
       <span
-        className="grid h-[52px] w-[52px] flex-shrink-0 place-items-center rounded-xl"
-        style={{ background: meta.accentSoft, color: meta.accent }}
+        className="grid h-[52px] w-[52px] flex-shrink-0 place-items-center rounded-xl bg-white/[0.04] text-[#9CA3AF]"
         aria-hidden="true"
       >
-        <Lock size={16} />
+        <GraduationCap size={18} />
       </span>
       <span className="min-w-0 flex-1 text-left">
-        <span className="block text-[13px] font-extrabold text-[#9CA3AF]">{meta.title}</span>
-        <span className="mt-0.5 block text-[11px] text-[#6B7280]">{meta.pathLabel}</span>
-        <span className="mt-1 block text-[11px] font-semibold text-[#6B7280]">Locked</span>
+        <span className="block text-[13px] font-extrabold text-white">Sprout Gold Financial Master awaits</span>
+        <span className="mt-0.5 block text-[11px] leading-relaxed text-[#9CA3AF]">
+          Complete all 5 curriculum phases at 100%. Phase badges live in the Trophy Cabinet.
+        </span>
       </span>
     </div>
   );

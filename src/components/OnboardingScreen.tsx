@@ -64,7 +64,7 @@ const WALKTHROUGH_META: Array<{
   { eyebrow: "Tab 2 of 5", title: "Retirement", icon: <Shield size={20} color="#042F2E" /> },
   { eyebrow: "Tab 3 of 5", title: "Cash Flow", icon: <CreditCard size={20} color="#042F2E" /> },
   { eyebrow: "Tab 4 of 5", title: "Lessons", icon: <BookOpen size={20} color="#042F2E" /> },
-  { eyebrow: "Tab 5 of 5", title: "Mater AI", icon: <MessageCircle size={20} color="#042F2E" /> },
+  { eyebrow: "Tab 5 of 5", title: "Sprout AI", icon: <MessageCircle size={20} color="#042F2E" /> },
 ];
 
 function walkthroughLine(step: WalkthroughStep, answers: OnboardingChoices): string {
@@ -187,7 +187,7 @@ export default function OnboardingScreen({ onComplete }: OnboardingScreenProps) 
           >
             <ChevronLeft size={18} />
           </button>
-          <p style={styles.brand}>MatterPro</p>
+          <p style={styles.brand}>Sprout</p>
           <span style={styles.stepCount}>
             {phase === "survey" ? `${surveyStep + 1}/4` : `${walkthroughStep + 1}/4`}
           </span>
@@ -233,8 +233,8 @@ export default function OnboardingScreen({ onComplete }: OnboardingScreenProps) 
                 🏛️
               </div>
               <div>
-                <p style={styles.materName}>Mater</p>
-                <p style={styles.materRole}>Your MatterPro guide</p>
+                <p style={styles.materName}>Sprout</p>
+                <p style={styles.materRole}>Your Sprout Finance guide</p>
               </div>
             </div>
 
@@ -263,7 +263,7 @@ export default function OnboardingScreen({ onComplete }: OnboardingScreenProps) 
             ) : (
               <button type="button" style={styles.primaryBtn} onClick={() => void finish()} disabled={saving}>
                 {saving ? <Loader2 size={18} className="animate-spin" /> : <Sparkles size={18} />}
-                {saving ? "Saving…" : "Explore MatterPro"}
+                {saving ? "Saving…" : "Explore Sprout"}
               </button>
             )}
           </div>

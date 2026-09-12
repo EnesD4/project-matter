@@ -1,6 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
+  Banknote,
   Loader2,
+  Minus,
+  Plus,
   Sparkles,
   Trash2,
   TrendingDown,
@@ -8,9 +11,10 @@ import {
   X,
 } from "lucide-react";
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { playTransactionClick } from "../lib/audioService";
 import { getApiBaseUrl } from "../lib/auth";
 import { isEtfAsset } from "../lib/etfIcons";
-import { privacyMoney, privacyShares } from "../lib/privacy";
+import { privacyMoney, privacyShares, privacySignedMoney } from "../lib/privacy";
 import {
   buildHistoricalSeries,
   ChartCandle,
@@ -24,7 +28,6 @@ import {
 } from "../lib/priceSimulation";
 import { useMarketPolling } from "../hooks/useMarketPolling";
 import type { StockHolding, StockQuote } from "./InvestmentPortfolioCard";
-import LiveStatusBadge from "./LiveStatusBadge";
 import StockLogo from "./StockLogo";
 
 const GAIN_GREEN = "#10B981";
@@ -49,7 +52,7 @@ type StockMetricsSnapshot = {
   } | null;
 };
 
-type MaterAnalysis = {
+type SproutAnalysis = {
   growthDrivers: string[];
   keyRisks: string[];
   analystConsensus: string;
@@ -58,14 +61,28 @@ type MaterAnalysis = {
   warning?: string;
 };
 
+export type SellPositionResult = {
+  remainingShares: number;
+};
+
 type StockDetailPageProps = {
   holding: StockHolding;
   totalPortfolioValue: number;
   privacyMode?: boolean;
   onBack: () => void;
+  onAddMore?: (holding: StockHolding) => void;
+  onSell?: (
+    holding: StockHolding,
+    shares: number,
+    sellPrice: number
+  ) => Promise<SellPositionResult>;
   onRemove?: (id: string) => void | Promise<void>;
   removing?: boolean;
 };
+
+function roundShares(n: number): number {
+  return Math.round(n * 1e8) / 1e8;
+}
 
 function formatUsd(amount: number, digits = 0) {
   return amount.toLocaleString("en-US", {
@@ -78,18 +95,18 @@ function isHeldPosition(holding: StockHolding) {
   return holding.quantity > 0 && !holding.id.startsWith("watchlist:");
 }
 
-function sentimentTone(sentiment: MaterAnalysis["sentiment"]) {
+function sentimentTone(sentiment: SproutAnalysis["sentiment"]) {
   if (sentiment === "Buy") return "bg-emerald-500/15 text-emerald-300 border-emerald-500/30";
   if (sentiment === "Sell") return "bg-rose-500/15 text-rose-300 border-rose-500/30";
   return "bg-amber-500/15 text-amber-200 border-amber-500/30";
 }
 
-function MaterBadge() {
+function SproutBadge() {
   return (
     <div className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/35 bg-emerald-500/15 px-2.5 py-1">
       <Sparkles size={12} className="text-emerald-400" />
       <span className="text-[10px] font-extrabold uppercase tracking-[0.12em] text-emerald-300">
-        Mater AI
+        Sprout AI
       </span>
     </div>
   );
@@ -174,6 +191,8 @@ export default function StockDetailPage({
   totalPortfolioValue,
   privacyMode = false,
   onBack,
+  onAddMore,
+  onSell,
   onRemove,
   removing,
 }: StockDetailPageProps) {
@@ -186,17 +205,22 @@ export default function StockDetailPage({
   const [metrics, setMetrics] = useState<StockMetricsSnapshot | null>(null);
   const [metricsLoading, setMetricsLoading] = useState(true);
   const [metricsError, setMetricsError] = useState(false);
-  const [analysis, setAnalysis] = useState<MaterAnalysis | null>(null);
+  const [analysis, setAnalysis] = useState<SproutAnalysis | null>(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [chartAnimate, setChartAnimate] = useState(true);
+  const [sellOpen, setSellOpen] = useState(false);
+  const [sellShares, setSellShares] = useState("");
+  const [sellPrice, setSellPrice] = useState("");
+  const [sellError, setSellError] = useState<string | null>(null);
+  const [selling, setSelling] = useState(false);
 
   const symbolRef = useRef(holding.symbol);
   symbolRef.current = holding.symbol;
   const rangeRef = useRef(range);
   rangeRef.current = range;
 
-  const { markUpdated, marketOpen } = useMarketPolling({
+  const { markUpdated } = useMarketPolling({
     onPoll: async () => {
       const symbol = symbolRef.current;
       const chartRange = rangeRef.current;
@@ -416,16 +440,78 @@ export default function StockDetailPage({
         }),
       });
       if (!res.ok) throw new Error("analysis failed");
-      const data = (await res.json()) as MaterAnalysis;
+      const data = (await res.json()) as SproutAnalysis;
       if (!data?.growthDrivers?.length || !data?.keyRisks?.length || !data?.analystConsensus) {
         throw new Error("incomplete analysis");
       }
       setAnalysis(data);
     } catch {
-      setAnalysisError("Mater AI couldn't finish this briefing. Please try again.");
+      setAnalysisError("Sprout AI couldn't finish this briefing. Please try again.");
       setAnalysis(null);
     } finally {
       setAnalysisLoading(false);
+    }
+  };
+
+  const canSell =
+    held && holding.account !== "verified" && typeof onSell === "function";
+  const parsedSellShares = Number(sellShares);
+  const parsedSellPrice = Number(sellPrice);
+  const sellQtyValid = Number.isFinite(parsedSellShares) && parsedSellShares > 0;
+  const sellPriceValid = Number.isFinite(parsedSellPrice) && parsedSellPrice > 0;
+  const sellingAll =
+    sellQtyValid && roundShares(holding.quantity - parsedSellShares) <= 1e-8;
+  const sellOverQty = sellQtyValid && parsedSellShares > holding.quantity + 1e-8;
+  const sellProceeds =
+    sellQtyValid && sellPriceValid ? parsedSellShares * parsedSellPrice : 0;
+  const sellRealized =
+    sellQtyValid && sellPriceValid && holding.avgCost > 0
+      ? (parsedSellPrice - holding.avgCost) * parsedSellShares
+      : null;
+  const remainingAfterSell = sellQtyValid
+    ? Math.max(0, roundShares(holding.quantity - parsedSellShares))
+    : holding.quantity;
+
+  const openSell = () => {
+    setSellError(null);
+    setSellShares("");
+    setSellPrice(price > 0 ? price.toFixed(2) : "");
+    setSellOpen(true);
+  };
+
+  const closeSell = () => {
+    if (selling) return;
+    setSellOpen(false);
+    setSellError(null);
+  };
+
+  const submitSell = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!onSell || selling) return;
+    if (!sellQtyValid) {
+      setSellError("Enter a positive number of shares.");
+      return;
+    }
+    if (sellOverQty) {
+      setSellError(`You only own ${holding.quantity} shares.`);
+      return;
+    }
+    if (!sellPriceValid) {
+      setSellError("Enter a positive execution price.");
+      return;
+    }
+
+    setSelling(true);
+    setSellError(null);
+    try {
+      const result = await onSell(holding, parsedSellShares, parsedSellPrice);
+      setSellOpen(false);
+      setSellShares("");
+      if (result.remainingShares <= 1e-8) onBack();
+    } catch (err) {
+      setSellError(err instanceof Error ? err.message : "Couldn't complete this sale");
+    } finally {
+      setSelling(false);
     }
   };
 
@@ -435,7 +521,10 @@ export default function StockDetailPage({
   return (
     <div
       className="fixed inset-0 z-[70] flex items-end justify-center bg-black/80 p-0 sm:items-center sm:p-4"
-      onClick={onBack}
+      onClick={() => {
+        if (sellOpen) return;
+        onBack();
+      }}
       role="presentation"
     >
       <div
@@ -491,7 +580,38 @@ export default function StockDetailPage({
                 )}
               </p>
             </div>
-            <LiveStatusBadge marketOpen={marketOpen} className="mt-1.5" />
+            {onAddMore || canSell ? (
+              <div className="mt-1.5 flex flex-shrink-0 items-center gap-1.5">
+                {onAddMore ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      playTransactionClick();
+                      onAddMore(holding);
+                    }}
+                    aria-label={`Add more ${holding.symbol}`}
+                    className="inline-flex items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/15 px-3 py-1.5 text-[11px] font-extrabold uppercase tracking-wide text-emerald-300 transition hover:border-emerald-400/60 hover:bg-emerald-500/25 hover:text-emerald-200 active:scale-[0.98]"
+                  >
+                    <Plus size={13} strokeWidth={2.5} aria-hidden="true" />
+                    Add
+                  </button>
+                ) : null}
+                {canSell ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      playTransactionClick();
+                      openSell();
+                    }}
+                    aria-label={`Sell ${holding.symbol}`}
+                    className="inline-flex items-center gap-1 rounded-full border border-rose-500/40 bg-rose-500/15 px-3 py-1.5 text-[11px] font-extrabold uppercase tracking-wide text-rose-300 transition hover:border-rose-400/60 hover:bg-rose-500/25 hover:text-rose-200 active:scale-[0.98]"
+                  >
+                    <Minus size={13} strokeWidth={2.5} aria-hidden="true" />
+                    Sell
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
           </div>
 
           <div className="mt-4 flex gap-1 overflow-x-auto rounded-lg bg-[#121212] p-1">
@@ -604,7 +724,45 @@ export default function StockDetailPage({
                 <p className="mt-0.5 text-base font-extrabold tabular-nums text-white">
                   {held ? privacyMoney(privacyMode, holding.avgCost) : "—"}
                 </p>
+                {held && holding.purchasedAt ? (
+                  <p className="mt-0.5 text-[10px] font-semibold text-[#6B7280]">
+                    Bought {new Date(`${holding.purchasedAt}T12:00:00`).toLocaleDateString("en-US", {
+                      month: "short",
+                      day: "numeric",
+                      year: "numeric",
+                    })}
+                  </p>
+                ) : null}
               </div>
+              {held && holding.avgCost > 0 ? (
+                <div className="col-span-2 rounded-xl border border-[#1F1F1F] bg-[#121212] px-3.5 py-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-[#6B7280]">
+                    Total Return
+                  </p>
+                  <p
+                    className="mt-0.5 text-base font-extrabold tabular-nums"
+                    style={{
+                      color:
+                        price === holding.avgCost ? "#FFFFFF" : price > holding.avgCost ? "#10B981" : "#EF4444",
+                    }}
+                  >
+                    {privacySignedMoney(privacyMode, (price - holding.avgCost) * holding.quantity)}
+                    <span className="ml-1 text-sm">
+                      ({price >= holding.avgCost ? "+" : ""}
+                      {(((price - holding.avgCost) / holding.avgCost) * 100).toFixed(2)}%)
+                    </span>
+                  </p>
+                  <p className="mt-0.5 text-[10px] font-semibold text-[#6B7280]">
+                    {holding.purchasedAt
+                      ? `Since ${new Date(`${holding.purchasedAt}T12:00:00`).toLocaleDateString("en-US", {
+                          month: "short",
+                          day: "numeric",
+                          year: "numeric",
+                        })}`
+                      : "Vs. purchase price"}
+                  </p>
+                </div>
+              ) : null}
             </div>
           </section>
 
@@ -706,9 +864,9 @@ export default function StockDetailPage({
           <section className="mt-6">
             <div className="flex items-center justify-between gap-2">
               <h2 className="text-xs font-bold uppercase tracking-wide text-[#9CA3AF]">
-                Mater AI Report
+                Sprout AI Report
               </h2>
-              <MaterBadge />
+              <SproutBadge />
             </div>
 
             {!analysis && !analysisLoading && (
@@ -717,7 +875,7 @@ export default function StockDetailPage({
                 onClick={() => void generateReport()}
                 className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-[#10B981] px-4 py-3.5 text-sm font-bold text-[#042F2E] transition hover:bg-emerald-400 active:scale-[0.99]"
               >
-                ✨ Generate Mater AI Report
+                ✨ Generate Sprout AI Report
               </button>
             )}
 
@@ -730,7 +888,7 @@ export default function StockDetailPage({
                 <div className="flex items-center gap-3">
                   <Loader2 className="h-5 w-5 animate-spin text-emerald-400" />
                   <div>
-                    <p className="text-sm font-bold text-white">Mater AI is analyzing {holding.symbol}…</p>
+                    <p className="text-sm font-bold text-white">Sprout AI is analyzing {holding.symbol}…</p>
                     <p className="mt-0.5 text-[12px] text-[#9CA3AF]">
                       Growth drivers, risks, and Street consensus
                     </p>
@@ -834,6 +992,164 @@ export default function StockDetailPage({
           ) : null}
         </div>
       </div>
+
+      {sellOpen ? (
+        <div
+          className="fixed inset-0 z-[90] flex items-end justify-center bg-slate-950/75 p-4 sm:items-center"
+          onClick={(e) => {
+            e.stopPropagation();
+            closeSell();
+          }}
+          role="presentation"
+        >
+          <div
+            className="matter-pop w-full max-w-md overflow-y-auto rounded-2xl border border-[#1F1F1F] bg-[#0A0A0A] p-5 max-h-[min(88vh,640px)]"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="sell-position-title"
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <h3 id="sell-position-title" className="text-sm font-extrabold leading-snug text-white">
+                  Sell {holding.symbol}
+                </h3>
+                <p className="mt-0.5 text-[11px] leading-snug text-slate-500">
+                  Reduce or liquidate this paper position. Remaining shares keep the current average cost.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeSell}
+                aria-label="Close sell"
+                className="flex-shrink-0 text-slate-400 transition hover:text-white"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <form onSubmit={(e) => void submitSell(e)} className="mt-4 space-y-3">
+              <div className="rounded-xl border border-[#1F1F1F] bg-black/30 px-3 py-2.5">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                  Shares owned
+                </p>
+                <p className="mt-0.5 text-sm font-extrabold tabular-nums text-white">
+                  {holding.quantity.toLocaleString("en-US", { maximumFractionDigits: 8 })}
+                </p>
+                {holding.avgCost > 0 ? (
+                  <p className="mt-0.5 text-[11px] text-slate-500">
+                    Avg cost {privacyMoney(privacyMode, holding.avgCost)}
+                  </p>
+                ) : null}
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label
+                    htmlFor="sell-qty"
+                    className="text-[10px] font-semibold uppercase tracking-wide text-slate-500"
+                  >
+                    Shares sold
+                  </label>
+                  <input
+                    id="sell-qty"
+                    type="text"
+                    inputMode="decimal"
+                    value={sellShares}
+                    onChange={(e) => {
+                      setSellShares(e.target.value.replace(/[^0-9.]/g, ""));
+                      setSellError(null);
+                    }}
+                    placeholder={String(holding.quantity)}
+                    className={`mt-1 w-full rounded-xl border bg-black/20 px-3 py-2 text-xs font-semibold text-white outline-none placeholder:text-slate-600 focus:border-rose-500/50 ${
+                      sellOverQty ? "border-rose-500/60" : "border-[#1F1F1F]"
+                    }`}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSellShares(String(holding.quantity));
+                      setSellError(null);
+                    }}
+                    className="mt-1 text-[10px] font-bold uppercase tracking-wide text-rose-300 transition hover:text-rose-200"
+                  >
+                    Sell all
+                  </button>
+                </div>
+                <div>
+                  <label
+                    htmlFor="sell-price"
+                    className="text-[10px] font-semibold uppercase tracking-wide text-slate-500"
+                  >
+                    Execution price
+                  </label>
+                  <div className="mt-1 flex items-center gap-2 rounded-xl border border-[#1F1F1F] bg-black/20 px-3 py-2 focus-within:border-rose-500/50">
+                    <Banknote size={14} className="flex-shrink-0 text-slate-500" />
+                    <input
+                      id="sell-price"
+                      type="text"
+                      inputMode="decimal"
+                      value={sellPrice}
+                      onChange={(e) => {
+                        setSellPrice(e.target.value.replace(/[^0-9.]/g, ""));
+                        setSellError(null);
+                      }}
+                      placeholder={price > 0 ? price.toFixed(2) : "185.50"}
+                      className="w-full bg-transparent text-xs font-semibold text-white outline-none placeholder:text-slate-600"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {sellQtyValid && sellPriceValid && !sellOverQty ? (
+                <div className="space-y-0.5 rounded-xl border border-[#1F1F1F] bg-black/30 px-3 py-2.5">
+                  <p className="text-[11px] font-semibold text-white">
+                    Proceeds: {privacyMoney(privacyMode, sellProceeds)}
+                  </p>
+                  {sellRealized != null ? (
+                    <p
+                      className={`text-[11px] font-bold ${
+                        sellRealized > 0
+                          ? "text-emerald-300"
+                          : sellRealized < 0
+                            ? "text-rose-400"
+                            : "text-slate-400"
+                      }`}
+                    >
+                      Realized P/L: {privacySignedMoney(privacyMode, sellRealized)}
+                    </p>
+                  ) : null}
+                  {sellingAll ? (
+                    <p className="text-[11px] text-rose-300">
+                      This liquidates the position and removes {holding.symbol} from your portfolio.
+                    </p>
+                  ) : (
+                    <p className="text-[11px] text-slate-400">
+                      Remaining: {remainingAfterSell.toLocaleString("en-US", { maximumFractionDigits: 8 })}{" "}
+                      sh @ {privacyMoney(privacyMode, holding.avgCost)} avg cost
+                    </p>
+                  )}
+                </div>
+              ) : null}
+
+              {sellError ? <p className="text-[11px] font-semibold text-rose-400">{sellError}</p> : null}
+
+              <button
+                type="submit"
+                disabled={selling || !sellQtyValid || !sellPriceValid || sellOverQty}
+                className={`flex w-full items-center justify-center gap-1.5 rounded-xl px-4 py-2.5 text-sm font-bold transition active:scale-[0.99] ${
+                  selling || !sellQtyValid || !sellPriceValid || sellOverQty
+                    ? "cursor-not-allowed bg-black/30 text-slate-600"
+                    : "bg-rose-500 text-white hover:bg-rose-400"
+                }`}
+              >
+                {selling ? <Loader2 size={15} className="animate-spin" /> : <Minus size={15} />}
+                {selling ? "Selling…" : sellingAll ? "Liquidate position" : "Sell shares"}
+              </button>
+            </form>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

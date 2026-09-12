@@ -1,15 +1,21 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
+  ArrowRight,
+  Banknote,
   Calendar,
+  Check,
   CheckCircle2,
+  ChevronDown,
   ChevronLeft,
   ExternalLink,
+  Gift,
   HelpCircle,
   Landmark,
   Pencil,
   Plus,
   RefreshCw,
+  SlidersHorizontal,
   Sparkles,
   Target,
   Undo2,
@@ -25,7 +31,14 @@ import {
   YAxis,
 } from "recharts";
 import { formatCurrencyInput, parseCurrency } from "../lib/money";
-import { applyAgeToBirthDate, clampAge, parseISODate, todayISODate } from "../lib/age";
+import { readLocalItem } from "../lib/storage";
+import { ageFromBirthDate, applyAgeToBirthDate, clampAge, parseISODate, todayISODate } from "../lib/age";
+import {
+  computeRetirementTargets,
+  K401_MATCH_RATE,
+  loadFinancialProfile,
+  subscribeFinancialProfile,
+} from "../lib/roadmapService";
 
 const EMERALD = "#10B981";
 const TARGET_LINE = "#94A3B8";
@@ -38,18 +51,20 @@ const ON_TRACK_TOLERANCE = 0.05;
 
 export const RETIREMENT_UPDATED_EVENT = "matterpro:retirement-updated";
 
-type AccountType = "401k" | "roth" | "traditional";
+type AccountType = "roth" | "traditional" | "401k" | "hsa";
 type SetupStep = 1 | 2 | 3 | 4;
 
 const ACCOUNTS: Array<{
   id: AccountType;
   label: string;
+  shortLabel: string;
   benefit: string;
   hint: string;
 }> = [
-  { id: "401k", label: "401(k)", benefit: "Pre-tax paycheck deferral, tax-deferred growth", hint: "Employer plan · often with a match" },
-  { id: "roth", label: "Roth IRA", benefit: "Tax-free growth & withdrawals", hint: "Pay tax now · withdraw tax-free later" },
-  { id: "traditional", label: "Traditional IRA", benefit: "Possible deduction now, taxed later", hint: "Possible deduction now · taxed later" },
+  { id: "roth", label: "Roth IRA", shortLabel: "Roth IRA", benefit: "Tax-free growth & withdrawals", hint: "Pay tax now · withdraw tax-free later" },
+  { id: "traditional", label: "Traditional IRA", shortLabel: "Trad IRA", benefit: "Possible deduction now, taxed later", hint: "Possible deduction now · taxed later" },
+  { id: "401k", label: "401(k)", shortLabel: "401(k)", benefit: "Pre-tax paycheck deferral, tax-deferred growth", hint: "Employer plan · often with a match" },
+  { id: "hsa", label: "HSA", shortLabel: "HSA", benefit: "Triple tax advantage for medical + retirement", hint: "HDHP required · stealth retirement bucket" },
 ];
 
 const IRA_PROVIDERS: Array<{
@@ -57,6 +72,7 @@ const IRA_PROVIDERS: Array<{
   domain: string;
   rothUrl: string;
   traditionalUrl: string;
+  hsaUrl: string;
   color: string;
 }> = [
   {
@@ -64,6 +80,7 @@ const IRA_PROVIDERS: Array<{
     domain: "fidelity.com",
     rothUrl: "https://www.fidelity.com/retirement-ira/roth-ira",
     traditionalUrl: "https://www.fidelity.com/retirement-ira/traditional-ira",
+    hsaUrl: "https://www.fidelity.com/go/hsa",
     color: "#4B8B3B",
   },
   {
@@ -71,6 +88,7 @@ const IRA_PROVIDERS: Array<{
     domain: "vanguard.com",
     rothUrl: "https://investor.vanguard.com/accounts-plans/iras/roth-ira",
     traditionalUrl: "https://investor.vanguard.com/accounts-plans/iras/traditional-ira",
+    hsaUrl: "https://investor.vanguard.com/accounts-plans/hsa",
     color: "#A02033",
   },
   {
@@ -78,6 +96,7 @@ const IRA_PROVIDERS: Array<{
     domain: "schwab.com",
     rothUrl: "https://www.schwab.com/ira/roth-ira",
     traditionalUrl: "https://www.schwab.com/ira/traditional-ira",
+    hsaUrl: "https://www.schwab.com/health-savings-account",
     color: "#00A0DF",
   },
 ];
@@ -307,7 +326,11 @@ function firstAgeAtOrAbove(series: YearPoint[], target: number): number | null {
 }
 
 function accountLabel(account: AccountType) {
-  return account === "401k" ? "401(k)" : account === "roth" ? "Roth IRA" : "Traditional IRA";
+  return ACCOUNTS.find((item) => item.id === account)?.label ?? "Roth IRA";
+}
+
+function isAccountType(value: unknown): value is AccountType {
+  return value === "roth" || value === "traditional" || value === "401k" || value === "hsa";
 }
 
 function recommendedAccount(age: number): AccountType {
@@ -450,6 +473,149 @@ function buildInsight(opts: {
   return `${lead}${boost}`;
 }
 
+function resolveCurrentAge(
+  age: number | null,
+  birthDate?: string | null,
+  planAge?: number,
+  draftAge?: number
+) {
+  const fromBirth = birthDate ? ageFromBirthDate(birthDate) : null;
+  const candidates = [age, fromBirth, planAge, draftAge];
+  for (const value of candidates) {
+    if (value != null && Number.isFinite(value) && value > 0) {
+      return clampAge(value, 13, 80);
+    }
+  }
+  return null;
+}
+
+function targetFreedomAgeFrom(currentAge: number, retireAge = RETIRE_AGE) {
+  const yearsRemaining = Math.max(0, retireAge - currentAge);
+  return currentAge + yearsRemaining;
+}
+
+function WhatIfSimulator({
+  currentAge,
+  currentSavings,
+  baseMonthly,
+  baseReturn,
+}: {
+  currentAge: number;
+  currentSavings: number;
+  baseMonthly: number;
+  baseReturn: number;
+}) {
+  const [extraMonthly, setExtraMonthly] = useState(0);
+  const [annualReturn, setAnnualReturn] = useState(baseReturn);
+  const [targetAge, setTargetAge] = useState(() => targetFreedomAgeFrom(currentAge));
+
+  useEffect(() => {
+    setAnnualReturn(baseReturn);
+  }, [baseReturn]);
+
+  useEffect(() => {
+    setTargetAge((prev) => Math.max(currentAge, Math.min(LOOKAHEAD_AGE, prev)));
+  }, [currentAge]);
+
+  const freedomAge = targetFreedomAgeFrom(currentAge);
+  const clampedTarget = Math.max(currentAge, Math.min(LOOKAHEAD_AGE, targetAge));
+  const years = Math.max(0, clampedTarget - currentAge);
+  const months = years * 12;
+  const monthly = Math.max(0, baseMonthly + extraMonthly);
+  const projected = futureValue(currentSavings, monthly, annualReturn, months);
+  const baseline = futureValue(currentSavings, baseMonthly, baseReturn, months);
+  const delta = projected - baseline;
+  const millionMonths = monthsToTarget(FREEDOM_NUMBER, currentSavings, monthly, annualReturn);
+  const millionAge = Number.isFinite(millionMonths)
+    ? currentAge + Math.ceil(millionMonths / 12)
+    : null;
+
+  return (
+    <div className="mt-4 rounded-2xl border border-emerald-500/25 bg-[#0A0A0A] px-4 py-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="m-0 flex items-center gap-1.5 text-[10px] font-extrabold uppercase tracking-[0.14em] text-emerald-300/80">
+            <SlidersHorizontal size={12} />
+            What-If Wealth Simulator
+          </p>
+          <p className="mt-1 mb-0 text-[12px] font-medium leading-snug text-[#9CA3AF]">
+            Play with extra savings and return — your real plan stays unchanged.
+          </p>
+        </div>
+      </div>
+
+      <p className="mt-3 mb-0 text-[11px] font-semibold text-[#94A3B8]">
+        Target freedom age {freedomAge}
+        {clampedTarget !== freedomAge ? ` · simulating age ${clampedTarget}` : ""}
+      </p>
+      <p className="mt-1 mb-0 text-3xl font-extrabold tabular-nums tracking-tight text-white">
+        {formatWealth(projected)}
+      </p>
+      <p className="mt-1 mb-0 text-[12px] font-semibold text-emerald-300/90">
+        {delta === 0
+          ? `Matches your current plan at age ${clampedTarget}`
+          : `${delta > 0 ? "+" : ""}${formatWealth(delta)} vs current plan at age ${clampedTarget}`}
+      </p>
+      {millionAge != null ? (
+        <p className="mt-1 mb-0 text-[11px] font-medium text-[#9CA3AF]">
+          Hits $1M around age {millionAge}
+        </p>
+      ) : null}
+
+      <label className="mt-4 block">
+        <span className="flex items-center justify-between gap-2 text-[11px] font-bold text-[#94A3B8]">
+          Extra monthly
+          <span className="tabular-nums text-white">+{formatDollars(extraMonthly)}</span>
+        </span>
+        <input
+          type="range"
+          min={0}
+          max={1000}
+          step={25}
+          value={extraMonthly}
+          onChange={(e) => setExtraMonthly(Number(e.target.value))}
+          className="mt-1.5 w-full accent-emerald-500"
+          aria-label="Extra monthly contribution"
+        />
+      </label>
+
+      <label className="mt-3 block">
+        <span className="flex items-center justify-between gap-2 text-[11px] font-bold text-[#94A3B8]">
+          Expected return
+          <span className="tabular-nums text-white">{annualReturn}%</span>
+        </span>
+        <input
+          type="range"
+          min={4}
+          max={12}
+          step={0.5}
+          value={annualReturn}
+          onChange={(e) => setAnnualReturn(Number(e.target.value))}
+          className="mt-1.5 w-full accent-emerald-500"
+          aria-label="Expected annual return"
+        />
+      </label>
+
+      <label className="mt-3 block">
+        <span className="flex items-center justify-between gap-2 text-[11px] font-bold text-[#94A3B8]">
+          Simulate to age
+          <span className="tabular-nums text-white">{clampedTarget}</span>
+        </span>
+        <input
+          type="range"
+          min={currentAge}
+          max={LOOKAHEAD_AGE}
+          step={1}
+          value={clampedTarget}
+          onChange={(e) => setTargetAge(Number(e.target.value))}
+          className="mt-1.5 w-full accent-emerald-500"
+          aria-label="Simulate to age"
+        />
+      </label>
+    </div>
+  );
+}
+
 function ChartTooltip({
   active,
   payload,
@@ -473,7 +639,7 @@ function ChartTooltip({
   );
 }
 
-function MaterBadge({ compact = false }: { compact?: boolean }) {
+function SproutBadge({ compact = false }: { compact?: boolean }) {
   return (
     <div
       className={`inline-flex items-center gap-1.5 rounded-full border border-emerald-500/35 bg-emerald-500/15 ${
@@ -481,12 +647,16 @@ function MaterBadge({ compact = false }: { compact?: boolean }) {
       }`}
     >
       <Sparkles size={compact ? 11 : 12} className="text-emerald-400" />
-      <span className="text-[10px] font-extrabold uppercase tracking-[0.12em] text-emerald-300">Mater AI</span>
+      <span className="text-[10px] font-extrabold uppercase tracking-[0.12em] text-emerald-300">Sprout AI</span>
     </div>
   );
 }
 
 function storageKey(userId: string) {
+  return `sprout_retirement_${userId || "anon"}`;
+}
+
+function legacyStorageKey(userId: string) {
   return `matterpro_retirement_${userId || "anon"}`;
 }
 
@@ -503,13 +673,10 @@ function defaultPlan(): StoredPlan {
 
 function loadPlan(userId: string): StoredPlan {
   try {
-    const raw = localStorage.getItem(storageKey(userId));
+    const raw = readLocalItem(storageKey(userId), legacyStorageKey(userId));
     if (!raw) return defaultPlan();
     const parsed = JSON.parse(raw) as Partial<StoredPlan>;
-    const accountType: AccountType =
-      parsed.accountType === "401k" || parsed.accountType === "roth" || parsed.accountType === "traditional"
-        ? parsed.accountType
-        : "roth";
+    const accountType: AccountType = isAccountType(parsed.accountType) ? parsed.accountType : "roth";
     const startedAt =
       typeof parsed.startedAt === "string" && parseISODate(parsed.startedAt) ? parsed.startedAt : undefined;
     return {
@@ -602,6 +769,95 @@ function MoneyField({
   );
 }
 
+function AccountPlanSelector({
+  value,
+  onChange,
+}: {
+  value: AccountType;
+  onChange: (next: AccountType) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const selected = ACCOUNTS.find((account) => account.id === value) ?? ACCOUNTS[0];
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointer = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div ref={rootRef} className="relative">
+      <button
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls="retirement-plan-list"
+        onClick={() => setOpen((prev) => !prev)}
+        className="flex w-full items-center justify-between gap-3 rounded-xl border border-[#1F1F1F] bg-[#0A0A0A] px-3.5 py-3 text-left transition hover:border-emerald-500/35 focus-visible:border-emerald-500/50 focus-visible:outline-none"
+      >
+        <span className="min-w-0">
+          <span className="block text-[10px] font-extrabold uppercase tracking-[0.14em] text-[#64748B]">
+            Select Your Retirement Plan
+          </span>
+          <span className="mt-0.5 block truncate text-[14px] font-extrabold text-white">
+            {selected.label}
+          </span>
+        </span>
+        <ChevronDown
+          size={16}
+          className={`flex-shrink-0 text-[#64748B] transition ${open ? "rotate-180 text-emerald-300" : ""}`}
+          aria-hidden
+        />
+      </button>
+      {open ? (
+        <ul
+          id="retirement-plan-list"
+          role="listbox"
+          aria-label="Retirement plans"
+          className="absolute z-20 mt-1.5 w-full overflow-hidden rounded-xl border border-[#1F1F1F] bg-[#121212] py-1 shadow-[0_16px_40px_rgba(0,0,0,0.55)]"
+        >
+          {ACCOUNTS.map((account) => {
+            const active = value === account.id;
+            return (
+              <li key={account.id} role="none">
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={active}
+                  onClick={() => {
+                    onChange(account.id);
+                    setOpen(false);
+                  }}
+                  className={`flex w-full items-center justify-between gap-2 px-3.5 py-2.5 text-left ${
+                    active ? "bg-emerald-500/15 text-white" : "text-slate-200 hover:bg-white/5"
+                  }`}
+                >
+                  <span>
+                    <span className="block text-[13px] font-extrabold">{account.label}</span>
+                    <span className="mt-0.5 block text-[11px] font-medium text-[#9CA3AF]">{account.hint}</span>
+                  </span>
+                  {active ? <Check size={14} className="flex-shrink-0 text-emerald-400" /> : null}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
 function AccountGuideModal({
   age,
   onClose,
@@ -612,14 +868,14 @@ function AccountGuideModal({
   onChoose: (account: AccountType) => void;
 }) {
   const recommended = recommendedAccount(age);
-  const rec = ACCOUNTS.find((a) => a.id === recommended) ?? ACCOUNTS[1];
+  const rec = ACCOUNTS.find((a) => a.id === recommended) ?? ACCOUNTS[0];
   const young = age < 45;
 
   return (
     <div className="fixed inset-0 z-[80] flex items-end justify-center bg-black/70 p-4 sm:items-center" role="dialog" aria-modal="true" aria-labelledby="account-guide-title">
       <div className="w-full max-w-md rounded-2xl border border-[#1F2937] bg-[#0A0A0A] p-4 shadow-[0_24px_60px_rgba(0,0,0,0.55)]">
         <div className="flex items-start justify-between gap-3">
-          <MaterBadge />
+          <SproutBadge />
           <button
             type="button"
             onClick={onClose}
@@ -634,20 +890,23 @@ function AccountGuideModal({
         </h3>
         <ul className="mt-3 space-y-2.5 text-[13px] font-medium leading-relaxed text-[#CBD5E1]">
           <li>
-            <span className="font-extrabold text-white">401(k)</span> — An employer plan. Money comes out of your paycheck before taxes, and many employers match what you put in.
+            <span className="font-extrabold text-white">Roth IRA</span> — You contribute after-tax dollars. Growth and qualified withdrawals are tax-free.
           </li>
           <li>
             <span className="font-extrabold text-white">Traditional IRA</span> — You may deduct contributions now and pay tax when you withdraw in retirement.
           </li>
           <li>
-            <span className="font-extrabold text-white">Roth IRA</span> — You contribute after-tax dollars. Growth and qualified withdrawals are tax-free.
+            <span className="font-extrabold text-white">401(k)</span> — An employer plan. Money comes out of your paycheck before taxes, and many employers match what you put in.
+          </li>
+          <li>
+            <span className="font-extrabold text-white">HSA</span> — Triple tax advantage if you have an HDHP: pre-tax in, tax-free growth, tax-free medical withdrawals. After 65 it can act like a stealth IRA.
           </li>
         </ul>
         <div className="mt-4 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3">
           <p className="text-[13px] font-semibold leading-relaxed text-[#E2E8F0]">
             {young
-              ? `At ${age}, Mater recommends a ${rec.label}: you're likely in a lower tax bracket now, so paying tax today and unlocking decades of tax-free growth is usually the better trade.`
-              : `At ${age}, Mater recommends a ${rec.label} if your employer offers a match — that's an instant return. Pair it with a Roth IRA if you want tax-free withdrawals later.`}
+              ? `At ${age}, Sprout recommends a ${rec.label}: you're likely in a lower tax bracket now, so paying tax today and unlocking decades of tax-free growth is usually the better trade.`
+              : `At ${age}, Sprout recommends a ${rec.label} if your employer offers a match — that's an instant return. Pair it with a Roth IRA if you want tax-free withdrawals later.`}
           </p>
         </div>
         <button
@@ -718,7 +977,7 @@ function ContributionModal({
         </div>
         <p className="mt-2 text-[12px] font-medium leading-relaxed text-[#9CA3AF]">
           Log a deposit to your {accountLabel(account)} if bank linking isn&apos;t active. This tracks pacing in
-          MatterPro — it does not move money at your provider.
+          Sprout — it does not move money at your provider.
         </p>
         <div className="mt-4">
           <MoneyField
@@ -866,30 +1125,173 @@ function ProviderLogo({ domain, color, name }: { domain: string; color: string; 
   );
 }
 
+function providerHref(account: AccountType, provider: (typeof IRA_PROVIDERS)[number]): string {
+  if (account === "traditional") return provider.traditionalUrl;
+  if (account === "hsa") return provider.hsaUrl;
+  return provider.rothUrl;
+}
+
+function providerCta(account: AccountType, providerName: string): string {
+  if (account === "traditional") return `Open Traditional IRA on ${providerName}`;
+  if (account === "hsa") return `Open HSA on ${providerName}`;
+  if (account === "401k") return `Open Roth IRA on ${providerName}`;
+  return `Open Roth IRA on ${providerName}`;
+}
+
+const PAYROLL_PCTS = [3, 6, 10, 15];
+
+function formatPayrollPct(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+function inferredPayIncome(monthlyIncome: number, matchCap: number): number {
+  if (monthlyIncome > 0) return monthlyIncome;
+  if (matchCap > 0) return matchCap / K401_MATCH_RATE;
+  return 0;
+}
+
+function K401MatchCard({
+  monthly,
+  matchCap,
+  monthlyIncome = 0,
+  onPayrollPctChange,
+}: {
+  monthly: number;
+  matchCap: number;
+  monthlyIncome?: number;
+  onPayrollPctChange?: (pct: number) => void;
+}) {
+  const income = inferredPayIncome(monthlyIncome, matchCap);
+  const usingExample = monthly <= 0;
+  const payrollPct = income > 0 && monthly > 0 ? Math.round((monthly / income) * 1000) / 10 : usingExample ? 6 : 0;
+  const yours = monthly > 0 ? Math.round(monthly) : income > 0 ? Math.round(income * K401_MATCH_RATE) : 150;
+  const cap = matchCap > 0 ? Math.round(matchCap) : income > 0 ? Math.round(income * K401_MATCH_RATE) : yours;
+  const employer = Math.min(yours, cap);
+  const total = yours + employer;
+  const matchPct = income > 0 && cap > 0 ? Math.round((cap / income) * 1000) / 10 : 6;
+  const capturingMatch = !usingExample && yours >= cap && cap > 0;
+
+  return (
+    <div className="mt-2 overflow-hidden rounded-2xl border border-emerald-500/25 bg-gradient-to-b from-emerald-500/[0.08] to-[#0A0A0A]">
+      <div className="flex items-start gap-3 border-b border-white/5 px-3.5 py-3">
+        <span className="grid h-8 w-8 flex-shrink-0 place-items-center rounded-lg bg-sky-500/15 text-sky-300">
+          <Banknote size={15} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="m-0 text-[12px] font-extrabold text-white">Pre-Tax Payroll %</p>
+          <p className="mt-0.5 mb-0 text-[11px] font-medium leading-snug text-[#9CA3AF]">
+            Set with HR — deducted before your paycheck hits the bank.
+          </p>
+        </div>
+        <p className="m-0 flex-shrink-0 text-2xl font-extrabold tabular-nums tracking-tight text-white">
+          {formatPayrollPct(payrollPct)}%
+        </p>
+      </div>
+
+      {onPayrollPctChange && income > 0 ? (
+        <div className="flex flex-wrap gap-1.5 px-3.5 pt-3">
+          {PAYROLL_PCTS.map((preset) => {
+            const active = Math.abs(payrollPct - preset) < 0.35;
+            const isMatch = Math.abs(preset - matchPct) < 0.35;
+            return (
+              <button
+                key={preset}
+                type="button"
+                onClick={() => onPayrollPctChange(preset)}
+                className={`rounded-full px-2.5 py-1 text-[10px] font-extrabold ${
+                  active
+                    ? "bg-emerald-500 text-[#042F2E]"
+                    : "border border-[#1F1F1F] bg-black/50 text-[#9CA3AF]"
+                }`}
+              >
+                {preset}%{isMatch ? " match" : ""}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+
+      <div className="px-3.5 py-3">
+        <div className="flex items-center justify-between gap-2">
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-400/15 px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-[0.12em] text-amber-200">
+            <Gift size={11} />
+            Free Money
+          </span>
+          <span className="text-[10px] font-bold uppercase tracking-wide text-emerald-300/80">
+            {capturingMatch ? "Match captured" : "1:1 employer match"}
+          </span>
+        </div>
+        <p className="mt-2 mb-0 text-[11px] font-medium leading-snug text-[#CBD5E1]">
+          {cap > 0
+            ? `Your company matches 1:1 up to ${formatPayrollPct(matchPct)}% (${formatDollars(cap)}/mo).`
+            : "Your company matches 1:1 up to the plan limit."}
+          {usingExample ? " Example shown until you set a payroll %." : ""}
+        </p>
+
+        <div className="mt-3 grid grid-cols-[1fr_auto_1fr_auto_1fr] items-center gap-1">
+          <div className="rounded-xl border border-[#1F1F1F] bg-black/50 px-2 py-2 text-center">
+            <p className="m-0 text-[9px] font-extrabold uppercase tracking-wide text-[#64748B]">You</p>
+            <p className="mt-0.5 mb-0 text-[13px] font-extrabold tabular-nums text-white">{formatDollars(yours)}</p>
+          </div>
+          <ArrowRight size={14} className="text-emerald-400" aria-hidden />
+          <div className="rounded-xl border border-amber-400/30 bg-amber-400/10 px-2 py-2 text-center">
+            <p className="m-0 text-[9px] font-extrabold uppercase tracking-wide text-amber-200/80">Employer</p>
+            <p className="mt-0.5 mb-0 text-[13px] font-extrabold tabular-nums text-amber-200">
+              {formatDollars(employer)}
+            </p>
+          </div>
+          <ArrowRight size={14} className="text-emerald-400" aria-hidden />
+          <div className="rounded-xl border border-emerald-500/35 bg-emerald-500/15 px-2 py-2 text-center">
+            <p className="m-0 text-[9px] font-extrabold uppercase tracking-wide text-emerald-300/80">Total</p>
+            <p className="mt-0.5 mb-0 text-[13px] font-extrabold tabular-nums text-emerald-300">
+              {formatDollars(total)}
+            </p>
+          </div>
+        </div>
+        <p className="mt-2 mb-0 text-center text-[11px] font-semibold leading-snug text-[#94A3B8]">
+          You defer {formatDollars(yours)} → Employer adds {formatDollars(employer)} → Total {formatDollars(total)}
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function ProviderOnboarding({ account }: { account: AccountType }) {
-  const ira = account !== "401k";
-  const steps = ira
-    ? [
-        "Create a free account at Fidelity, Vanguard, or Schwab — about 5 minutes with your SSN and a bank.",
-        `Open a ${accountLabel(account)}. Roth is usually best if you're earlier in your career.`,
-        "Fund it (even $50), pick a target-date or total-market index fund, then log the deposit here.",
-        "Repeat monthly. Consistency is what puts the actual trend on top of the target line.",
-      ]
-    : [
-        "Ask HR or open your benefits portal and enroll in the 401(k) — most plans take 5–10 minutes.",
-        "Contribute enough to capture the full employer match. That's an instant return.",
-        "If you're unsure what to buy, choose the target-date fund closest to age 65.",
-        "No 401(k) at work? Open a Roth IRA with Fidelity or Vanguard below, then log deposits here.",
-      ];
+  const steps =
+    account === "hsa"
+      ? [
+          "Confirm you're on a High-Deductible Health Plan (HDHP) — that's required to open an HSA.",
+          "Open an HSA at Fidelity, Schwab, or your employer's administrator — about 10 minutes.",
+          "Keep a small cash cushion for medical bills, then invest the rest in a total-market or target-date fund.",
+          "After 65, leftover HSA dollars can be withdrawn like a Traditional IRA. Log deposits here to stay on pace.",
+        ]
+      : account === "401k"
+        ? [
+            "Ask HR or open your benefits portal and enroll in the 401(k) — most plans take 5–10 minutes.",
+            "Contribute enough to capture the full employer match. That's an instant return.",
+            "If you're unsure what to buy, choose the target-date fund closest to age 65.",
+            "No 401(k) at work? Open a Roth IRA with Fidelity or Vanguard below, then log deposits here.",
+          ]
+        : [
+            "Create a free account at Fidelity, Vanguard, or Schwab — about 5 minutes with your SSN and a bank.",
+            `Open a ${accountLabel(account)}. Roth is usually best if you're earlier in your career.`,
+            "Fund it (even $50), pick a target-date or total-market index fund, then log the deposit here.",
+            "Repeat monthly. Consistency is what puts the actual trend on top of the target line.",
+          ];
+
+  const headline =
+    account === "hsa"
+      ? "Don't have an HSA yet?"
+      : account === "401k"
+        ? "Don't have a 401(k) yet?"
+        : `Don't have a ${accountLabel(account)} yet?`;
 
   return (
     <div className="mt-4 rounded-2xl border border-[#1F1F1F] bg-[#0A0A0A] p-4">
       <p className="text-[11px] font-extrabold uppercase tracking-[0.14em] text-emerald-300/80">Account onboarding</p>
-      <h3 className="mt-1 text-[15px] font-extrabold tracking-tight text-white">
-        Don&apos;t have a 401(k) or Roth IRA yet?
-      </h3>
+      <h3 className="mt-1 text-[15px] font-extrabold tracking-tight text-white">{headline}</h3>
       <p className="mt-1 text-[12px] font-medium leading-relaxed text-[#9CA3AF]">
-        MatterPro tracks the plan. Your provider holds the money. Set the account up once, then come back and log
+        Sprout tracks the plan. Your provider holds the money. Set the account up once, then come back and log
         deposits.
       </p>
       <ol className="mt-3 space-y-2">
@@ -903,26 +1305,21 @@ function ProviderOnboarding({ account }: { account: AccountType }) {
         ))}
       </ol>
       <div className="mt-3 space-y-2">
-        {IRA_PROVIDERS.map((provider) => {
-          const traditional = account === "traditional";
-          const href = traditional ? provider.traditionalUrl : provider.rothUrl;
-          const label = traditional
-            ? `Open Traditional IRA on ${provider.name}`
-            : `Open Roth IRA on ${provider.name}`;
-          return (
-            <a
-              key={provider.name}
-              href={href}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-3 rounded-xl border border-[#1F1F1F] bg-black px-3 py-2.5 transition hover:border-emerald-500/35"
-            >
-              <ProviderLogo domain={provider.domain} color={provider.color} name={provider.name} />
-              <span className="min-w-0 flex-1 text-[13px] font-extrabold text-white">{label}</span>
-              <ExternalLink size={14} className="flex-shrink-0 text-[#64748B]" />
-            </a>
-          );
-        })}
+        {IRA_PROVIDERS.map((provider) => (
+          <a
+            key={provider.name}
+            href={providerHref(account, provider)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-3 rounded-xl border border-[#1F1F1F] bg-black px-3 py-2.5 transition hover:border-emerald-500/35"
+          >
+            <ProviderLogo domain={provider.domain} color={provider.color} name={provider.name} />
+            <span className="min-w-0 flex-1 text-[13px] font-extrabold text-white">
+              {providerCta(account, provider.name)}
+            </span>
+            <ExternalLink size={14} className="flex-shrink-0 text-[#64748B]" />
+          </a>
+        ))}
       </div>
     </div>
   );
@@ -950,6 +1347,16 @@ export default function RetirementPlanner({
   const [contributeOpen, setContributeOpen] = useState(false);
   const [monthlyEditOpen, setMonthlyEditOpen] = useState(false);
   const [stepError, setStepError] = useState<string | null>(null);
+  const [seededFromBudget, setSeededFromBudget] = useState(false);
+  const [budgetTick, setBudgetTick] = useState(0);
+
+  const budgetTargets = useMemo(() => {
+    const profile = loadFinancialProfile(userId);
+    if (!profile) return null;
+    return computeRetirementTargets(profile.monthlyIncome, profile.monthlyEssentialExpenses);
+  }, [userId, budgetTick]);
+
+  useEffect(() => subscribeFinancialProfile(() => setBudgetTick((tick) => tick + 1)), []);
 
   useEffect(() => {
     if (age == null) return;
@@ -994,8 +1401,12 @@ export default function RetirementPlanner({
     draftAge,
   ]);
 
-  const currentAge = clampAge(age ?? plan.age ?? draftAge ?? 0, 13, 80);
-  const selectedAccount = ACCOUNTS.find((a) => a.id === plan.accountType) ?? ACCOUNTS[1];
+  const userCurrentAge = resolveCurrentAge(age, birthDate, plan.age, draftAge) ?? clampAge(draftAge || 0, 13, 80);
+  const userRetirementAge = RETIRE_AGE;
+  const yearsLeft = userRetirementAge - userCurrentAge;
+  const yearsToFreedom = Math.max(0, yearsLeft);
+  const targetFreedomAge = userCurrentAge + yearsToFreedom;
+  const currentAge = userCurrentAge;
   const annualReturn = plan.annualReturn || DEFAULT_RETURN;
   const contributions = plan.contributions ?? [];
   const startedAt = plan.startedAt ?? todayISODate();
@@ -1100,6 +1511,12 @@ export default function RetirementPlanner({
   );
 
   const nudge = useMemo(() => {
+    if (plan.accountType === "401k") {
+      if (!track.onTrack) {
+        return `You're behind the target trend. Ask HR to raise your pre-tax payroll %. ${insight}`;
+      }
+      return `${track.message} ${insight}`;
+    }
     if (!track.onTrack) {
       const catchUp =
         track.catchUp > 0
@@ -1111,7 +1528,7 @@ export default function RetirementPlanner({
       return `${track.message} Deposit ${formatDollars(track.thisMonthRemaining)} more this month to stay on pace.`;
     }
     return `${track.message} ${insight}`;
-  }, [track, insight, plan.monthly]);
+  }, [track, insight, plan.monthly, plan.accountType]);
 
   const commitAgeToProfile = (nextAge: number) => {
     const clamped = clampAge(nextAge);
@@ -1133,6 +1550,11 @@ export default function RetirementPlanner({
       return;
     }
     if (step === 2) {
+      if (!seededFromBudget && monthly <= 0 && budgetTargets && budgetTargets.totalMonthly > 0) {
+        setMonthly(budgetTargets.totalMonthly);
+        setAccountType(budgetTargets.k401Monthly >= budgetTargets.rothMonthly ? "401k" : "roth");
+        setSeededFromBudget(true);
+      }
       setStep(3);
       return;
     }
@@ -1167,6 +1589,11 @@ export default function RetirementPlanner({
     setStep(1);
     setStepError(null);
     setEditing(true);
+  };
+
+  const switchAccount = (next: AccountType) => {
+    setAccountType(next);
+    setPlan((prev) => ({ ...prev, accountType: next }));
   };
 
   const commitMonthly = (next: number) => {
@@ -1212,7 +1639,7 @@ export default function RetirementPlanner({
           </h2>
           <p className="mt-1 text-[12px] font-medium italic leading-snug text-[#9CA3AF]">
             {showSetup
-              ? "Mater AI will set this up with you in four quick questions"
+              ? "Sprout AI will set this up with you in four quick questions"
               : "Live pacing toward your freedom number"}
           </p>
         </div>
@@ -1224,7 +1651,7 @@ export default function RetirementPlanner({
       {showSetup ? (
         <div key={step} className="matter-pop mt-4 rounded-2xl border border-[#1F1F1F] bg-[#0A0A0A] p-4">
           <div className="flex items-center justify-between gap-3">
-            <MaterBadge />
+            <SproutBadge />
             <span className="text-[11px] font-extrabold tabular-nums text-[#64748B]">
               {step}/4
             </span>
@@ -1308,7 +1735,9 @@ export default function RetirementPlanner({
                 How much can you comfortably contribute monthly?
               </h3>
               <p className="mt-1 text-[12px] font-medium text-[#9CA3AF]">
-                Consistency beats size. You can change this later.
+                {budgetTargets && budgetTargets.totalMonthly > 0
+                  ? `Suggested from your onboarding budget: ${formatDollars(budgetTargets.k401Monthly)} to 401(k) + ${formatDollars(budgetTargets.rothMonthly)} to Roth IRA.`
+                  : "Consistency beats size. You can change this later."}
               </p>
               <div className="mt-4">
                 <MoneyField
@@ -1358,6 +1787,16 @@ export default function RetirementPlanner({
                     </button>
                   );
                 })}
+                {accountType === "401k" ? (
+                  <K401MatchCard
+                    monthly={monthly}
+                    matchCap={
+                      budgetTargets?.k401Monthly ||
+                      Math.round((budgetTargets?.monthlyIncome ?? 0) * K401_MATCH_RATE)
+                    }
+                    monthlyIncome={budgetTargets?.monthlyIncome ?? 0}
+                  />
+                ) : null}
                 <button
                   type="button"
                   onClick={() => setGuideOpen(true)}
@@ -1369,7 +1808,7 @@ export default function RetirementPlanner({
                   <span>
                     <span className="block text-[14px] font-extrabold text-white">I&apos;m not sure (Guide me)</span>
                     <span className="mt-0.5 block text-[12px] font-medium text-[#9CA3AF]">
-                      Mater AI will explain the difference and recommend one
+                      Sprout AI will explain the difference and recommend one
                     </span>
                   </span>
                 </button>
@@ -1435,7 +1874,7 @@ export default function RetirementPlanner({
                 {track.onTrack ? <CheckCircle2 size={12} /> : <AlertTriangle size={12} />}
                 {track.onTrack ? "On Track" : "Behind Schedule"}
               </span>
-              <MaterBadge compact />
+              <SproutBadge compact />
             </div>
             <p className="mt-2 text-[13px] font-semibold leading-relaxed text-[#E2E8F0]">{track.message}</p>
           </div>
@@ -1457,24 +1896,43 @@ export default function RetirementPlanner({
                 Retirement Age
               </span>
               <p className="mt-1 text-2xl font-extrabold tabular-nums tracking-tight text-emerald-300">
-                {RETIRE_AGE}
+                {userRetirementAge}
               </p>
               <p className="mt-0.5 text-[10px] font-semibold text-emerald-300/70">
-                {track.onTrack ? `Freedom · ${track.goalAge}` : `Shifted · ${track.shiftedAge}`}
+                {`Years Left: ${userRetirementAge - userCurrentAge}`}
               </p>
             </div>
           </div>
 
-          <p className="mt-3 inline-flex max-w-full items-center rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-[10px] font-bold leading-snug text-emerald-300">
-            {selectedAccount.label} · {selectedAccount.benefit}
-          </p>
+          <div className="mt-3">
+            <AccountPlanSelector value={plan.accountType} onChange={switchAccount} />
+            {plan.accountType === "401k" ? (
+              <K401MatchCard
+                monthly={plan.monthly}
+                matchCap={
+                  budgetTargets?.k401Monthly ||
+                  Math.round((budgetTargets?.monthlyIncome ?? 0) * K401_MATCH_RATE)
+                }
+                monthlyIncome={budgetTargets?.monthlyIncome ?? 0}
+                onPayrollPctChange={(pct) => {
+                  const income = inferredPayIncome(
+                    budgetTargets?.monthlyIncome ?? 0,
+                    budgetTargets?.k401Monthly ||
+                      Math.round((budgetTargets?.monthlyIncome ?? 0) * K401_MATCH_RATE)
+                  );
+                  if (income > 0) commitMonthly(Math.round(income * (pct / 100)));
+                }}
+              />
+            ) : null}
+          </div>
 
-          <div className="mt-4 rounded-2xl border border-[#1F1F1F] bg-[#0A0A0A] px-4 py-4">
+          {plan.accountType !== "401k" ? (
+          <div className="mt-4 rounded-2xl border border-[#1F1F1F] bg-[#0A0A0A] px-4 py-4 text-center">
             <p className="text-[10px] font-extrabold uppercase tracking-[0.14em] text-[#64748B]">
               Monthly Investment Contribution
             </p>
             <p className="mt-1 text-[12px] font-medium text-[#9CA3AF]">
-              Change this anytime — the projection updates immediately.
+              You can change this anytime you want
             </p>
             <button
               type="button"
@@ -1499,7 +1957,9 @@ export default function RetirementPlanner({
               <Pencil size={13} className="text-emerald-300" aria-hidden="true" />
             </button>
           </div>
+          ) : null}
 
+          {plan.accountType !== "401k" ? (
           <div className="mt-3 rounded-2xl border border-[#1F1F1F] bg-[#0A0A0A] px-4 py-4">
             <div className="flex items-center justify-between gap-2">
               <p className="text-[10px] font-extrabold uppercase tracking-[0.14em] text-[#64748B]">
@@ -1550,10 +2010,11 @@ export default function RetirementPlanner({
                   : "Set a monthly contribution above to start pacing."}
             </p>
           </div>
+          ) : null}
 
           <div className="mt-4 rounded-2xl border border-[#1F1F1F] bg-[#0A0A0A] px-4 py-4">
             <p className="text-[12px] font-semibold leading-snug text-[#9CA3AF]">
-              Estimated Wealth at Age {RETIRE_AGE}
+              Estimated Wealth at Age {targetFreedomAge}
             </p>
             <p className="mt-1 text-4xl font-extrabold tracking-tight text-white tabular-nums sm:text-5xl">
               {formatWealth(totalWealth)}
@@ -1679,14 +2140,21 @@ export default function RetirementPlanner({
             </div>
           </div>
 
+          <WhatIfSimulator
+            currentAge={currentAge}
+            currentSavings={actualNow}
+            baseMonthly={plan.monthly}
+            baseReturn={annualReturn}
+          />
+
           <div className="mt-4 rounded-2xl border border-[#10B981]/35 bg-[#0A0A0A] p-3.5">
             <div className="mb-2">
-              <MaterBadge />
+              <SproutBadge />
             </div>
             <p className="text-[13px] font-semibold leading-relaxed text-[#E2E8F0]">{nudge}</p>
           </div>
 
-          <ProviderOnboarding account={plan.accountType} />
+          {plan.accountType !== "401k" ? <ProviderOnboarding account={plan.accountType} /> : null}
 
           <button
             type="button"

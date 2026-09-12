@@ -6,11 +6,16 @@ import {
   ChevronRight,
   ChevronUp,
   CircleDollarSign,
+  Lock,
   Plus,
+  Shield,
   Receipt,
   Trash2,
   TrendingDown,
   TrendingUp,
+  User,
+  Volume2,
+  VolumeX,
   X,
 } from "lucide-react";
 import React, { useEffect, useMemo, useRef, useState } from "react";
@@ -25,9 +30,12 @@ import CashFlowScreen, { SafetyNetSection } from "./src/components/CashFlowScree
 import RetirementScreen from "./src/components/RetirementScreen";
 import LessonsScreen from "./src/components/LessonsScreen";
 import ProfileScreen from "./src/components/ProfileScreen";
+import FinancialOnboardingModal from "./src/components/FinancialOnboardingModal";
+import WebDashboard from "./src/components/WebDashboard";
 import AchievementBanner from "./src/components/AchievementBanner";
 import CertificateCelebration from "./src/components/CertificateCelebration";
 import { evaluateTrophies } from "./src/lib/achievements";
+import { STREAK_UPDATED_EVENT } from "./src/lib/streakService";
 import {
   getRetirementDepositCount,
   RETIREMENT_UPDATED_EVENT,
@@ -49,6 +57,15 @@ import {
   type CashFlowSnapshot,
   type UserSettings,
 } from "./src/lib/auth";
+import { useSoundEnabled } from "./src/lib/audioService";
+import { OPEN_LESSON_EVENT } from "./src/lib/lessons";
+import {
+  OPEN_FINANCIAL_ONBOARDING_EVENT,
+  hasFinancialProfile,
+  loadFinancialProfile,
+  type FinancialProfile,
+} from "./src/lib/roadmapService";
+import { saveAcademyStartPhase } from "./src/lib/certificates";
 import { useSafetyNetQuotes } from "./src/hooks/useSafetyNetQuotes";
 import {
   SAFETY_NET_RECOMMENDED_MONTHS,
@@ -82,16 +99,16 @@ const TABS: Array<{ id: TabId; emoji: string; label: string }> = [
   { id: "retirement", emoji: "🛡️", label: "Retirement" },
   { id: "snowball", emoji: "💸", label: "Cash Flow" },
   { id: "lessons", emoji: "📚", label: "Lessons" },
-  { id: "socrates", emoji: "🏛️", label: "Mater AI" },
+  { id: "socrates", emoji: "🏛️", label: "Sprout AI" },
 ];
 
 const HEADER_TABS: TabId[] = ["dashboard", "retirement", "snowball", "lessons", "profile"];
 
 const GEMINI_API_KEY = "AQ.Ab8RN6LVBGK2nK4hRt3tLM01jc1i7r3CWL7paFYfl8QdYO4Rjg";
 const SOCRATES_PERSONA =
-  "You are Socrates, a warm, sharp, and encouraging personal finance and investment mentor for people of any age or background. Keep answers under 4 short sentences, use clear everyday language with relatable analogies, and sound like a supportive guide having a real conversation — never a lecture.";
+  "You are Sprout AI, a warm, sharp, and encouraging personal finance and investment mentor for people of any age or background. Keep answers under 4 short sentences, use clear everyday language with relatable analogies, and sound like a supportive guide having a real conversation — never a lecture.";
 const SOCRATES_MOCK_REPLY =
-  "No API key yet, so I'll keep it analog: pay the high-interest debt first, keep stacking that emergency fund, then automate a broad ETF. Add VITE_GEMINI_API_KEY to unlock the live Socrates chat.";
+  "No API key yet, so I'll keep it analog: pay the high-interest debt first, keep stacking that emergency fund, then automate a broad ETF. Add VITE_GEMINI_API_KEY to unlock the live Sprout AI chat.";
 
 const GREETING_WORDS = ["hi", "hello", "hey", "yo", "hiya", "howdy", "selam", "merhaba", "hola", "sup"];
 
@@ -102,6 +119,20 @@ function isSimpleGreeting(text: string): boolean {
   const words = normalized.split(/\s+/);
   if (words.length > 3) return false;
   return GREETING_WORDS.includes(words[0]);
+}
+
+function useLgUp() {
+  const [matches, setMatches] = useState(() =>
+    typeof window !== "undefined" ? window.matchMedia("(min-width: 1024px)").matches : false
+  );
+  useEffect(() => {
+    const media = window.matchMedia("(min-width: 1024px)");
+    const sync = () => setMatches(media.matches);
+    sync();
+    media.addEventListener("change", sync);
+    return () => media.removeEventListener("change", sync);
+  }, []);
+  return matches;
 }
 
 function greetingReplies(userName: string) {
@@ -125,15 +156,6 @@ function getGeminiApiKey() {
 
 function money(amount: number) {
   return Math.round(amount).toLocaleString("en-US");
-}
-
-/** Compact header amounts so the Net Worth chip stays one line on small screens. */
-function compactMoney(amount: number) {
-  const abs = Math.abs(amount);
-  const sign = amount < 0 ? "-" : "";
-  if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(2)}M`;
-  if (abs >= 10_000) return `${sign}$${(abs / 1_000).toFixed(1)}k`;
-  return `${sign}$${money(abs)}`;
 }
 
 const MAX_PAYOFF_MONTHS = 600;
@@ -267,6 +289,7 @@ function cashFlowPayloadKey(snapshot: Pick<CashFlowSnapshot, "monthlyIncome" | "
 }
 
 const App: React.FC = () => {
+  const isDesktop = useLgUp();
   const [authUser, setAuthUser] = useState<AuthUser | null>(() => getStoredUser());
   const [authChecking, setAuthChecking] = useState(() => Boolean(getToken()));
   const [userSettings, setUserSettings] = useState<UserSettings | null>(null);
@@ -287,7 +310,13 @@ const App: React.FC = () => {
   const lastContentTabRef = useRef<TabId>("dashboard");
   const [privacyMode, setPrivacyMode] = useState(false);
   const [netWorthModalOpen, setNetWorthModalOpen] = useState(false);
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const profileMenuRef = useRef<HTMLDivElement | null>(null);
+  const [soundEnabled, setSoundEnabled] = useSoundEnabled();
   const [retirementBalance, setRetirementBalance] = useState(0);
+  const [financialModalOpen, setFinancialModalOpen] = useState(false);
+  const [financialModalCancelable, setFinancialModalCancelable] = useState(false);
+  const [financialDraft, setFinancialDraft] = useState<FinancialProfile | null>(null);
 
   // Cash Flow & Debt Management module state.
   const [expenses, setExpenses] = useState<ExpenseItem[]>(cashFlowBoot.expenses);
@@ -305,6 +334,7 @@ const App: React.FC = () => {
   // Live mirror of child-owned portfolio state, kept in sync via a callback prop so
   // Socrates AI can reference the user's real holdings.
   const [holdings, setHoldings] = useState<Holding[]>([]);
+  const [holdingsReady, setHoldingsReady] = useState(false);
 
   const userName = authUser?.name?.trim() || "Investor";
   const profileInitials = (authUser?.name || authUser?.email || "?")
@@ -338,6 +368,7 @@ const App: React.FC = () => {
         setAuthUser(null);
         setUserSettings(null);
         setHoldings([]);
+        setHoldingsReady(false);
         setRetirementBalance(0);
         setMonthlyIncome(0);
         setEmergencyFund(0);
@@ -501,7 +532,26 @@ const App: React.FC = () => {
   useEffect(() => {
     if (activeTab !== "dashboard") setNetWorthModalOpen(false);
     if (activeTab !== "profile") lastContentTabRef.current = activeTab;
+    setProfileMenuOpen(false);
   }, [activeTab]);
+
+  useEffect(() => {
+    if (!profileMenuOpen) return;
+    const onPointer = (event: PointerEvent) => {
+      if (!profileMenuRef.current?.contains(event.target as Node)) {
+        setProfileMenuOpen(false);
+      }
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setProfileMenuOpen(false);
+    };
+    window.addEventListener("pointerdown", onPointer);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", onPointer);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [profileMenuOpen]);
 
   const handleAuthenticated = (user: AuthUser, settings?: UserSettings | null) => {
     setAuthUser(user);
@@ -527,7 +577,41 @@ const App: React.FC = () => {
   const handleOnboardingComplete = (settings: UserSettings) => {
     setUserSettings(settings);
     setActiveTab("dashboard");
+    if (!hasFinancialProfile(authUser?.id)) {
+      setFinancialDraft(null);
+      setFinancialModalCancelable(false);
+      setFinancialModalOpen(true);
+    }
   };
+
+  const openFinancialProfile = (cancelable = true) => {
+    setFinancialDraft(loadFinancialProfile(authUser?.id));
+    setFinancialModalCancelable(cancelable);
+    setFinancialModalOpen(true);
+  };
+
+  useEffect(() => {
+    if (!authUser || !userSettings?.hasCompletedOnboarding) return;
+    if (hasFinancialProfile(authUser.id)) return;
+    setFinancialDraft(null);
+    setFinancialModalCancelable(false);
+    setFinancialModalOpen(true);
+  }, [authUser, userSettings?.hasCompletedOnboarding]);
+
+  useEffect(() => {
+    const onOpen = (event: Event) => {
+      const cancelable = (event as CustomEvent<{ cancelable?: boolean }>).detail?.cancelable !== false;
+      openFinancialProfile(cancelable);
+    };
+    window.addEventListener(OPEN_FINANCIAL_ONBOARDING_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_FINANCIAL_ONBOARDING_EVENT, onOpen);
+  }, []);
+
+  useEffect(() => {
+    const onOpenLesson = () => setActiveTab("lessons");
+    window.addEventListener(OPEN_LESSON_EVENT, onOpenLesson);
+    return () => window.removeEventListener(OPEN_LESSON_EVENT, onOpenLesson);
+  }, []);
 
   const persistAge = async (nextAge: number, nextBirthDate: string) => {
     if (!userSettings) return;
@@ -556,6 +640,7 @@ const App: React.FC = () => {
     setUserSettings(null);
     setSettingsReady(true);
     setHoldings([]);
+    setHoldingsReady(false);
     setRetirementBalance(0);
     setMonthlyIncome(0);
     setEmergencyFund(0);
@@ -616,12 +701,12 @@ const App: React.FC = () => {
     );
     const lines = holdings.map((h) =>
       h.kind === "stock"
-        ? `${h.symbol} (${h.description}): ${h.quantity} shares @ $${h.currentPrice.toFixed(2)} = $${money(
+        ? `${h.symbol} (${h.description}, ${h.account === "verified" ? "Verified Brokerage" : "Paper Account"}): ${h.quantity} shares @ $${h.currentPrice.toFixed(2)} = $${money(
             h.quantity * h.currentPrice
           )} (today ${h.dayChangePct >= 0 ? "+" : ""}${h.dayChangePct.toFixed(2)}%)`
-        : `${h.name} (connected account balance): $${money(h.balance)}`
+        : `${h.name} (${h.account === "verified" ? "Verified Brokerage" : "Paper Account"} balance): $${money(h.balance)}`
     );
-    return `Total portfolio value: $${money(totalValue)}. Holdings:\n- ${lines.join("\n- ")}`;
+    return `Total portfolio value: $${money(totalValue)}. Investment achievement badges only count Verified Brokerage holdings; Paper Account lots are excluded. Holdings:\n- ${lines.join("\n- ")}`;
   }, [holdings]);
 
   const stockHoldingsValue = useMemo(
@@ -647,9 +732,11 @@ const App: React.FC = () => {
       }),
     [emergencyFund, stockHoldingsValue, safetyNet, goldPricePerOz, bondPrices]
   );
-  const availableCash = brokerCashValue + Math.max(0, emergencyFund);
+  const liquidCashValue = brokerCashValue + Math.max(0, emergencyFund);
+  const hysaCashValue = Math.max(0, safetyNet.hysaCash ?? 0);
+  const availableCash = liquidCashValue + hysaCashValue;
   const netWorth =
-    stockHoldingsValue + retirementBalance + availableCash + safetyTotals.gold + safetyTotals.bonds;
+    stockHoldingsValue + retirementBalance + liquidCashValue + hysaCashValue + safetyTotals.gold + safetyTotals.bonds;
 
   useEffect(() => {
     if (!authUser) return;
@@ -663,16 +750,19 @@ const App: React.FC = () => {
         retirementDeposits: getRetirementDepositCount(userId),
         safetyNetValue: safetyTotals.total,
         monthlyExpenses,
+        holdingsReady,
       });
     };
     refresh();
     window.addEventListener(RETIREMENT_UPDATED_EVENT, refresh);
+    window.addEventListener(STREAK_UPDATED_EVENT, refresh);
     window.addEventListener("storage", refresh);
     return () => {
       window.removeEventListener(RETIREMENT_UPDATED_EVENT, refresh);
+      window.removeEventListener(STREAK_UPDATED_EVENT, refresh);
       window.removeEventListener("storage", refresh);
     };
-  }, [authUser, holdings, netWorth, stockHoldingsValue, safetyTotals.total, monthlyExpenses]);
+  }, [authUser, holdings, holdingsReady, netWorth, stockHoldingsValue, safetyTotals.total, monthlyExpenses]);
 
   // Live debt context — real debts, so Socrates can answer "how's my debt payoff going?" accurately.
   const debtContext = useMemo(() => {
@@ -861,9 +951,9 @@ const App: React.FC = () => {
       const apiKey = getGeminiApiKey();
       const history = thread
         .slice(-12)
-        .map((msg) => `${msg.sender === "user" ? "User" : "Socrates"}: ${msg.text}`)
+        .map((msg) => `${msg.sender === "user" ? "User" : "Sprout AI"}: ${msg.text}`)
         .join("\n");
-      const userPrompt = `${userName}'s live snapshot:\n- Safety net: $${money(safetyTotals.total)} total liquidity (cash $${money(safetyTotals.cash)}, mapped stocks $${money(safetyTotals.stocks)}, gold $${money(safetyTotals.gold)}, bonds $${money(safetyTotals.bonds)})${monthlyExpenses > 0 ? ` — ${ (safetyTotals.total / monthlyExpenses).toFixed(1)} months of spending` : ""}. Starter cash goal $${money(emergencyGoal)}; recommended ${SAFETY_NET_RECOMMENDED_MONTHS}-month target $${money(monthlyExpenses * SAFETY_NET_RECOMMENDED_MONTHS)}.\n- Cash flow: ${cashFlowContext}\n- Debt: ${debtContext}\n- Investment portfolio: ${portfolioContext}\n\nConversation:\n${history}\n\nReply to the latest user message. If ${userName} asks about their income, spending, budget, debts, safety net, or portfolio balance, answer using the real snapshot data above.`;
+      const userPrompt = `${userName}'s live snapshot:\n- Safety net: $${money(safetyTotals.total)} total liquidity (liquid cash $${money(safetyTotals.liquidCash)}, HYSA $${money(safetyTotals.hysaCash)}, mapped stocks $${money(safetyTotals.stocks)}, gold $${money(safetyTotals.gold)}, bonds $${money(safetyTotals.bonds)})${monthlyExpenses > 0 ? ` — ${ (safetyTotals.total / monthlyExpenses).toFixed(1)} months of spending` : ""}. Starter cash goal $${money(emergencyGoal)}; recommended ${SAFETY_NET_RECOMMENDED_MONTHS}-month target $${money(monthlyExpenses * SAFETY_NET_RECOMMENDED_MONTHS)}.\n- Cash flow: ${cashFlowContext}\n- Debt: ${debtContext}\n- Investment portfolio: ${portfolioContext}\n\nConversation:\n${history}\n\nReply to the latest user message. If ${userName} asks about their income, spending, budget, debts, safety net, or portfolio balance, answer using the real snapshot data above.`;
 
       if (!apiKey) {
         setMessages((prev) => [...prev, createChatMessage("socrates", SOCRATES_MOCK_REPLY)]);
@@ -875,7 +965,7 @@ const App: React.FC = () => {
       const result = await model.generateContent(`${SOCRATES_PERSONA}\n\n${userPrompt}`);
       const text = result.response.text().trim();
       if (!text) {
-        throw new Error("Socrates came back blank. Try that question again.");
+        throw new Error("Sprout AI came back blank. Try that question again.");
       }
 
       setMessages((prev) => [...prev, createChatMessage("socrates", text)]);
@@ -921,70 +1011,167 @@ const App: React.FC = () => {
   }
 
   return (
-    <div style={styles.page}>
+    <div style={isDesktop ? { ...styles.page, padding: 0, overflow: "hidden" } : styles.page}>
       <style>{css}</style>
       <AchievementBanner userName={userName} />
       <CertificateCelebration />
+      <FinancialOnboardingModal
+        key={financialModalOpen ? (financialDraft?.updatedAt ?? "create") : "closed"}
+        open={financialModalOpen}
+        allowCancel={financialModalCancelable}
+        initialAnswers={financialDraft}
+        onClose={() => setFinancialModalOpen(false)}
+        onComplete={(roadmap) => {
+          saveAcademyStartPhase(authUser.id, roadmap.recommendedPhaseId);
+        }}
+      />
 
+      <div className="hidden h-screen overflow-hidden lg:block">
+        {isDesktop ? (
+          <WebDashboard
+            user={authUser}
+            userName={userName}
+            profileInitials={profileInitials}
+            privacyMode={privacyMode}
+            onTogglePrivacy={() => setPrivacyMode((value) => !value)}
+            netWorth={netWorth}
+            stockHoldingsValue={stockHoldingsValue}
+            retirementBalance={retirementBalance}
+            liquidCashValue={liquidCashValue}
+            hysaCashValue={hysaCashValue}
+            goldValue={safetyTotals.gold}
+            bondsValue={safetyTotals.bonds}
+            safetyNetTotal={safetyTotals.total}
+            monthlyExpenses={monthlyExpenses}
+            monthlyIncome={monthlyIncome}
+            totalDebt={totalDebt}
+            age={userSettings?.age ?? null}
+            birthDate={userSettings?.birthDate ?? null}
+            holdings={holdings}
+            holdingsReady={holdingsReady}
+            cashBalance={emergencyFund}
+            onHoldingsChange={(next) => {
+              setHoldings(next);
+              setHoldingsReady(true);
+            }}
+            onConsultSocrates={() => setActiveTab("socrates")}
+            onAgeChange={(nextAge, nextBirthDate) => {
+              void persistAge(nextAge, nextBirthDate);
+            }}
+            onBalanceChange={setRetirementBalance}
+            settings={userSettings}
+            onSettingsChange={setUserSettings}
+            onLogout={handleLogout}
+            onEditFinancialProfile={() => openFinancialProfile(true)}
+            safetyNet={safetyNet}
+            onSafetyNetChange={setSafetyNet}
+            onCashChange={setEmergencyFund}
+            goldPricePerOz={goldPricePerOz}
+            bondPrices={bondPrices}
+            safetyQuotesLoading={safetyQuotesLoading}
+          />
+        ) : null}
+      </div>
+
+      <div className="block lg:hidden">
+      {!isDesktop ? (
+      <>
       <div style={styles.shell}>
         {HEADER_TABS.includes(activeTab) && (
           <header style={styles.investHeader}>
-            <p style={styles.brandLogo}>MatterPro</p>
+            <p style={styles.brandLogo}>Sprout</p>
             <div style={styles.headerActions}>
               {activeTab === "dashboard" && (
                 <button
                   type="button"
                   style={styles.netWorthBtn}
-                  aria-label={`Net worth ${privacyMoney(privacyMode, netWorth)}`}
+                  aria-label="Open secure net worth breakdown"
                   aria-haspopup="dialog"
                   aria-expanded={netWorthModalOpen}
-                  title={
-                    privacyMode
-                      ? "Net Worth"
-                      : `Net Worth: stocks $${money(stockHoldingsValue)} + retirement $${money(retirementBalance)} + cash $${money(availableCash)}`
-                  }
+                  title="Open secure Net Worth breakdown"
                   onClick={() => setNetWorthModalOpen(true)}
                 >
-                  <span style={styles.netWorthLabel}>
-                    <span aria-hidden="true">💰</span> Net Worth
-                  </span>
-                  <span style={styles.netWorthValue}>
-                    {privacyMode ? privacyMoney(true, netWorth) : compactMoney(netWorth)}
-                  </span>
+                  <Shield size={18} strokeWidth={1.75} aria-hidden="true" />
                 </button>
               )}
               <button type="button" style={styles.notifBtn} aria-label="Notifications">
                 <Bell size={20} strokeWidth={1.75} />
               </button>
-              <button
-                type="button"
-                style={{
-                  ...styles.profileBtn,
-                  ...(activeTab === "profile" ? styles.profileBtnActive : {}),
-                }}
-                aria-label="Profile"
-                aria-current={activeTab === "profile" ? "page" : undefined}
-                title={authUser.name || "Profile"}
-                onClick={() => {
-                  if (activeTab === "profile") {
-                    const previous = lastContentTabRef.current;
-                    setActiveTab(previous === "profile" ? "dashboard" : previous);
-                    return;
-                  }
-                  setActiveTab("profile");
-                }}
-              >
-                {authUser.avatarUrl ? (
-                  <img
-                    src={authUser.avatarUrl}
-                    alt=""
-                    referrerPolicy="no-referrer"
-                    style={styles.profileBtnImg}
-                  />
-                ) : (
-                  <span style={styles.profileBtnInitials}>{profileInitials}</span>
-                )}
-              </button>
+              <div ref={profileMenuRef} style={styles.profileMenuWrap}>
+                <button
+                  type="button"
+                  style={{
+                    ...styles.profileBtn,
+                    ...(activeTab === "profile" || profileMenuOpen ? styles.profileBtnActive : {}),
+                  }}
+                  aria-label="Profile menu"
+                  aria-haspopup="menu"
+                  aria-expanded={profileMenuOpen}
+                  aria-current={activeTab === "profile" ? "page" : undefined}
+                  title={authUser.name || "Profile"}
+                  onClick={() => setProfileMenuOpen((open) => !open)}
+                >
+                  {authUser.avatarUrl ? (
+                    <img
+                      src={authUser.avatarUrl}
+                      alt=""
+                      referrerPolicy="no-referrer"
+                      style={styles.profileBtnImg}
+                    />
+                  ) : (
+                    <span style={styles.profileBtnInitials}>{profileInitials}</span>
+                  )}
+                </button>
+                {profileMenuOpen ? (
+                  <div role="menu" aria-label="Profile settings" className="matter-pop" style={styles.profileMenu}>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="matter-profile-menu-item"
+                      style={styles.profileMenuItem}
+                      onClick={() => {
+                        setProfileMenuOpen(false);
+                        if (activeTab === "profile") {
+                          const previous = lastContentTabRef.current;
+                          setActiveTab(previous === "profile" ? "dashboard" : previous);
+                          return;
+                        }
+                        setActiveTab("profile");
+                      }}
+                    >
+                      <User size={15} color="#10B981" />
+                      <span style={styles.profileMenuLabel}>
+                        {activeTab === "profile" ? "Close profile" : "Profile"}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="matter-profile-menu-item"
+                      style={styles.profileMenuItem}
+                      aria-pressed={soundEnabled}
+                      onClick={() => setSoundEnabled(!soundEnabled)}
+                    >
+                      {soundEnabled ? (
+                        <Volume2 size={15} color="#10B981" />
+                      ) : (
+                        <VolumeX size={15} color="#9CA3AF" />
+                      )}
+                      <span style={styles.profileMenuLabel}>Sound</span>
+                      <span
+                        style={{
+                          ...styles.profileMenuSoundChip,
+                          color: soundEnabled ? "#10B981" : "#9CA3AF",
+                          borderColor: soundEnabled ? "rgba(16, 185, 129, 0.35)" : "#2A2A2A",
+                          background: soundEnabled ? "rgba(16, 185, 129, 0.12)" : "#111111",
+                        }}
+                      >
+                        {soundEnabled ? "On" : "Off"}
+                      </span>
+                    </button>
+                  </div>
+                ) : null}
+              </div>
             </div>
           </header>
         )}
@@ -1006,13 +1193,13 @@ const App: React.FC = () => {
               <div style={styles.spendingModalHead}>
                 <div style={styles.spendingModalTitleRow}>
                   <span style={{ ...styles.spendingModalIcon, fontSize: 18 }} aria-hidden="true">
-                    💰
+                    <Lock size={16} strokeWidth={2.25} />
                   </span>
                   <div>
                     <h3 id="net-worth-modal-title" style={styles.spendingModalTitle}>
                       Total Net Worth
                     </h3>
-                    <p style={styles.spendingModalSub}>How your total is composed</p>
+                    <p style={styles.spendingModalSub}>Secure breakdown — checking and HYSA are listed separately</p>
                   </div>
                 </div>
                 <button
@@ -1026,7 +1213,7 @@ const App: React.FC = () => {
               </div>
 
               <p style={styles.netWorthModalTotal}>
-                {privacyMoney(privacyMode, netWorth)}
+                {privacyMoney(false, netWorth)}
               </p>
 
               <ul style={styles.netWorthBreakdown}>
@@ -1035,7 +1222,7 @@ const App: React.FC = () => {
                     <span aria-hidden="true">📈</span> Portfolio Value
                   </span>
                   <span style={styles.netWorthRowValue}>
-                    {privacyMoney(privacyMode, stockHoldingsValue)}
+                    {privacyMoney(false, stockHoldingsValue)}
                   </span>
                 </li>
                 <li style={styles.netWorthRow}>
@@ -1043,15 +1230,23 @@ const App: React.FC = () => {
                     <span aria-hidden="true">🛡️</span> Retirement Savings
                   </span>
                   <span style={styles.netWorthRowValue}>
-                    {privacyMoney(privacyMode, retirementBalance)}
+                    {privacyMoney(false, retirementBalance)}
                   </span>
                 </li>
                 <li style={styles.netWorthRow}>
                   <span style={styles.netWorthRowLabel}>
-                    <span aria-hidden="true">💵</span> Cash / Liquid
+                    <span aria-hidden="true">💵</span> Checking / Liquid Cash
                   </span>
                   <span style={styles.netWorthRowValue}>
-                    {privacyMoney(privacyMode, availableCash)}
+                    {privacyMoney(false, liquidCashValue)}
+                  </span>
+                </li>
+                <li style={styles.netWorthRow}>
+                  <span style={styles.netWorthRowLabel}>
+                    <span aria-hidden="true">🏦</span> HYSA (High-Yield Savings)
+                  </span>
+                  <span style={styles.netWorthRowValue}>
+                    {privacyMoney(false, hysaCashValue)}
                   </span>
                 </li>
                 {safetyTotals.gold > 0 && (
@@ -1060,7 +1255,7 @@ const App: React.FC = () => {
                       <span aria-hidden="true">🪙</span> Gold
                     </span>
                     <span style={styles.netWorthRowValue}>
-                      {privacyMoney(privacyMode, safetyTotals.gold)}
+                      {privacyMoney(false, safetyTotals.gold)}
                     </span>
                   </li>
                 )}
@@ -1070,7 +1265,7 @@ const App: React.FC = () => {
                       <span aria-hidden="true">📜</span> Bonds / T-bills
                     </span>
                     <span style={styles.netWorthRowValue}>
-                      {privacyMoney(privacyMode, safetyTotals.bonds)}
+                      {privacyMoney(false, safetyTotals.bonds)}
                     </span>
                   </li>
                 )}
@@ -1085,7 +1280,10 @@ const App: React.FC = () => {
               key={authUser.id}
               holdings={holdings}
               totalPortfolioValue={stockHoldingsValue}
-              onHoldingsChange={setHoldings}
+              onHoldingsChange={(next) => {
+                setHoldings(next);
+                setHoldingsReady(true);
+              }}
               onConsultSocrates={() => setActiveTab("socrates")}
               cashBalance={emergencyFund}
               privacyMode={privacyMode}
@@ -1117,7 +1315,10 @@ const App: React.FC = () => {
 
         {activeTab === "snowball" && (
           <div className="matter-tab-panel" style={styles.tabPanel} aria-busy={!cashFlowReady}>
-            <CashFlowScreen holdings={holdings} privacyMode={privacyMode} />
+            <CashFlowScreen
+              holdings={holdings}
+              privacyMode={privacyMode}
+            />
 
             {/* 1. One panel: earnings in, spendings out, net result. */}
             <article
@@ -1594,7 +1795,10 @@ const App: React.FC = () => {
           }}
           aria-hidden={activeTab !== "lessons"}
         >
-          <LessonsScreen active={activeTab === "lessons"} />
+          <LessonsScreen
+            active={activeTab === "lessons"}
+            onOpenPaperPortfolio={() => setActiveTab("dashboard")}
+          />
         </div>
 
         {activeTab === "socrates" && (
@@ -1604,7 +1808,7 @@ const App: React.FC = () => {
                 🏛️
               </div>
               <div>
-                <p style={styles.askLabel}>Matter AI</p>
+                <p style={styles.askLabel}>Sprout AI</p>
                 <p style={styles.askHint}>Your Personal Finance & Investment Guide</p>
               </div>
             </div>
@@ -1639,7 +1843,7 @@ const App: React.FC = () => {
                   <div style={styles.socratesAvatarSm} aria-hidden="true">
                     🏛️
                   </div>
-                  <div style={styles.thinkingBubble}>Socrates is thinking...</div>
+                  <div style={styles.thinkingBubble}>Sprout AI is thinking...</div>
                 </div>
               )}
             </div>
@@ -1653,8 +1857,8 @@ const App: React.FC = () => {
                 value={question}
                 onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setQuestion(e.target.value)}
                 onKeyDown={onAskKeyDown}
-                placeholder="Ask Socrates..."
-                aria-label="Ask Socrates"
+                placeholder="Ask Sprout AI..."
+                aria-label="Ask Sprout AI"
                 disabled={socratesLoading}
               />
               <button
@@ -1687,15 +1891,17 @@ const App: React.FC = () => {
             onSettingsChange={setUserSettings}
             onLogout={handleLogout}
             holdings={holdings}
+            holdingsReady={holdingsReady}
             netWorth={netWorth}
             portfolioValue={stockHoldingsValue}
             safetyNetValue={safetyTotals.total}
             monthlyExpenses={monthlyExpenses}
+            onEditFinancialProfile={() => openFinancialProfile(true)}
           />
         </div>
 
         {activeTab !== "socrates" && activeTab !== "profile" && (
-        <footer style={styles.footer}>Matter · Built for the US · Stay consistent</footer>
+        <footer style={styles.footer}>Sprout · Built for the US · Stay consistent</footer>
         )}
       </div>
 
@@ -1724,6 +1930,9 @@ const App: React.FC = () => {
           })}
         </div>
       </nav>
+      </>
+      ) : null}
+      </div>
     </div>
   );
 };
@@ -1944,37 +2153,17 @@ const styles: Record<string, React.CSSProperties> = {
     flexShrink: 0,
   },
   netWorthBtn: {
-    minHeight: 40,
+    width: 40,
+    height: 40,
     borderRadius: 12,
     border: "1px solid #1F1F1F",
     background: "#0A0A0A",
-    color: "#FFFFFF",
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "flex-end",
-    justifyContent: "center",
-    cursor: "pointer",
-    padding: "5px 10px",
-    flexShrink: 0,
-    gap: 1,
-  },
-  netWorthLabel: {
-    fontSize: 9,
-    fontWeight: 700,
-    letterSpacing: "0.08em",
-    textTransform: "uppercase",
-    color: "#9CA3AF",
-    lineHeight: 1.15,
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 4,
-  },
-  netWorthValue: {
-    fontSize: 13,
-    fontWeight: 800,
     color: "#10B981",
-    fontVariantNumeric: "tabular-nums",
-    lineHeight: 1.15,
+    display: "grid",
+    placeItems: "center",
+    cursor: "pointer",
+    padding: 0,
+    flexShrink: 0,
   },
   netWorthModal: {
     width: "100%",
@@ -2078,6 +2267,56 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 800,
     letterSpacing: "-0.02em",
     lineHeight: 1,
+  },
+  profileMenuWrap: {
+    position: "relative",
+    flexShrink: 0,
+    zIndex: 90,
+  },
+  profileMenu: {
+    position: "absolute",
+    right: 0,
+    top: "calc(100% + 8px)",
+    zIndex: 80,
+    minWidth: 204,
+    padding: 6,
+    borderRadius: 14,
+    border: "1px solid #1F1F1F",
+    background: "#0A0A0A",
+    boxShadow: "0 18px 40px rgba(0, 0, 0, 0.48)",
+    display: "flex",
+    flexDirection: "column" as const,
+    gap: 2,
+  },
+  profileMenuItem: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    width: "100%",
+    margin: 0,
+    border: "none",
+    borderRadius: 10,
+    background: "transparent",
+    color: "#E5E7EB",
+    cursor: "pointer",
+    padding: "10px 10px",
+    fontSize: 13,
+    fontWeight: 700,
+    textAlign: "left" as const,
+  },
+  profileMenuLabel: {
+    flex: 1,
+    minWidth: 0,
+  },
+  profileMenuSoundChip: {
+    flexShrink: 0,
+    borderRadius: 999,
+    border: "1px solid #2A2A2A",
+    padding: "2px 8px",
+    fontSize: 10,
+    fontWeight: 800,
+    letterSpacing: "0.06em",
+    textTransform: "uppercase" as const,
   },
   brand: {
     margin: 0,
@@ -3210,6 +3449,7 @@ const css = `
   .matter-ask-input::-webkit-scrollbar { width: 6px; }
   .matter-ask-input::-webkit-scrollbar-thumb { background: #2A2A2A; border-radius: 999px; }
   button:disabled { cursor: default; }
+  .matter-profile-menu-item:hover { background: rgba(255, 255, 255, 0.045); }
   .matter-slider {
     -webkit-appearance: none;
     appearance: none;

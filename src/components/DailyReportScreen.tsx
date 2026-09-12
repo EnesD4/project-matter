@@ -244,7 +244,7 @@ export default function DailyReportScreen({
           className="mt-8 flex w-full items-center justify-center gap-1.5 rounded-xl bg-emerald-500 px-4 py-3 text-sm font-bold text-[#042F2E] transition hover:bg-emerald-400 active:scale-[0.99]"
         >
           <MessageCircle size={15} />
-          Discuss with Matter AI
+          Discuss with Sprout AI
         </button>
       </div>
     </div>
