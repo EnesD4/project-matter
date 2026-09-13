@@ -94,11 +94,20 @@ export function getPlaidInstitutionId(): string {
 }
 
 export function getSupabaseUrl(): string {
-  return trim(process.env.SUPABASE_URL) || trim(process.env.VITE_SUPABASE_URL);
+  return (
+    trim(process.env.SUPABASE_URL) ||
+    trim(process.env.VITE_SUPABASE_URL) ||
+    "https://rsapdgkmvihaboouwvwv.supabase.co"
+  );
 }
 
 export function getSupabaseAnonKey(): string {
-  return trim(process.env.SUPABASE_ANON_KEY) || trim(process.env.VITE_SUPABASE_ANON_KEY);
+  return (
+    trim(process.env.VITE_SUPABASE_ANON_KEY) ||
+    trim(process.env.SUPABASE_CONFIG_ANON_KEY) ||
+    trim(process.env.SUPABASE_ANON_KEY) ||
+    "sb_publishable_x-anlnaVXC68jRD_DuYNZg_l4dSWRyW"
+  );
 }
 
 export function getSupabaseServiceRoleKey(): string {
