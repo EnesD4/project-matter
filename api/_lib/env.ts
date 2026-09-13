@@ -62,6 +62,26 @@ export function missingPlaidEnvKeys(): string[] {
   return missing;
 }
 
+function looksInvalidPlaidCredential(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  return (
+    normalized.length < 8 ||
+    /^(your[-_]?|changeme|xxx+|todo|placeholder|replace[-_]?me)/i.test(normalized)
+  );
+}
+
+/** Explicit 500 body when PLAID_CLIENT_ID / PLAID_SECRET are missing or obviously invalid. */
+export function plaidCredentialsError(): string | null {
+  const missing = missingPlaidEnvKeys();
+  if (missing.length > 0) {
+    return `PLAID_CLIENT_ID or PLAID_SECRET is missing or invalid (missing ${missing.join(", ")}).`;
+  }
+  if (looksInvalidPlaidCredential(getPlaidClientId()) || looksInvalidPlaidCredential(getPlaidSecret())) {
+    return "PLAID_CLIENT_ID or PLAID_SECRET is missing or invalid.";
+  }
+  return null;
+}
+
 export function getPlaidEnv(): "sandbox" | "development" | "production" {
   const value = trim(process.env.PLAID_ENV).toLowerCase();
   if (value === "development" || value === "production") return value;

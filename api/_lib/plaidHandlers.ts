@@ -1,10 +1,12 @@
 import type { IncomingMessage, ServerResponse } from "http";
-import { isPlaidConfigured, missingPlaidEnvKeys } from "./env";
+import { isPlaidConfigured, missingPlaidEnvKeys, plaidCredentialsError } from "./env";
 import {
   createLinkToken,
   sanitizePlaidClientUserId,
   exchangePublicToken,
   fetchPlaidSnapshot,
+  isPlaidCredentialError,
+  logPlaidError,
   pickBalance,
   type PlaidAccount,
   type PlaidHolding,
@@ -78,11 +80,9 @@ export function buildPlaidPayload(input: {
 export async function handleCreateLinkToken(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (await guardApiRequest(req, res)) return;
 
-  if (!isPlaidConfigured()) {
-    const missing = missingPlaidEnvKeys();
-    sendJson(res, 503, {
-      error: `Plaid is not configured on the server${missing.length ? ` (missing ${missing.join(", ")})` : ""}`,
-    });
+  const credentialError = plaidCredentialsError();
+  if (credentialError) {
+    sendJson(res, 500, { error: credentialError });
     return;
   }
 
@@ -102,7 +102,13 @@ export async function handleCreateLinkToken(req: IncomingMessage, res: ServerRes
     const link_token = await createLinkToken(clientUserId);
     sendJson(res, 200, { link_token });
   } catch (error) {
-    console.error("Plaid create-link-token error:", error);
+    logPlaidError("Plaid create-link-token error", error);
+    if (isPlaidCredentialError(error)) {
+      sendJson(res, 500, {
+        error: "PLAID_CLIENT_ID or PLAID_SECRET is missing or invalid.",
+      });
+      return;
+    }
     sendJson(res, 500, { error: error instanceof Error ? error.message : "Failed to create Plaid link token" });
   }
 }

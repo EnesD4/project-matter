@@ -73,9 +73,35 @@ export async function plaidRequest(path: string, body: Record<string, unknown> =
       (typeof json.error_message === "string" && json.error_message) ||
       code ||
       `Plaid ${path} failed`;
-    throw new Error(code && message !== code ? `${code}: ${message}` : message);
+    const error = new Error(code && message !== code ? `${code}: ${message}` : message) as Error & {
+      response?: { data: PlaidJson; status: number };
+    };
+    error.response = { data: json, status: response.status };
+    throw error;
   }
   return json;
+}
+
+export function plaidErrorResponseData(error: unknown): unknown {
+  if (!error || typeof error !== "object") return undefined;
+  const rec = error as { response?: { data?: unknown }; data?: unknown };
+  return rec.response?.data ?? rec.data;
+}
+
+export function logPlaidError(context: string, error: unknown): void {
+  const data = plaidErrorResponseData(error);
+  console.error(`${context}:`, data ?? error);
+  if (data != null) {
+    console.error(`${context} complete error:`, error);
+  }
+}
+
+export function isPlaidCredentialError(error: unknown): boolean {
+  const data = plaidErrorResponseData(error);
+  const rec = data && typeof data === "object" ? (data as Record<string, unknown>) : {};
+  const code = String(rec.error_code || "");
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /INVALID_API_KEYS|INVALID_CLIENT_ID|INVALID_SECRET|UNAUTHORIZED/.test(`${code} ${message}`);
 }
 
 /** Plaid rejects JWTs / oversized ids. Keep a stable, non-PII client_user_id. */

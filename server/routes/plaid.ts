@@ -1,11 +1,13 @@
 import { Router, Response } from 'express';
 import { AuthedRequest, requireAuth } from '../middleware/auth';
-import { isPlaidConfigured, missingPlaidEnvKeys } from '../../api/_lib/env';
+import { isPlaidConfigured, plaidCredentialsError } from '../../api/_lib/env';
 import {
   createLinkToken,
   sanitizePlaidClientUserId,
   exchangePublicToken,
   fetchPlaidSnapshot,
+  isPlaidCredentialError,
+  logPlaidError,
   pickBalance,
   type PlaidAccount,
   type PlaidHolding,
@@ -56,20 +58,24 @@ function buildPayload(input: {
 const router = Router();
 
 router.post('/create-link-token', async (req: AuthedRequest, res: Response) => {
+  const credentialError = plaidCredentialsError();
+  if (credentialError) {
+    return res.status(500).json({ error: credentialError });
+  }
+
   try {
-    if (!isPlaidConfigured()) {
-      const missing = missingPlaidEnvKeys();
-      return res.status(503).json({
-        error: `Plaid is not configured on the server${missing.length ? ` (missing ${missing.join(', ')})` : ''}`,
-      });
-    }
     const userId = sanitizePlaidClientUserId(
       String(req.body?.client_user_id || req.user?.id || `guest-${Date.now()}`)
     );
     const link_token = await createLinkToken(userId);
-    return res.json({ link_token });
+    return res.status(200).json({ link_token });
   } catch (error) {
-    console.error('Plaid create-link-token error:', error);
+    logPlaidError('Plaid create-link-token error', error);
+    if (isPlaidCredentialError(error)) {
+      return res.status(500).json({
+        error: 'PLAID_CLIENT_ID or PLAID_SECRET is missing or invalid.',
+      });
+    }
     return res.status(500).json({
       error: error instanceof Error ? error.message : 'Failed to create Plaid link token',
     });
