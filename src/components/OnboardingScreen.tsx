@@ -1,7 +1,8 @@
 import { Loader2, Sparkles } from "lucide-react";
 import React, { useEffect, useState } from "react";
-import { saveUserSettings, type UserSettings } from "../lib/auth";
+import { persistLocalUserSettings, type UserSettings } from "../lib/auth";
 import { ageFromBirthDate, maxBirthDateISO, minBirthDateISO } from "../lib/age";
+import { getSupabase } from "../lib/supabase";
 import { oauthNameFromSupabaseSession } from "../lib/supabaseSync";
 import { parseToIsoDate, toUsDateDisplay } from "../lib/usDate";
 import UsDateField from "./UsDateField";
@@ -72,7 +73,47 @@ export default function OnboardingScreen({
     setSaving(true);
     setError(null);
     try {
-      const settings = await saveUserSettings({
+      const client = getSupabase();
+      if (client) {
+        const {
+          data: { user },
+        } = await client.auth.getUser();
+
+        if (user) {
+          const profilePatch = {
+            name: nextName,
+            birth_date: birthIso,
+            age: nextAge,
+            has_completed_onboarding: true,
+          };
+
+          const { data: updated, error: updateError } = await client
+            .from("profiles")
+            .update(profilePatch)
+            .eq("id", user.id)
+            .select("id")
+            .maybeSingle();
+
+          if (updateError) {
+            throw new Error(updateError.message || "Couldn't save your details. Try again.");
+          }
+
+          if (!updated) {
+            const { error: upsertError } = await client.from("profiles").upsert({
+              id: user.id,
+              email: user.email ?? null,
+              ...profilePatch,
+              has_completed_bank_setup: false,
+              updated_at: new Date().toISOString(),
+            });
+            if (upsertError) {
+              throw new Error(upsertError.message || "Couldn't save your details. Try again.");
+            }
+          }
+        }
+      }
+
+      const settings = persistLocalUserSettings({
         hasActiveInvestments: false,
         hasActiveDebts: false,
         wantsCapitalGrowth: true,

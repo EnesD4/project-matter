@@ -721,6 +721,23 @@ export async function fetchMe(): Promise<{ user: AuthUser; settings: UserSetting
   });
 }
 
+export function persistLocalUserSettings(
+  input: Partial<OnboardingChoices> & {
+    hasCompletedOnboarding?: boolean;
+    hasCompletedBankSetup?: boolean;
+    age?: number | null;
+    birthDate?: string | null;
+    name?: string;
+  }
+): UserSettings {
+  const next = normalizeSettings({ ...readLocalSettings(), ...input });
+  writeLocalSettings(next);
+  if (input.name) {
+    updateStoredUser({ name: input.name, hasCompletedOnboarding: next.hasCompletedOnboarding });
+  }
+  return next;
+}
+
 export async function saveUserSettings(
   input: Partial<OnboardingChoices> & {
     hasCompletedOnboarding?: boolean;
@@ -730,35 +747,9 @@ export async function saveUserSettings(
     name?: string;
   }
 ): Promise<UserSettings> {
-  const fallback = () => {
-    const next = normalizeSettings({ ...readLocalSettings(), ...input });
-    writeLocalSettings(next);
-    return next;
-  };
-  const remote = await tryRemoteJson<{ settings: UserSettings }>(
-    "/api/user/settings",
-    {
-      method: "POST",
-      body: JSON.stringify(input),
-    },
-    AUTH_TIMEOUT_MS,
-    true
-  );
-  const settings = remote.ok
-    ? normalizeSettings({ ...remote.data.settings, ...input })
-    : allowClientMockFallback()
-      ? fallback()
-      : null;
-  if (!settings) {
-    if (remote.ok) throw new Error("Could not save settings");
-    throw remote.error;
-  }
-  writeLocalSettings(settings);
-  if (input.name) {
-    updateStoredUser({ name: input.name, hasCompletedOnboarding: settings.hasCompletedOnboarding });
-  }
+  const settings = persistLocalUserSettings(input);
   const user = getStoredUser();
-  void (async () => {
+  try {
     await syncSupabaseAuth({
       kind: "guest",
       name: input.name ?? user?.name,
@@ -775,7 +766,9 @@ export async function saveUserSettings(
         { name: input.name }
       )
     );
-  })();
+  } catch {
+    // local settings still apply when the cloud write is unavailable
+  }
   return settings;
 }
 

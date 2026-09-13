@@ -94,7 +94,6 @@ export default function AuthScreen({ onAuthenticated }: AuthScreenProps) {
       <div style={styles.shell}>
         <header style={styles.brandBlock}>
           <p style={styles.brand}>Sprout</p>
-          <p style={styles.step}>Step 1 of 3</p>
           <h1 style={styles.headline}>{isSignup ? "Create your account" : "Welcome back"}</h1>
           <p style={styles.subhead}>
             {isSignup
@@ -262,14 +261,6 @@ const styles: Record<string, React.CSSProperties> = {
     letterSpacing: "0.14em",
     textTransform: "uppercase",
     color: "#10B981",
-  },
-  step: {
-    margin: "10px 0 0",
-    fontSize: 11,
-    fontWeight: 800,
-    letterSpacing: "0.12em",
-    textTransform: "uppercase",
-    color: "#6B7280",
   },
   headline: {
     margin: "10px 0 0",
