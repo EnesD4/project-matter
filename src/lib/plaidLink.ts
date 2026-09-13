@@ -180,9 +180,13 @@ export const dispatchPlaidSandboxConnected = dispatchPlaidConnected;
 
 function plaidClientUserId(raw: string): string {
   const value = raw.trim();
-  if (!value) return `guest-${Date.now()}`;
+  if (!value) return "guest_user";
+  const looksLikeEmail = /@/.test(value);
   const looksLikeJwt = value.split(".").length === 3 && value.length > 80;
-  if (!looksLikeJwt && value.length <= 256) return value.slice(0, 256);
+  const looksLikeToken = value.length > 64 && /[-_]/.test(value);
+  if (!looksLikeEmail && !looksLikeJwt && !looksLikeToken && value.length <= 256) {
+    return value.slice(0, 256);
+  }
   let hash = 0;
   for (let i = 0; i < value.length; i += 1) hash = (hash * 33 + value.charCodeAt(i)) >>> 0;
   return `user-${hash.toString(16)}`;

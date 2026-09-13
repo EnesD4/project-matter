@@ -68,8 +68,22 @@ export function isLiveChartSource(source?: string | null): boolean {
 
 export { clearbitLogoUrl, extractWebsiteDomain };
 
-async function readJson<T>(res: Response): Promise<T> {
-  return (await res.json()) as T;
+async function readJson<T>(res: Response): Promise<T | null> {
+  try {
+    return (await res.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
+async function safeApiGet<T>(url: string, signal?: AbortSignal): Promise<T | null> {
+  try {
+    const res = await fetch(url, { signal });
+    if (!res.ok) return null;
+    return await readJson<T>(res);
+  } catch {
+    return null;
+  }
 }
 
 export async function fetchStockQuote(
@@ -78,14 +92,17 @@ export async function fetchStockQuote(
 ): Promise<StockQuote | null> {
   const ticker = symbol.trim().toUpperCase();
   if (!ticker) return null;
-  const res = await fetch(`${apiUrl("/api/stocks/quote")}?symbol=${encodeURIComponent(ticker)}`, {
-    signal,
-  });
-  if (!res.ok) return null;
-  const data = await readJson<StockQuote>(res);
-  if (!(data?.c > 0)) return null;
-  setCachedQuote(ticker, { price: data.c, changePct: data.dp ?? 0 });
-  return data;
+  try {
+    const data = await safeApiGet<StockQuote>(
+      `${apiUrl("/api/stocks/quote")}?symbol=${encodeURIComponent(ticker)}`,
+      signal
+    );
+    if (!data || !(data.c > 0)) return null;
+    setCachedQuote(ticker, { price: data.c, changePct: data.dp ?? 0 });
+    return data;
+  } catch {
+    return null;
+  }
 }
 
 export async function fetchStockQuotes(
@@ -98,18 +115,15 @@ export async function fetchStockQuotes(
 
   if (unique.length > 1) {
     try {
-      const res = await fetch(
+      const data = await safeApiGet<{ items?: Array<StockQuote & { symbol?: string }> }>(
         `${apiUrl("/api/stocks/quotes")}?symbols=${encodeURIComponent(unique.join(","))}`,
-        { signal }
+        signal
       );
-      if (res.ok) {
-        const data = await readJson<{ items?: Array<StockQuote & { symbol?: string }> }>(res);
-        for (const item of data.items ?? []) {
-          const ticker = (item.symbol || "").toUpperCase();
-          if (!ticker || !(item.c > 0)) continue;
-          out.set(ticker, item);
-          setCachedQuote(ticker, { price: item.c, changePct: item.dp ?? 0 });
-        }
+      for (const item of data?.items ?? []) {
+        const ticker = (item.symbol || "").toUpperCase();
+        if (!ticker || !(item.c > 0)) continue;
+        out.set(ticker, item);
+        setCachedQuote(ticker, { price: item.c, changePct: item.dp ?? 0 });
       }
     } catch {
       // fall through to per-symbol fetches
@@ -136,17 +150,21 @@ export async function fetchStockProfile(
 ): Promise<StockProfile | null> {
   const ticker = symbol.trim().toUpperCase();
   if (!ticker) return null;
-  const res = await fetch(`${apiUrl("/api/stocks/profile")}?symbol=${encodeURIComponent(ticker)}`, {
-    signal,
-  });
-  if (!res.ok) return null;
-  const data = await readJson<StockProfile>(res);
-  const domain = data.domain || extractWebsiteDomain(data.weburl);
-  return {
-    ...data,
-    domain,
-    logo: data.logo || (domain ? clearbitLogoUrl(domain) : undefined),
-  };
+  try {
+    const data = await safeApiGet<StockProfile>(
+      `${apiUrl("/api/stocks/profile")}?symbol=${encodeURIComponent(ticker)}`,
+      signal
+    );
+    if (!data) return null;
+    const domain = data.domain || extractWebsiteDomain(data.weburl);
+    return {
+      ...data,
+      domain,
+      logo: data.logo || (domain ? clearbitLogoUrl(domain) : undefined),
+    };
+  } catch {
+    return null;
+  }
 }
 
 export async function fetchStockSearch(
@@ -155,10 +173,15 @@ export async function fetchStockSearch(
 ): Promise<StockSearchResult[]> {
   const q = query.trim();
   if (!q) return [];
-  const res = await fetch(`${apiUrl("/api/stocks/search")}?q=${encodeURIComponent(q)}`, { signal });
-  if (!res.ok) return [];
-  const data = await readJson<StockSearchResult[]>(res);
-  return Array.isArray(data) ? data : [];
+  try {
+    const data = await safeApiGet<StockSearchResult[]>(
+      `${apiUrl("/api/stocks/search")}?q=${encodeURIComponent(q)}`,
+      signal
+    );
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
 }
 
 export async function fetchStockChart(
@@ -168,22 +191,25 @@ export async function fetchStockChart(
 ): Promise<{ mapped: SeriesPoint[]; source?: string; points: ChartCandle[] } | null> {
   const ticker = symbol.trim().toUpperCase();
   if (!ticker) return null;
-  const res = await fetch(
-    `${apiUrl(`/api/stocks/${encodeURIComponent(ticker)}/chart`)}?range=${encodeURIComponent(range)}`,
-    { signal }
-  );
-  if (!res.ok) return null;
-  const data = await readJson<StockChartResponse>(res);
-  const points = Array.isArray(data.points) ? data.points : [];
-  const mapped = chartPointsToSeries(points, range);
-  if (mapped.length > 0) {
-    setCachedChart(ticker, range, mapped);
-    setCachedSpark(
-      ticker,
-      points.map((point) => point.price)
+  try {
+    const data = await safeApiGet<StockChartResponse>(
+      `${apiUrl(`/api/stocks/${encodeURIComponent(ticker)}/chart`)}?range=${encodeURIComponent(range)}`,
+      signal
     );
+    if (!data) return null;
+    const points = Array.isArray(data.points) ? data.points : [];
+    const mapped = chartPointsToSeries(points, range);
+    if (mapped.length > 0) {
+      setCachedChart(ticker, range, mapped);
+      setCachedSpark(
+        ticker,
+        points.map((point) => point.price)
+      );
+    }
+    return { mapped, source: data.source, points };
+  } catch {
+    return null;
   }
-  return { mapped, source: data.source, points };
 }
 
 export async function fetchHistoricalClose(
@@ -193,12 +219,14 @@ export async function fetchHistoricalClose(
 ): Promise<HistoricalClose | null> {
   const ticker = symbol.trim().toUpperCase();
   if (!ticker || !date) return null;
-  const res = await fetch(
-    `${apiUrl(`/api/stocks/${encodeURIComponent(ticker)}/history`)}?date=${encodeURIComponent(date)}`,
-    { signal }
-  );
-  if (!res.ok) return null;
-  const data = await readJson<HistoricalClose>(res);
-  if (typeof data.price !== "number" || !(data.price > 0)) return null;
-  return data;
+  try {
+    const data = await safeApiGet<HistoricalClose>(
+      `${apiUrl(`/api/stocks/${encodeURIComponent(ticker)}/history`)}?date=${encodeURIComponent(date)}`,
+      signal
+    );
+    if (!data || typeof data.price !== "number" || !(data.price > 0)) return null;
+    return data;
+  } catch {
+    return null;
+  }
 }

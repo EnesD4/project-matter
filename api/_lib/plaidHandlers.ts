@@ -2,7 +2,6 @@ import type { IncomingMessage, ServerResponse } from "http";
 import { isPlaidConfigured, missingPlaidEnvKeys, plaidCredentialsError } from "./env";
 import {
   linkTokenCreate,
-  sanitizePlaidClientUserId,
   exchangePublicToken,
   fetchPlaidSnapshot,
   logPlaidError,
@@ -95,12 +94,12 @@ export async function handleCreateLinkToken(req: IncomingMessage, res: ServerRes
 
   try {
     const user = await userFromRequest(req);
-    const clientUserId = sanitizePlaidClientUserId(
-      String(body.client_user_id || user.supabaseUserId || user.id || "unique_user_id")
-    );
-    const link_token = await linkTokenCreate(clientUserId);
+    const user_id = String(body.client_user_id || body.user_id || user.supabaseUserId || user.id || "");
+    const link_token = await linkTokenCreate(user_id || "guest_user");
     sendJson(res, 200, { link_token });
   } catch (err) {
+    const rec = err && typeof err === "object" ? (err as { response?: { data?: unknown }; message?: string }) : null;
+    console.error(rec?.response?.data || rec?.message || (err instanceof Error ? err.message : err));
     logPlaidError("Plaid create-link-token error", err);
     sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
   }

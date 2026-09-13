@@ -61,8 +61,11 @@ export function parseToIsoDate(raw: string, order: DateDisplayOrder = "MDY"): st
   return order === "DMY" ? buildIso(year, second, first) : buildIso(year, first, second);
 }
 
-/** Insert '/' after the first two digit groups (day + month, or month + day). */
-export function maskDateInput(raw: string, order: DateDisplayOrder = "MDY"): string {
+/**
+ * Insert '/' immediately after day and month digits (DD/MM/YYYY or MM/DD/YYYY).
+ * Pass the previous field value so backspace can remove a trailing slash.
+ */
+export function maskDateInput(raw: string, order: DateDisplayOrder = "MDY", previous = ""): string {
   const trimmed = raw.trim();
   if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
     const iso = parseToIsoDate(trimmed, order);
@@ -70,8 +73,16 @@ export function maskDateInput(raw: string, order: DateDisplayOrder = "MDY"): str
   }
 
   const digits = raw.replace(/\D/g, "").slice(0, 8);
-  if (digits.length <= 2) return digits;
-  if (digits.length <= 4) return `${digits.slice(0, 2)}/${digits.slice(2)}`;
+  const deleting = raw.length < previous.length;
+
+  if (digits.length === 0) return "";
+  if (digits.length < 2) return digits;
+  if (digits.length === 2) return deleting ? digits : `${digits}/`;
+  if (digits.length < 4) return `${digits.slice(0, 2)}/${digits.slice(2)}`;
+  if (digits.length === 4) {
+    const monthDay = `${digits.slice(0, 2)}/${digits.slice(2, 4)}`;
+    return deleting ? monthDay : `${monthDay}/`;
+  }
   return `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4)}`;
 }
 

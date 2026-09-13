@@ -3,7 +3,6 @@ import { AuthedRequest, requireAuth } from '../middleware/auth';
 import { isPlaidConfigured, plaidCredentialsError } from '../../api/_lib/env';
 import {
   linkTokenCreate,
-  sanitizePlaidClientUserId,
   exchangePublicToken,
   fetchPlaidSnapshot,
   logPlaidError,
@@ -63,12 +62,12 @@ router.post('/create-link-token', async (req: AuthedRequest, res: Response) => {
   }
 
   try {
-    const userId = sanitizePlaidClientUserId(
-      String(req.body?.client_user_id || req.user?.id || 'unique_user_id')
-    );
-    const link_token = await linkTokenCreate(userId);
+    const user_id = String(req.body?.client_user_id || req.body?.user_id || req.user?.id || '');
+    const link_token = await linkTokenCreate(user_id || 'guest_user');
     return res.status(200).json({ link_token });
   } catch (err) {
+    const rec = err && typeof err === 'object' ? (err as { response?: { data?: unknown }; message?: string }) : null;
+    console.error(rec?.response?.data || rec?.message || (err instanceof Error ? err.message : err));
     logPlaidError('Plaid create-link-token error', err);
     return res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }

@@ -670,7 +670,7 @@ export default function InvestmentPortfolioCard({
       if (stocks.length === 0) return;
       const uniqueSymbols = [...new Set(stocks.map((s) => s.symbol))];
       const quotes = await fetchStockQuotes(uniqueSymbols);
-      if (quotes.size === 0) throw new Error("no quotes");
+      if (quotes.size === 0) return;
 
       setChartAnimate(false);
       setHoldings((prev) =>

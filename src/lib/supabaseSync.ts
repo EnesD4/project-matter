@@ -254,23 +254,28 @@ export async function syncSupabaseAuth(input: SupabaseAuthInput): Promise<string
 
 export async function fetchUserProfile(): Promise<ProfileRow | null> {
   const client = getSupabase();
-  if (!client || !canReachSupabase()) return null;
+  if (!client || !canReachSupabase() || isSupabaseTableUnavailable("profiles")) return null;
   try {
     const user = await currentUser();
     if (!user) return null;
     const { data, error } = await client.from("profiles").select("*").eq("id", user.id).maybeSingle();
-    if (error || !data) return null;
+    if (error) {
+      noteSupabaseRelationError("profiles", error);
+      return null;
+    }
+    if (!data) return null;
     const row = data as ProfileRow;
     const displayName = row.full_name?.trim() || row.name?.trim() || "";
     return { ...row, name: displayName, full_name: row.full_name ?? displayName };
-  } catch {
+  } catch (error) {
+    noteSupabaseRelationError("profiles", error);
     return null;
   }
 }
 
 export async function persistUserProfile(input: ProfileSyncInput): Promise<ProfileRow | null> {
   const client = getSupabase();
-  if (!client || !canReachSupabase()) return null;
+  if (!client || !canReachSupabase() || isSupabaseTableUnavailable("profiles")) return null;
   try {
     const user = await currentUser();
     if (!user) return null;
@@ -303,9 +308,13 @@ export async function persistUserProfile(input: ProfileSyncInput): Promise<Profi
       data = retry.data;
       error = retry.error;
     }
-    if (error) return null;
+    if (error) {
+      noteSupabaseRelationError("profiles", error);
+      return null;
+    }
     return (data as ProfileRow | null) ?? null;
-  } catch {
+  } catch (error) {
+    noteSupabaseRelationError("profiles", error);
     return null;
   }
 }

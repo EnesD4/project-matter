@@ -85,7 +85,7 @@ export function plaidCredentialsError(): string | null {
 
 export function getPlaidEnv(): "sandbox" | "development" | "production" {
   const value = trim(process.env.PLAID_ENV).toLowerCase();
-  if (value === "development" || value === "production") return value;
+  if (value === "development" || value === "production" || value === "sandbox") return value;
   return "sandbox";
 }
 

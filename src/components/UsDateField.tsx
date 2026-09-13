@@ -41,7 +41,7 @@ export default function UsDateField({
   const iso = parseToIsoDate(value, order);
 
   const applyText = (raw: string) => {
-    onChange(maskDateInput(raw, order));
+    onChange(maskDateInput(raw, order, value));
   };
 
   const commit = (nextIso: string | null) => {

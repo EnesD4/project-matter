@@ -246,8 +246,12 @@ export function writeCachedGoldPrice(price: number) {
 }
 
 export async function fetchQuotePrice(symbol: string, signal?: AbortSignal): Promise<number | null> {
-  const quote = await fetchStockQuote(symbol, signal);
-  return quote && quote.c > 0 ? quote.c : null;
+  try {
+    const quote = await fetchStockQuote(symbol, signal);
+    return quote && quote.c > 0 ? quote.c : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function fetchGoldPricePerOz(signal?: AbortSignal): Promise<number | null> {

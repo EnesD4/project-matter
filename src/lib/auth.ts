@@ -1243,33 +1243,38 @@ export function clearCashFlowCache(userId?: string | null) {
 }
 
 export async function fetchCashFlow(): Promise<CashFlowSnapshot> {
-  const remote = await tryRemoteJson<unknown>("/api/cash-flow", {}, AUTH_TIMEOUT_MS, true);
-  if (remote.ok) return parseCashFlowSnapshot(remote.data) ?? emptyCashFlow();
-  if (remote.unreachable && allowClientMockFallback()) return readCashFlowCache();
-  throw remote.error;
+  try {
+    const remote = await tryRemoteJson<unknown>("/api/cash-flow", {}, AUTH_TIMEOUT_MS, true);
+    if (remote.ok) return parseCashFlowSnapshot(remote.data) ?? emptyCashFlow();
+    return readCashFlowCache();
+  } catch {
+    return readCashFlowCache();
+  }
 }
 
 export async function saveCashFlow(snapshot: CashFlowSnapshot): Promise<CashFlowSnapshot> {
-  const remote = await tryRemoteJson<unknown>(
-    "/api/cash-flow",
-    {
-      method: "PUT",
-      body: JSON.stringify({
-        monthlyIncome: snapshot.monthlyIncome,
-        emergencyFund: snapshot.emergencyFund,
-        extraPayoff: snapshot.extraPayoff,
-        expenses: snapshot.expenses,
-        debts: snapshot.debts,
-        safetyNet: snapshot.safetyNet,
-      }),
-    },
-    AUTH_TIMEOUT_MS,
-    true
-  );
-  if (remote.ok) return parseCashFlowSnapshot(remote.data) ?? snapshot;
-  if (remote.unreachable && allowClientMockFallback()) {
+  try {
+    const remote = await tryRemoteJson<unknown>(
+      "/api/cash-flow",
+      {
+        method: "PUT",
+        body: JSON.stringify({
+          monthlyIncome: snapshot.monthlyIncome,
+          emergencyFund: snapshot.emergencyFund,
+          extraPayoff: snapshot.extraPayoff,
+          expenses: snapshot.expenses,
+          debts: snapshot.debts,
+          safetyNet: snapshot.safetyNet,
+        }),
+      },
+      AUTH_TIMEOUT_MS,
+      true
+    );
+    if (remote.ok) return parseCashFlowSnapshot(remote.data) ?? snapshot;
+    writeCashFlowCache(snapshot);
+    return snapshot;
+  } catch {
     writeCashFlowCache(snapshot);
     return snapshot;
   }
-  throw remote.error;
 }

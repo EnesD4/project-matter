@@ -4,9 +4,38 @@ import { defineConfig, loadEnv, type Plugin, type ViteDevServer } from "vite";
 import { handleGeminiCoach } from "./api/_lib/geminiCoach";
 import { handleCreateLinkToken, handleExchangeToken, handleGetAccounts } from "./api/_lib/plaidHandlers";
 import { handlePlaidSync } from "./api/_lib/plaidSync";
+import handleCashFlow from "./api/cash-flow";
+import handleStockQuote from "./api/stocks/quote";
+import handleStockQuotes from "./api/stocks/quotes";
 
-function writeProxyDown(res: ServerResponse, err: Error) {
+function writeProxyDown(res: ServerResponse, err: Error, req?: IncomingMessage) {
   if (res.headersSent) return;
+  const path = req ? pathOf(req) : "";
+  if (path === "/api/stocks/quote" || path.startsWith("/api/stocks/quote")) {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ c: 0, d: 0, dp: 0, h: 0, l: 0, o: 0, pc: 0, t: 0 }));
+    return;
+  }
+  if (path === "/api/stocks/quotes") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ items: [] }));
+    return;
+  }
+  if (path === "/api/cash-flow") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        monthlyIncome: 0,
+        emergencyFund: 0,
+        extraPayoff: 0,
+        expenses: [],
+        debts: [],
+        safetyNet: null,
+        updatedAt: 0,
+      })
+    );
+    return;
+  }
   res.writeHead(502, { "Content-Type": "application/json" });
   res.end(
     JSON.stringify({
@@ -26,6 +55,9 @@ const apiProxy = {
       if (
         url === "/api/gemini-coach" ||
         url === "/api/plaid-sync" ||
+        url === "/api/stocks/quote" ||
+        url === "/api/stocks/quotes" ||
+        url === "/api/cash-flow" ||
         url.startsWith("/api/plaid/")
       ) {
         return url;
@@ -34,7 +66,7 @@ const apiProxy = {
     configure(proxy: {
       on: (event: "error", handler: (err: Error, req: IncomingMessage, res: ServerResponse) => void) => void;
     }) {
-      proxy.on("error", (err, _req, res) => writeProxyDown(res, err));
+      proxy.on("error", (err, req, res) => writeProxyDown(res, err, req));
     },
   },
 };
@@ -64,7 +96,13 @@ function localServerlessApi(): Plugin {
                 ? handleExchangeToken
                 : path === "/api/plaid/accounts"
                   ? handleGetAccounts
-                  : null;
+                  : path === "/api/stocks/quote"
+                    ? handleStockQuote
+                    : path === "/api/stocks/quotes"
+                      ? handleStockQuotes
+                      : path === "/api/cash-flow"
+                        ? handleCashFlow
+                        : null;
 
       if (!handler) {
         next();

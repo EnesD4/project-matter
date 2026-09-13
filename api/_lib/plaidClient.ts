@@ -1,10 +1,18 @@
-import { getPlaidClientId, getPlaidEnv, getPlaidSecret } from "./env";
+import { getPlaidClientId, getPlaidSecret } from "./env";
 
-const PLAID_HOSTS = {
+/** Official Plaid host map — same keys as `PlaidEnvironments` from the Plaid Node SDK. */
+export const PlaidEnvironments = {
   sandbox: "https://sandbox.plaid.com",
   development: "https://development.plaid.com",
   production: "https://production.plaid.com",
 } as const;
+
+export type PlaidEnvironmentName = keyof typeof PlaidEnvironments;
+
+export function resolvePlaidEnvironment(): string {
+  const env = String(process.env.PLAID_ENV || "").trim().toLowerCase() as PlaidEnvironmentName;
+  return PlaidEnvironments[env] || PlaidEnvironments.sandbox;
+}
 
 export type PlaidAccount = {
   id: string;
@@ -58,7 +66,7 @@ function asRecord(value: unknown): Record<string, unknown> {
 export async function plaidRequest(path: string, body: Record<string, unknown> = {}): Promise<PlaidJson> {
   const client_id = String(process.env.PLAID_CLIENT_ID || "").trim() || getPlaidClientId();
   const secret = String(process.env.PLAID_SECRET || "").trim() || getPlaidSecret();
-  const host = PLAID_HOSTS[getPlaidEnv()];
+  const host = resolvePlaidEnvironment();
   const response = await fetch(`${host}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -91,11 +99,9 @@ export function plaidErrorResponseData(error: unknown): unknown {
 }
 
 export function logPlaidError(context: string, error: unknown): void {
-  const data = plaidErrorResponseData(error);
-  console.error(`${context}:`, data ?? error);
-  if (data != null) {
-    console.error(`${context} complete error:`, error);
-  }
+  const rec = error && typeof error === "object" ? (error as { response?: { data?: unknown }; message?: string }) : null;
+  const message = rec?.response?.data || rec?.message || (error instanceof Error ? error.message : error);
+  console.error(context, message);
 }
 
 export function isPlaidCredentialError(error: unknown): boolean {
@@ -106,19 +112,27 @@ export function isPlaidCredentialError(error: unknown): boolean {
   return /INVALID_API_KEYS|INVALID_CLIENT_ID|INVALID_SECRET|UNAUTHORIZED/.test(`${code} ${message}`);
 }
 
-/** Plaid rejects JWTs / oversized ids. Keep a stable, non-PII client_user_id. */
-export function sanitizePlaidClientUserId(raw: string): string {
-  const value = raw.trim();
-  if (!value) return `guest-${Date.now()}`;
-  const looksLikeJwt = value.split(".").length === 3 && value.length > 80;
-  if (!looksLikeJwt && value.length <= 256) return value.slice(0, 256);
+function hashClientUserId(value: string): string {
   let hash = 0;
   for (let i = 0; i < value.length; i += 1) hash = (hash * 33 + value.charCodeAt(i)) >>> 0;
   return `user-${hash.toString(16)}`;
 }
 
+/** Plaid rejects emails, JWTs, and other PII in `user.client_user_id`. */
+export function sanitizePlaidClientUserId(raw: string): string {
+  const value = raw.trim();
+  if (!value) return "guest_user";
+  const looksLikeEmail = /@/.test(value);
+  const looksLikeJwt = value.split(".").length === 3 && value.length > 80;
+  const looksLikeToken = value.length > 64 && /[-_]/.test(value);
+  if (looksLikeEmail || looksLikeJwt || looksLikeToken || value.length > 256) {
+    return hashClientUserId(value);
+  }
+  return value.slice(0, 256);
+}
+
 /** Official Plaid /link/token/create payload used by create-link-token. */
-export async function linkTokenCreate(clientUserId: string): Promise<string> {
+export async function linkTokenCreate(user_id?: string): Promise<string> {
   const client_id = String(process.env.PLAID_CLIENT_ID || "").trim() || getPlaidClientId();
   const secret = String(process.env.PLAID_SECRET || "").trim() || getPlaidSecret();
   if (!client_id || !secret) {
@@ -126,7 +140,7 @@ export async function linkTokenCreate(clientUserId: string): Promise<string> {
   }
 
   const payload: Record<string, unknown> = {
-    user: { client_user_id: sanitizePlaidClientUserId(clientUserId) || "unique_user_id" },
+    user: { client_user_id: sanitizePlaidClientUserId(user_id || "guest_user") || "guest_user" },
     client_name: "Sprout",
     products: ["transactions"],
     country_codes: ["US"],
@@ -135,10 +149,16 @@ export async function linkTokenCreate(clientUserId: string): Promise<string> {
   const redirect = process.env.PLAID_REDIRECT_URI?.trim();
   if (redirect) payload.redirect_uri = redirect;
 
-  const json = await plaidRequest("/link/token/create", payload);
-  const token = String(json.link_token || "");
-  if (!token) throw new Error("Plaid did not return a link token");
-  return token;
+  try {
+    const json = await plaidRequest("/link/token/create", payload);
+    const token = String(json.link_token || "");
+    if (!token) throw new Error("Plaid did not return a link token");
+    return token;
+  } catch (err) {
+    const rec = err && typeof err === "object" ? (err as { response?: { data?: unknown }; message?: string }) : null;
+    console.error(rec?.response?.data || rec?.message || (err instanceof Error ? err.message : err));
+    throw err;
+  }
 }
 
 export const createLinkToken = linkTokenCreate;

@@ -2,7 +2,12 @@ import { Loader2, Sparkles } from "lucide-react";
 import React, { useEffect, useState } from "react";
 import { persistLocalUserSettings, type UserSettings } from "../lib/auth";
 import { ageFromBirthDate, maxBirthDateISO, minBirthDateISO } from "../lib/age";
-import { getSupabase } from "../lib/supabase";
+import {
+  getSupabase,
+  isMissingSupabaseRelationError,
+  isSupabaseTableUnavailable,
+  noteSupabaseRelationError,
+} from "../lib/supabase";
 import { oauthNameFromSupabaseSession } from "../lib/supabaseSync";
 import { parseToIsoDate, toDisplayDate } from "../lib/usDate";
 import UsDateField from "./UsDateField";
@@ -21,28 +26,28 @@ export default function OnboardingScreen({
   onComplete,
 }: OnboardingScreenProps) {
   const oauthName = initialName.trim();
-  const [name, setName] = useState(oauthName);
-  const [birthDate, setBirthDate] = useState(initialBirthDate ? toDisplayDate(initialBirthDate, "DMY") : "");
+  const [fullName, setFullName] = useState(oauthName);
+  const [birthdate, setBirthdate] = useState(initialBirthDate ? toDisplayDate(initialBirthDate, "DMY") : "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!skipNameStep || name.trim()) return;
+    if (!skipNameStep || fullName.trim()) return;
     let cancelled = false;
     void oauthNameFromSupabaseSession().then((next) => {
-      if (!cancelled && next) setName(next);
+      if (!cancelled && next) setFullName(next);
     });
     return () => {
       cancelled = true;
     };
-  }, [skipNameStep, name]);
+  }, [skipNameStep, fullName]);
 
-  const birthIso = parseToIsoDate(birthDate, "DMY");
+  const birthIso = parseToIsoDate(birthdate, "DMY");
   const age = birthIso ? ageFromBirthDate(birthIso) : null;
 
   const finish = async (event: React.FormEvent) => {
     event.preventDefault();
-    const nextName = name.trim() || oauthName;
+    const nextName = fullName.trim() || oauthName;
     if (!nextName) {
       setError("Enter your full name (Ad Soyad) to continue.");
       return;
@@ -69,47 +74,58 @@ export default function OnboardingScreen({
     setError(null);
     try {
       const client = getSupabase();
-      if (client) {
-        const {
-          data: { user },
-        } = await client.auth.getUser();
+      if (client && !isSupabaseTableUnavailable("profiles")) {
+        try {
+          const {
+            data: { user },
+          } = await client.auth.getUser();
 
-        if (user) {
-          const profilePatch = {
-            name: nextName,
-            full_name: nextName,
-            birth_date: birthIso,
-            age: nextAge,
-            has_completed_onboarding: true,
-          };
+          if (user) {
+            const profilePatch = {
+              name: nextName,
+              full_name: nextName,
+              birth_date: birthIso,
+              age: nextAge,
+              has_completed_onboarding: true,
+            };
 
-          const writeProfile = async (patch: Record<string, unknown>) => {
-            const { data: updated, error: updateError } = await client
-              .from("profiles")
-              .update(patch)
-              .eq("id", user.id)
-              .select("id")
-              .maybeSingle();
-            if (updateError) return { updated: null, error: updateError };
-            if (updated) return { updated, error: null };
-            const { error: upsertError } = await client.from("profiles").upsert({
-              id: user.id,
-              email: user.email ?? null,
-              ...patch,
-              has_completed_bank_setup: false,
-              updated_at: new Date().toISOString(),
-            });
-            return { updated: upsertError ? null : { id: user.id }, error: upsertError };
-          };
+            const writeProfile = async (patch: Record<string, unknown>) => {
+              const { data: updated, error: updateError } = await client
+                .from("profiles")
+                .update(patch)
+                .eq("id", user.id)
+                .select("id")
+                .maybeSingle();
+              if (updateError) return { updated: null, error: updateError };
+              if (updated) return { updated, error: null };
+              const { error: upsertError } = await client.from("profiles").upsert({
+                id: user.id,
+                email: user.email ?? null,
+                ...patch,
+                has_completed_bank_setup: false,
+                updated_at: new Date().toISOString(),
+              });
+              return { updated: upsertError ? null : { id: user.id }, error: upsertError };
+            };
 
-          let result = await writeProfile(profilePatch);
-          if (result.error && /full_name|column|schema cache/i.test(result.error.message || "")) {
-            const { full_name: _ignored, ...withoutFullName } = profilePatch;
-            result = await writeProfile(withoutFullName);
+            let result = await writeProfile(profilePatch);
+            if (result.error && /full_name|column|schema cache/i.test(result.error.message || "")) {
+              const { full_name: _ignored, ...withoutFullName } = profilePatch;
+              result = await writeProfile(withoutFullName);
+            }
+            if (result.error) {
+              if (
+                noteSupabaseRelationError("profiles", result.error) ||
+                isMissingSupabaseRelationError(result.error)
+              ) {
+                // Missing profiles table must not block local onboarding.
+              } else {
+                console.warn("Onboarding profile save skipped:", result.error.message);
+              }
+            }
           }
-          if (result.error) {
-            throw new Error(result.error.message || "Couldn't save your details. Try again.");
-          }
+        } catch (profileErr) {
+          noteSupabaseRelationError("profiles", profileErr);
         }
       }
 
@@ -151,8 +167,8 @@ export default function OnboardingScreen({
           projections — then you’ll connect a bank.
         </p>
 
-        {skipNameStep && (name.trim() || oauthName) ? (
-          <p style={styles.signedIn}>Signed in as {name.trim() || oauthName}</p>
+        {skipNameStep && (fullName.trim() || oauthName) ? (
+          <p style={styles.signedIn}>Signed in as {fullName.trim() || oauthName}</p>
         ) : null}
 
         <label style={styles.field}>
@@ -161,11 +177,11 @@ export default function OnboardingScreen({
             style={styles.input}
             type="text"
             autoComplete="name"
-            autoFocus={!skipNameStep || !name.trim()}
+            autoFocus={!skipNameStep || !fullName.trim()}
             placeholder="Ada Lovelace"
-            value={name}
+            value={fullName}
             onChange={(event) => {
-              setName(event.target.value);
+              setFullName(event.target.value);
               setError(null);
             }}
             maxLength={80}
@@ -179,13 +195,13 @@ export default function OnboardingScreen({
           <UsDateField
             id="onboard-dob"
             labelledBy="onboard-dob-label"
-            autoFocus={Boolean(skipNameStep && name.trim())}
+            autoFocus={Boolean(skipNameStep && fullName.trim())}
             order="DMY"
-            value={birthDate}
+            value={birthdate}
             min={minBirthDateISO()}
             max={maxBirthDateISO()}
             onChange={(next) => {
-              setBirthDate(next);
+              setBirthdate(next);
               setError(null);
             }}
             wrapStyle={styles.dateWrap}
