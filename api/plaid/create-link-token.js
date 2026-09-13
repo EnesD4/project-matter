@@ -12,6 +12,15 @@ const configuration = new Configuration({
 
 const plaidClient = new PlaidApi(configuration);
 
+function sendJson(res, status, payload) {
+  if (typeof res.status === "function" && typeof res.json === "function") {
+    return res.status(status).json(payload);
+  }
+  res.statusCode = status;
+  res.setHeader("Content-Type", "application/json");
+  res.end(JSON.stringify(payload));
+}
+
 export default async function handler(req, res) {
   try {
     const response = await plaidClient.linkTokenCreate({
@@ -19,10 +28,10 @@ export default async function handler(req, res) {
       products: ["transactions"],
       country_codes: ["US"],
       language: "en",
-      user: { client_user_id: "sprout_user_" + Date.now() },
+      user: { client_user_id: "user_" + Date.now() },
     });
-    return res.status(200).json({ link_token: response.data.link_token });
+    return sendJson(res, 200, { link_token: response.data.link_token });
   } catch (error) {
-    return res.status(500).json({ error: error.message });
+    return sendJson(res, 500, { error: error.message });
   }
 }

@@ -1,16 +1,22 @@
-import type { IncomingMessage, ServerResponse } from "http";
-import { guardApiRequestMethods, sendJson } from "../_lib/security.js";
-
 export const config = {
   runtime: "nodejs",
   maxDuration: 15,
 };
 
-function emptyQuote() {
-  return { c: 0, d: 0, dp: 0, h: 0, l: 0, o: 0, pc: 0, t: 0 };
+function sendJson(res: any, status: number, payload: unknown) {
+  if (typeof res.status === "function" && typeof res.json === "function") {
+    return res.status(status).json(payload);
+  }
+  res.statusCode = status;
+  res.setHeader("Content-Type", "application/json");
+  res.end(JSON.stringify(payload));
 }
 
-function querySymbol(req: IncomingMessage): string {
+function emptyQuote() {
+  return { status: "ok", c: 0, d: 0, dp: 0, h: 0, l: 0, o: 0, pc: 0, t: 0, data: [] };
+}
+
+function querySymbol(req: any): string {
   try {
     const url = new URL(req.url || "", "http://localhost");
     return String(url.searchParams.get("symbol") || "").trim().toUpperCase();
@@ -19,13 +25,10 @@ function querySymbol(req: IncomingMessage): string {
   }
 }
 
-export default async function handler(req: IncomingMessage, res: ServerResponse) {
-  if (await guardApiRequestMethods(req, res, ["GET"])) return;
-
+export default async function handler(req: any, res: any) {
   const symbol = querySymbol(req);
   if (!symbol) {
-    sendJson(res, 200, emptyQuote());
-    return;
+    return sendJson(res, 200, emptyQuote());
   }
 
   try {
@@ -41,7 +44,8 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     const previous = Number(meta.chartPreviousClose ?? meta.previousClose ?? 0);
     const change = price && previous ? price - previous : 0;
     const changePct = previous ? (change / previous) * 100 : 0;
-    sendJson(res, 200, {
+    return sendJson(res, 200, {
+      status: "ok",
       c: Number.isFinite(price) ? price : 0,
       d: Number.isFinite(change) ? change : 0,
       dp: Number.isFinite(changePct) ? changePct : 0,
@@ -50,8 +54,9 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       o: Number(meta.regularMarketOpen ?? previous ?? 0) || 0,
       pc: Number.isFinite(previous) ? previous : 0,
       t: Number(meta.regularMarketTime ?? 0) || 0,
+      data: [],
     });
   } catch {
-    sendJson(res, 200, emptyQuote());
+    return sendJson(res, 200, emptyQuote());
   }
 }

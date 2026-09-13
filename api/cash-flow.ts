@@ -1,13 +1,20 @@
-import type { IncomingMessage, ServerResponse } from "http";
-import { guardApiRequestMethods, readJsonBody, sendJson } from "./_lib/security.js";
-
 export const config = {
   runtime: "nodejs",
   maxDuration: 10,
 };
 
+function sendJson(res: any, status: number, payload: unknown) {
+  if (typeof res.status === "function" && typeof res.json === "function") {
+    return res.status(status).json(payload);
+  }
+  res.statusCode = status;
+  res.setHeader("Content-Type", "application/json");
+  res.end(JSON.stringify(payload));
+}
+
 function emptyCashFlow() {
   return {
+    status: "ok",
     monthlyIncome: 0,
     emergencyFund: 0,
     extraPayoff: 0,
@@ -22,37 +29,10 @@ function emptyCashFlow() {
       reserveLines: [],
     },
     updatedAt: 0,
+    data: [],
   };
 }
 
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-}
-
-export default async function handler(req: IncomingMessage, res: ServerResponse) {
-  if (await guardApiRequestMethods(req, res, ["GET", "PUT", "POST"])) return;
-
-  try {
-    if ((req.method || "").toUpperCase() === "GET") {
-      sendJson(res, 200, emptyCashFlow());
-      return;
-    }
-
-    let body: Record<string, unknown> = {};
-    try {
-      body = asRecord(await readJsonBody(req));
-    } catch {
-      body = {};
-    }
-
-    sendJson(res, 200, {
-      ...emptyCashFlow(),
-      ...body,
-      expenses: Array.isArray(body.expenses) ? body.expenses : [],
-      debts: Array.isArray(body.debts) ? body.debts : [],
-      updatedAt: Date.now(),
-    });
-  } catch {
-    sendJson(res, 200, emptyCashFlow());
-  }
+export default async function handler(req: any, res: any) {
+  return sendJson(res, 200, emptyCashFlow());
 }

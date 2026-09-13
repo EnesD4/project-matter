@@ -1,11 +1,11 @@
 import type { IncomingMessage, ServerResponse } from "http";
 import react from "@vitejs/plugin-react";
 import { defineConfig, loadEnv, type Plugin, type ViteDevServer } from "vite";
-import { handleGeminiCoach } from "./api/_lib/geminiCoach";
+import { handleGeminiCoach } from "./api/gemini-coach";
 import handleCreateLinkToken from "./api/plaid/create-link-token.js";
 import handleExchangeToken from "./api/plaid/exchange-token.js";
 import handleGetAccounts from "./api/plaid/accounts.js";
-import { handlePlaidSync } from "./api/_lib/plaidSync";
+import { handlePlaidSync } from "./api/plaid-sync";
 import handleCashFlow from "./api/cash-flow";
 import handleStockQuote from "./api/stocks/quote";
 import handleStockQuotes from "./api/stocks/quotes";

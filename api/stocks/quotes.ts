@@ -1,12 +1,18 @@
-import type { IncomingMessage, ServerResponse } from "http";
-import { guardApiRequestMethods, sendJson } from "../_lib/security.js";
-
 export const config = {
   runtime: "nodejs",
   maxDuration: 15,
 };
 
-function querySymbols(req: IncomingMessage): string[] {
+function sendJson(res: any, status: number, payload: unknown) {
+  if (typeof res.status === "function" && typeof res.json === "function") {
+    return res.status(status).json(payload);
+  }
+  res.statusCode = status;
+  res.setHeader("Content-Type", "application/json");
+  res.end(JSON.stringify(payload));
+}
+
+function querySymbols(req: any): string[] {
   try {
     const url = new URL(req.url || "", "http://localhost");
     return String(url.searchParams.get("symbols") || url.searchParams.get("symbol") || "")
@@ -19,13 +25,11 @@ function querySymbols(req: IncomingMessage): string[] {
   }
 }
 
-export default async function handler(req: IncomingMessage, res: ServerResponse) {
-  if (await guardApiRequestMethods(req, res, ["GET"])) return;
+export default async function handler(req: any, res: any) {
   try {
     const symbols = querySymbols(req);
     if (symbols.length === 0) {
-      sendJson(res, 200, { items: [] });
-      return;
+      return sendJson(res, 200, { status: "ok", items: [], data: [] });
     }
 
     const items = await Promise.all(
@@ -59,8 +63,8 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
         }
       })
     );
-    sendJson(res, 200, { items });
+    return sendJson(res, 200, { status: "ok", items, data: items });
   } catch {
-    sendJson(res, 200, { items: [] });
+    return sendJson(res, 200, { status: "ok", items: [], data: [] });
   }
 }
