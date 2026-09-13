@@ -68,13 +68,25 @@ export async function plaidRequest(path: string, body: Record<string, unknown> =
   });
   const json = (await response.json().catch(() => ({}))) as PlaidJson;
   if (!response.ok) {
+    const code = typeof json.error_code === "string" ? json.error_code : "";
     const message =
       (typeof json.error_message === "string" && json.error_message) ||
-      (typeof json.error_code === "string" && json.error_code) ||
+      code ||
       `Plaid ${path} failed`;
-    throw new Error(message);
+    throw new Error(code && message !== code ? `${code}: ${message}` : message);
   }
   return json;
+}
+
+/** Plaid rejects JWTs / oversized ids. Keep a stable, non-PII client_user_id. */
+export function sanitizePlaidClientUserId(raw: string): string {
+  const value = raw.trim();
+  if (!value) return `guest-${Date.now()}`;
+  const looksLikeJwt = value.split(".").length === 3 && value.length > 80;
+  if (!looksLikeJwt && value.length <= 256) return value.slice(0, 256);
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) hash = (hash * 33 + value.charCodeAt(i)) >>> 0;
+  return `user-${hash.toString(16)}`;
 }
 
 export async function createLinkToken(clientUserId: string): Promise<string> {
@@ -82,7 +94,7 @@ export async function createLinkToken(clientUserId: string): Promise<string> {
     client_name: "Sprout",
     language: "en",
     country_codes: ["US"],
-    user: { client_user_id: clientUserId },
+    user: { client_user_id: sanitizePlaidClientUserId(clientUserId) },
     products: ["transactions"],
   };
   const redirect = process.env.PLAID_REDIRECT_URI?.trim();

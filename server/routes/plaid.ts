@@ -1,8 +1,9 @@
 import { Router, Response } from 'express';
 import { AuthedRequest, requireAuth } from '../middleware/auth';
-import { isPlaidConfigured } from '../../api/_lib/env';
+import { isPlaidConfigured, missingPlaidEnvKeys } from '../../api/_lib/env';
 import {
   createLinkToken,
+  sanitizePlaidClientUserId,
   exchangePublicToken,
   fetchPlaidSnapshot,
   pickBalance,
@@ -54,14 +55,17 @@ function buildPayload(input: {
 
 const router = Router();
 
-router.use(requireAuth);
-
 router.post('/create-link-token', async (req: AuthedRequest, res: Response) => {
   try {
     if (!isPlaidConfigured()) {
-      return res.status(503).json({ error: 'Plaid is not configured on the server' });
+      const missing = missingPlaidEnvKeys();
+      return res.status(503).json({
+        error: `Plaid is not configured on the server${missing.length ? ` (missing ${missing.join(', ')})` : ''}`,
+      });
     }
-    const userId = String(req.body?.client_user_id || req.user!.id);
+    const userId = sanitizePlaidClientUserId(
+      String(req.body?.client_user_id || req.user?.id || `guest-${Date.now()}`)
+    );
     const link_token = await createLinkToken(userId);
     return res.json({ link_token });
   } catch (error) {
@@ -71,6 +75,8 @@ router.post('/create-link-token', async (req: AuthedRequest, res: Response) => {
     });
   }
 });
+
+router.use(requireAuth);
 
 router.post('/exchange-token', async (req: AuthedRequest, res: Response) => {
   try {

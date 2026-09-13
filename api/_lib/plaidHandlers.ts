@@ -1,7 +1,8 @@
 import type { IncomingMessage, ServerResponse } from "http";
-import { isPlaidConfigured } from "./env";
+import { isPlaidConfigured, missingPlaidEnvKeys } from "./env";
 import {
   createLinkToken,
+  sanitizePlaidClientUserId,
   exchangePublicToken,
   fetchPlaidSnapshot,
   pickBalance,
@@ -78,7 +79,10 @@ export async function handleCreateLinkToken(req: IncomingMessage, res: ServerRes
   if (await guardApiRequest(req, res)) return;
 
   if (!isPlaidConfigured()) {
-    sendJson(res, 503, { error: "Plaid is not configured on the server" });
+    const missing = missingPlaidEnvKeys();
+    sendJson(res, 503, {
+      error: `Plaid is not configured on the server${missing.length ? ` (missing ${missing.join(", ")})` : ""}`,
+    });
     return;
   }
 
@@ -92,7 +96,9 @@ export async function handleCreateLinkToken(req: IncomingMessage, res: ServerRes
 
   try {
     const user = await userFromRequest(req);
-    const clientUserId = String(body.client_user_id || user.supabaseUserId || user.id);
+    const clientUserId = sanitizePlaidClientUserId(
+      String(body.client_user_id || user.supabaseUserId || user.id)
+    );
     const link_token = await createLinkToken(clientUserId);
     sendJson(res, 200, { link_token });
   } catch (error) {
@@ -105,7 +111,10 @@ export async function handleExchangeToken(req: IncomingMessage, res: ServerRespo
   if (await guardApiRequest(req, res)) return;
 
   if (!isPlaidConfigured()) {
-    sendJson(res, 503, { error: "Plaid is not configured on the server" });
+    const missing = missingPlaidEnvKeys();
+    sendJson(res, 503, {
+      error: `Plaid is not configured on the server${missing.length ? ` (missing ${missing.join(", ")})` : ""}`,
+    });
     return;
   }
 

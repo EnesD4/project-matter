@@ -13,28 +13,28 @@ type PlaidConnectButtonProps = {
   onConnected?: (result: PlaidLinkResult) => void;
 };
 
-function PlaidLinkOpener({
-  token,
-  onSuccess,
-  onExit,
-}: {
-  token: string;
-  onSuccess: PlaidLinkOnSuccess;
-  onExit: PlaidLinkOnExit;
-}) {
-  const { open, ready } = usePlaidLink({ token, onSuccess, onExit });
-
-  useEffect(() => {
-    if (ready && token) open();
-  }, [open, ready, token]);
-
-  return null;
-}
-
 export default function PlaidConnectButton({ className = "", onConnected }: PlaidConnectButtonProps) {
-  const [status, setStatus] = useState<"idle" | "connecting" | "connected">("idle");
+  const [status, setStatus] = useState<"loading" | "idle" | "connecting" | "connected">("loading");
   const [error, setError] = useState<string | null>(null);
   const [linkToken, setLinkToken] = useState<string | null>(null);
+
+  const loadToken = useCallback(async () => {
+    setStatus((current) => (current === "connected" ? current : "loading"));
+    setError(null);
+    try {
+      const token = await createPlaidLinkToken();
+      setLinkToken(token);
+      setStatus((current) => (current === "connected" ? current : "idle"));
+    } catch (err) {
+      setLinkToken(null);
+      setError(err instanceof Error ? err.message : "Could not start Plaid Link.");
+      setStatus((current) => (current === "connected" ? current : "idle"));
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadToken();
+  }, [loadToken]);
 
   const finishSuccess = useCallback(
     async (publicToken: string, metadata: { institution?: { name?: string; institution_id?: string } | null }) => {
@@ -47,10 +47,10 @@ export default function PlaidConnectButton({ className = "", onConnected }: Plai
       } catch (err) {
         setError(err instanceof Error ? err.message : "Could not connect this bank.");
         setStatus("idle");
-        setLinkToken(null);
+        void loadToken();
       }
     },
-    [onConnected]
+    [loadToken, onConnected]
   );
 
   const onSuccess = useCallback<PlaidLinkOnSuccess>(
@@ -61,24 +61,28 @@ export default function PlaidConnectButton({ className = "", onConnected }: Plai
   );
 
   const onExit = useCallback<PlaidLinkOnExit>((err) => {
-    setLinkToken(null);
     if (err?.error_code === "INVALID_LINK_TOKEN") {
       setError("The Plaid session expired. Try connecting again.");
+      void loadToken();
     }
     setStatus((current) => (current === "connected" ? current : "idle"));
-  }, []);
+  }, [loadToken]);
 
-  const start = async () => {
-    if (status !== "idle") return;
-    setStatus("connecting");
-    setError(null);
-    try {
-      const token = await createPlaidLinkToken();
-      setLinkToken(token);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not start Plaid Link.");
-      setStatus("idle");
+  const { open, ready } = usePlaidLink({
+    token: linkToken,
+    onSuccess,
+    onExit,
+  });
+
+  const start = () => {
+    if (status === "connected" || status === "connecting" || status === "loading") return;
+    if (!linkToken || !ready) {
+      void loadToken();
+      return;
     }
+    setError(null);
+    setStatus("connecting");
+    open();
   };
 
   if (status === "connected") {
@@ -92,17 +96,18 @@ export default function PlaidConnectButton({ className = "", onConnected }: Plai
     );
   }
 
+  const busy = status === "loading" || status === "connecting";
+
   return (
     <div className="space-y-2">
-      {linkToken ? <PlaidLinkOpener token={linkToken} onSuccess={onSuccess} onExit={onExit} /> : null}
       <button
         type="button"
-        onClick={() => void start()}
-        disabled={status === "connecting"}
+        onClick={start}
+        disabled={busy || (!ready && !error)}
         className={`flex w-full items-center justify-center gap-2 rounded-xl bg-[#10B981] px-4 py-3 text-sm font-extrabold text-[#042F2E] transition hover:bg-emerald-400 active:scale-[0.99] disabled:cursor-wait disabled:opacity-80 ${className}`}
       >
-        {status === "connecting" ? <Loader2 size={16} className="animate-spin" /> : <Landmark size={16} />}
-        {status === "connecting" ? "Opening Plaid…" : "Connect Bank"}
+        {busy ? <Loader2 size={16} className="animate-spin" /> : <Landmark size={16} />}
+        {status === "connecting" ? "Opening Plaid…" : status === "loading" ? "Preparing Plaid…" : "Connect Bank"}
       </button>
       {error ? <p className="text-center text-[12px] font-semibold text-rose-300">{error}</p> : null}
     </div>

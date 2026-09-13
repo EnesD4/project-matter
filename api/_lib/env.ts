@@ -47,7 +47,19 @@ export function getPlaidClientId(): string {
 }
 
 export function getPlaidSecret(): string {
-  return trim(process.env.PLAID_SECRET);
+  const env = trim(process.env.PLAID_ENV).toLowerCase();
+  const named =
+    env === "production"
+      ? trim(process.env.PLAID_SECRET_PRODUCTION) || trim(process.env.PLAID_PRODUCTION_SECRET)
+      : trim(process.env.PLAID_SECRET_SANDBOX) || trim(process.env.PLAID_SANDBOX_SECRET);
+  return named || trim(process.env.PLAID_SECRET);
+}
+
+export function missingPlaidEnvKeys(): string[] {
+  const missing: string[] = [];
+  if (!getPlaidClientId()) missing.push("PLAID_CLIENT_ID");
+  if (!getPlaidSecret()) missing.push("PLAID_SECRET");
+  return missing;
 }
 
 export function getPlaidEnv(): "sandbox" | "development" | "production" {

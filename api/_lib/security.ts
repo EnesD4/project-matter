@@ -148,6 +148,24 @@ export function rejectIfNotMethods(
 }
 
 export function readJsonBody(req: IncomingMessage, limitBytes = 200_000): Promise<unknown> {
+  const preparsed = (req as IncomingMessage & { body?: unknown }).body;
+  if (preparsed !== undefined) {
+    if (typeof preparsed === "string") {
+      const text = preparsed.trim();
+      if (!text) return Promise.resolve({});
+      try {
+        return Promise.resolve(JSON.parse(text));
+      } catch {
+        return Promise.reject(new Error("Invalid JSON body"));
+      }
+    }
+    return Promise.resolve(preparsed ?? {});
+  }
+
+  if (req.readableEnded) {
+    return Promise.resolve({});
+  }
+
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;

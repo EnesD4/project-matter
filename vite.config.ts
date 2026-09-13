@@ -22,10 +22,10 @@ const apiProxy = {
     target: "http://127.0.0.1:5000",
     changeOrigin: true,
     bypass(req: IncomingMessage) {
-      const url = req.url || "";
+      const url = pathOf(req);
       if (
-        url.startsWith("/api/gemini-coach") ||
-        url.startsWith("/api/plaid-sync") ||
+        url === "/api/gemini-coach" ||
+        url === "/api/plaid-sync" ||
         url.startsWith("/api/plaid/")
       ) {
         return url;
@@ -41,43 +41,43 @@ const apiProxy = {
 
 function pathOf(req: IncomingMessage): string {
   const raw = req.url || "";
-  return raw.split("?")[0] || "";
+  try {
+    const path = raw.includes("://") ? new URL(raw).pathname : raw.split("?")[0] || "";
+    return path.replace(/\/+$/, "") || "/";
+  } catch {
+    return (raw.split("?")[0] || "/").replace(/\/+$/, "") || "/";
+  }
 }
 
 function localServerlessApi(): Plugin {
   const attach = (server: ViteDevServer) => {
-    server.middlewares.use(async (req, res, next) => {
+    server.middlewares.use((req, res, next) => {
       const path = pathOf(req);
-      try {
-        if (path === "/api/gemini-coach") {
-          await handleGeminiCoach(req, res);
-          return;
-        }
-        if (path === "/api/plaid-sync") {
-          await handlePlaidSync(req, res);
-          return;
-        }
-        if (path === "/api/plaid/create-link-token") {
-          await handleCreateLinkToken(req, res);
-          return;
-        }
-        if (path === "/api/plaid/exchange-token") {
-          await handleExchangeToken(req, res);
-          return;
-        }
-        if (path === "/api/plaid/accounts") {
-          await handleGetAccounts(req, res);
-          return;
-        }
-      } catch (error) {
+      const handler =
+        path === "/api/gemini-coach"
+          ? handleGeminiCoach
+          : path === "/api/plaid-sync"
+            ? handlePlaidSync
+            : path === "/api/plaid/create-link-token"
+              ? handleCreateLinkToken
+              : path === "/api/plaid/exchange-token"
+                ? handleExchangeToken
+                : path === "/api/plaid/accounts"
+                  ? handleGetAccounts
+                  : null;
+
+      if (!handler) {
+        next();
+        return;
+      }
+
+      void handler(req, res).catch((error) => {
         if (!res.headersSent) {
           res.statusCode = 500;
           res.setHeader("Content-Type", "application/json");
           res.end(JSON.stringify({ error: error instanceof Error ? error.message : "Serverless route failed" }));
         }
-        return;
-      }
-      next();
+      });
     });
   };
 

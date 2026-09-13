@@ -1,4 +1,4 @@
-import { getToken, type CashFlowDebt, type PortfolioApiItem } from "./auth";
+import { getStoredUser, getToken, type CashFlowDebt, type PortfolioApiItem } from "./auth";
 import { serverlessFetch } from "./serverless";
 import {
   cashReservesFromAccounts,
@@ -178,15 +178,34 @@ export function dispatchPlaidConnected(result: PlaidLinkResult) {
 
 export const dispatchPlaidSandboxConnected = dispatchPlaidConnected;
 
+function plaidClientUserId(raw: string): string {
+  const value = raw.trim();
+  if (!value) return `guest-${Date.now()}`;
+  const looksLikeJwt = value.split(".").length === 3 && value.length > 80;
+  if (!looksLikeJwt && value.length <= 256) return value.slice(0, 256);
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) hash = (hash * 33 + value.charCodeAt(i)) >>> 0;
+  return `user-${hash.toString(16)}`;
+}
+
 export async function createPlaidLinkToken(): Promise<string> {
-  const clientUserId = (await getSupabaseUserId()) || getToken() || `guest-${Date.now()}`;
+  const clientUserId = plaidClientUserId(
+    (await getSupabaseUserId()) || getStoredUser()?.id || getToken() || `guest-${Date.now()}`
+  );
   const response = await plaidApiFetch("/api/plaid/create-link-token", {
     method: "POST",
     body: JSON.stringify({ client_user_id: clientUserId }),
   });
-  const json = (await response.json().catch(() => ({}))) as { link_token?: string; error?: string };
+  const text = await response.text();
+  let json: { link_token?: string; error?: string; error_message?: string } = {};
+  try {
+    json = text ? (JSON.parse(text) as typeof json) : {};
+  } catch {
+    json = {};
+  }
   if (!response.ok || !json.link_token) {
-    throw new Error(json.error || "Could not start Plaid Link");
+    const htmlFallback = /^\s*</.test(text) ? "Plaid API route was not found" : "";
+    throw new Error(json.error || json.error_message || htmlFallback || "Could not start Plaid Link");
   }
   return json.link_token;
 }
