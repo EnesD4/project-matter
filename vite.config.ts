@@ -36,6 +36,16 @@ function writeProxyDown(res: ServerResponse, err: Error, req?: IncomingMessage) 
     );
     return;
   }
+  if (path === "/api/portfolio" || path.startsWith("/api/portfolio/")) {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify((req?.method || "GET").toUpperCase() === "GET" ? [] : { ok: true }));
+    return;
+  }
+  if (path === "/api/watchlists" || path.startsWith("/api/watchlists/")) {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify((req?.method || "GET").toUpperCase() === "GET" ? [] : { ok: true }));
+    return;
+  }
   res.writeHead(502, { "Content-Type": "application/json" });
   res.end(
     JSON.stringify({

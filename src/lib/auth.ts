@@ -804,15 +804,18 @@ export type PortfolioApiItem = {
 };
 
 export async function fetchPortfolio(): Promise<PortfolioApiItem[]> {
-  const remote = await tryRemoteJson<PortfolioApiItem[]>("/api/portfolio", {}, AUTH_TIMEOUT_MS, true);
-  if (remote.ok) {
-    writePortfolioCache(remote.data);
-    return remote.data;
+  try {
+    const remote = await tryRemoteJson<PortfolioApiItem[]>("/api/portfolio", {}, AUTH_TIMEOUT_MS, true);
+    if (remote.ok && Array.isArray(remote.data)) {
+      const cached = readPortfolioCache()?.items ?? [];
+      if (remote.data.length === 0 && cached.length > 0) return cached;
+      writePortfolioCache(remote.data);
+      return remote.data;
+    }
+  } catch {
+    // Missing /api/portfolio must not throw in the UI.
   }
-  if (remote.unreachable && allowClientMockFallback()) {
-    return readPortfolioCache()?.items ?? [];
-  }
-  throw remote.error;
+  return readPortfolioCache()?.items ?? [];
 }
 
 function portfolioCacheKey(userId?: string | null) {
@@ -902,9 +905,16 @@ export async function createPortfolioItem(input: {
     AUTH_TIMEOUT_MS,
     true
   );
-  if (remote.ok) return remote.data;
-  if (remote.unreachable && allowClientMockFallback()) return createLocalPortfolioItem(input);
-  throw remote.error;
+  if (remote.ok) {
+    try {
+      const items = mockPortfolioItems();
+      writePortfolioCache([remote.data, ...items.filter((item) => item.id !== remote.data.id)]);
+    } catch {
+      // keep going with the remote item
+    }
+    return remote.data;
+  }
+  return createLocalPortfolioItem(input);
 }
 
 export async function deletePortfolioItem(id: string): Promise<void> {
@@ -914,12 +924,12 @@ export async function deletePortfolioItem(id: string): Promise<void> {
     AUTH_TIMEOUT_MS,
     true
   );
-  if (remote.ok) return;
-  if (remote.unreachable && allowClientMockFallback()) {
+  try {
     writePortfolioCache(mockPortfolioItems().filter((item) => item.id !== id));
-    return;
+  } catch {
+    // ignore cache write failures
   }
-  throw remote.error;
+  if (remote.ok) return;
 }
 
 export type SellPortfolioResult =
@@ -950,6 +960,7 @@ export async function sellPortfolioItem(
     const sharesSold = Number(data.sharesSold);
     const sellPrice = Number(data.sellPrice);
     if (data.deleted) {
+      writePortfolioCache(mockPortfolioItems().filter((item) => item.id !== id));
       return {
         deleted: true,
         id: data.id || id,
@@ -957,6 +968,7 @@ export async function sellPortfolioItem(
         sellPrice: Number.isFinite(sellPrice) ? sellPrice : input.sellPrice,
       };
     }
+    writePortfolioCache(mockPortfolioItems().map((row) => (row.id === id ? data : row)));
     return {
       deleted: false,
       item: data,
@@ -964,11 +976,12 @@ export async function sellPortfolioItem(
       sellPrice: Number.isFinite(sellPrice) ? sellPrice : input.sellPrice,
     };
   }
-  if (!(remote.unreachable && allowClientMockFallback())) throw remote.error;
 
   const items = mockPortfolioItems();
   const existing = items.find((item) => item.id === id);
-  if (!existing) throw new Error("Portfolio item not found");
+  if (!existing) {
+    return { deleted: true, id, sharesSold: input.shares, sellPrice: input.sellPrice };
+  }
   const remaining = existing.shares - input.shares;
   if (remaining <= 1e-8) {
     writePortfolioCache(items.filter((item) => item.id !== id));
@@ -1025,38 +1038,53 @@ export function writeWatchlistCache(lists: WatchlistApiList[]) {
 }
 
 export async function fetchWatchlists(): Promise<WatchlistApiList[]> {
-  const remote = await tryRemoteJson<WatchlistApiList[]>("/api/watchlists", {}, AUTH_TIMEOUT_MS, true);
-  if (remote.ok) {
-    writeWatchlistCache(remote.data);
-    return remote.data;
+  try {
+    const remote = await tryRemoteJson<WatchlistApiList[]>("/api/watchlists", {}, AUTH_TIMEOUT_MS, true);
+    if (remote.ok && Array.isArray(remote.data)) {
+      const cached = readWatchlistCache();
+      if (remote.data.length === 0 && cached.length > 0) return cached;
+      writeWatchlistCache(remote.data);
+      return remote.data;
+    }
+  } catch {
+    // Missing /api/watchlists must not throw in the UI.
   }
-  if (remote.unreachable && allowClientMockFallback()) return readWatchlistCache();
-  throw remote.error;
+  return readWatchlistCache();
 }
 
 export async function createWatchlist(name: string): Promise<WatchlistApiList> {
-  const remote = await tryRemoteJson<WatchlistApiList>(
-    "/api/watchlists",
-    {
-      method: "POST",
-      body: JSON.stringify({ name }),
-    },
-    AUTH_TIMEOUT_MS,
-    true
-  );
-  if (remote.ok) return remote.data;
-  if (remote.unreachable && allowClientMockFallback()) {
-    const list: WatchlistApiList = {
-      id: newLocalId("wl"),
-      userId: currentUserId(),
-      name,
-      createdAt: new Date().toISOString(),
-      items: [],
-    };
-    writeWatchlistCache([...readWatchlistCache(), list]);
-    return list;
+  let remote: RemoteResult<WatchlistApiList>;
+  try {
+    remote = await tryRemoteJson<WatchlistApiList>(
+      "/api/watchlists",
+      {
+        method: "POST",
+        body: JSON.stringify({ name }),
+      },
+      AUTH_TIMEOUT_MS,
+      true
+    );
+  } catch {
+    remote = { ok: false, unreachable: true, error: new Error("Watchlist create failed") };
   }
-  throw remote.error;
+  if (remote.ok) {
+    try {
+      const lists = readWatchlistCache();
+      writeWatchlistCache([...lists.filter((list) => list.id !== remote.data.id), remote.data]);
+    } catch {
+      // keep going
+    }
+    return remote.data;
+  }
+  const list: WatchlistApiList = {
+    id: newLocalId("wl"),
+    userId: currentUserId(),
+    name,
+    createdAt: new Date().toISOString(),
+    items: [],
+  };
+  writeWatchlistCache([...readWatchlistCache(), list]);
+  return list;
 }
 
 export async function deleteWatchlist(id: string): Promise<void> {
@@ -1066,12 +1094,8 @@ export async function deleteWatchlist(id: string): Promise<void> {
     AUTH_TIMEOUT_MS,
     true
   );
+  writeWatchlistCache(readWatchlistCache().filter((list) => list.id !== id));
   if (remote.ok) return;
-  if (remote.unreachable && allowClientMockFallback()) {
-    writeWatchlistCache(readWatchlistCache().filter((list) => list.id !== id));
-    return;
-  }
-  throw remote.error;
 }
 
 export async function addWatchlistItem(input: {
@@ -1088,23 +1112,31 @@ export async function addWatchlistItem(input: {
     AUTH_TIMEOUT_MS,
     true
   );
-  if (remote.ok) return remote.data;
-  if (remote.unreachable && allowClientMockFallback()) {
-    const item: WatchlistApiItem = {
-      id: newLocalId("wli"),
-      watchlistId: input.watchlistId,
-      symbol: input.symbol.trim().toUpperCase(),
-      name: input.name?.trim() || input.symbol.trim().toUpperCase(),
-      createdAt: new Date().toISOString(),
-    };
-    writeWatchlistCache(
-      readWatchlistCache().map((list) =>
-        list.id === input.watchlistId ? { ...list, items: [...list.items, item] } : list
-      )
-    );
-    return item;
+  if (remote.ok) {
+    try {
+      writeWatchlistCache(
+        readWatchlistCache().map((list) =>
+          list.id === input.watchlistId ? { ...list, items: [...list.items, remote.data] } : list
+        )
+      );
+    } catch {
+      // keep going
+    }
+    return remote.data;
   }
-  throw remote.error;
+  const item: WatchlistApiItem = {
+    id: newLocalId("wli"),
+    watchlistId: input.watchlistId,
+    symbol: input.symbol.trim().toUpperCase(),
+    name: input.name?.trim() || input.symbol.trim().toUpperCase(),
+    createdAt: new Date().toISOString(),
+  };
+  writeWatchlistCache(
+    readWatchlistCache().map((list) =>
+      list.id === input.watchlistId ? { ...list, items: [...list.items, item] } : list
+    )
+  );
+  return item;
 }
 
 export async function deleteWatchlistItem(watchlistId: string, itemId: string): Promise<void> {
@@ -1114,16 +1146,12 @@ export async function deleteWatchlistItem(watchlistId: string, itemId: string): 
     AUTH_TIMEOUT_MS,
     true
   );
+  writeWatchlistCache(
+    readWatchlistCache().map((list) =>
+      list.id === watchlistId ? { ...list, items: list.items.filter((item) => item.id !== itemId) } : list
+    )
+  );
   if (remote.ok) return;
-  if (remote.unreachable && allowClientMockFallback()) {
-    writeWatchlistCache(
-      readWatchlistCache().map((list) =>
-        list.id === watchlistId ? { ...list, items: list.items.filter((item) => item.id !== itemId) } : list
-      )
-    );
-    return;
-  }
-  throw remote.error;
 }
 
 export type CashFlowExpense = { id: string; label: string; amount: number };

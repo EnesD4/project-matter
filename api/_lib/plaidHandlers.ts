@@ -93,15 +93,24 @@ export async function handleCreateLinkToken(req: IncomingMessage, res: ServerRes
   }
 
   try {
-    const user = await userFromRequest(req);
-    const user_id = String(body.client_user_id || body.user_id || user.supabaseUserId || user.id || "");
-    const link_token = await linkTokenCreate(user_id || "guest_user");
+    let user_id = String(body.user_id || body.client_user_id || "").trim();
+    if (!user_id) {
+      try {
+        const user = await userFromRequest(req);
+        user_id = String(user.supabaseUserId || user.id || "").trim();
+      } catch {
+        user_id = "";
+      }
+    }
+    user_id = user_id || "user_default";
+    const link_token = await linkTokenCreate(user_id);
     sendJson(res, 200, { link_token });
-  } catch (err) {
-    const rec = err && typeof err === "object" ? (err as { response?: { data?: unknown }; message?: string }) : null;
-    console.error(rec?.response?.data || rec?.message || (err instanceof Error ? err.message : err));
-    logPlaidError("Plaid create-link-token error", err);
-    sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
+  } catch (error) {
+    const rec = error && typeof error === "object" ? (error as { response?: { data?: unknown }; message?: string }) : null;
+    const message = rec?.response?.data || rec?.message || (error instanceof Error ? error.message : String(error));
+    console.error(message);
+    logPlaidError("Plaid create-link-token error", error);
+    sendJson(res, 500, { error: rec?.response?.data || rec?.message || (error instanceof Error ? error.message : String(error)) });
   }
 }
 

@@ -9,7 +9,7 @@ import {
   noteSupabaseRelationError,
 } from "../lib/supabase";
 import { oauthNameFromSupabaseSession } from "../lib/supabaseSync";
-import { parseToIsoDate, toDisplayDate } from "../lib/usDate";
+import { maskDateInput, parseToIsoDate, toDisplayDate } from "../lib/usDate";
 import UsDateField from "./UsDateField";
 
 type OnboardingScreenProps = {
@@ -201,7 +201,7 @@ export default function OnboardingScreen({
             min={minBirthDateISO()}
             max={maxBirthDateISO()}
             onChange={(next) => {
-              setBirthdate(next);
+              setBirthdate(maskDateInput(next, "DMY", birthdate));
               setError(null);
             }}
             wrapStyle={styles.dateWrap}

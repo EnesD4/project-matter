@@ -121,7 +121,7 @@ function hashClientUserId(value: string): string {
 /** Plaid rejects emails, JWTs, and other PII in `user.client_user_id`. */
 export function sanitizePlaidClientUserId(raw: string): string {
   const value = raw.trim();
-  if (!value) return "guest_user";
+  if (!value) return "user_default";
   const looksLikeEmail = /@/.test(value);
   const looksLikeJwt = value.split(".").length === 3 && value.length > 80;
   const looksLikeToken = value.length > 64 && /[-_]/.test(value);
@@ -140,7 +140,7 @@ export async function linkTokenCreate(user_id?: string): Promise<string> {
   }
 
   const payload: Record<string, unknown> = {
-    user: { client_user_id: sanitizePlaidClientUserId(user_id || "guest_user") || "guest_user" },
+    user: { client_user_id: sanitizePlaidClientUserId(user_id || "user_default") || "user_default" },
     client_name: "Sprout",
     products: ["transactions"],
     country_codes: ["US"],

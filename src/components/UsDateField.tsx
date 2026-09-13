@@ -44,6 +44,10 @@ export default function UsDateField({
     onChange(maskDateInput(raw, order, value));
   };
 
+  const onTyped = (event: React.ChangeEvent<HTMLInputElement> | React.FormEvent<HTMLInputElement>) => {
+    applyText((event.target as HTMLInputElement).value);
+  };
+
   const commit = (nextIso: string | null) => {
     if (nextIso) onChange(isoToDisplayDate(nextIso, order));
     onCommit?.(nextIso);
@@ -62,7 +66,8 @@ export default function UsDateField({
         disabled={disabled}
         aria-labelledby={labelledBy}
         value={value}
-        onChange={(event) => applyText(event.target.value)}
+        onChange={onTyped}
+        onInput={onTyped}
         onBlur={() => commit(parseToIsoDate(value, order))}
         style={{ flex: 1, minWidth: 0, ...inputStyle }}
       />

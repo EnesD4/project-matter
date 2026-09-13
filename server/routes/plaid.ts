@@ -62,14 +62,14 @@ router.post('/create-link-token', async (req: AuthedRequest, res: Response) => {
   }
 
   try {
-    const user_id = String(req.body?.client_user_id || req.body?.user_id || req.user?.id || '');
-    const link_token = await linkTokenCreate(user_id || 'guest_user');
+    const user_id = String(req.body?.user_id || req.body?.client_user_id || req.user?.id || 'user_default');
+    const link_token = await linkTokenCreate(user_id || 'user_default');
     return res.status(200).json({ link_token });
-  } catch (err) {
-    const rec = err && typeof err === 'object' ? (err as { response?: { data?: unknown }; message?: string }) : null;
-    console.error(rec?.response?.data || rec?.message || (err instanceof Error ? err.message : err));
-    logPlaidError('Plaid create-link-token error', err);
-    return res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  } catch (error) {
+    const rec = error && typeof error === 'object' ? (error as { response?: { data?: unknown }; message?: string }) : null;
+    console.error(rec?.response?.data || rec?.message || (error instanceof Error ? error.message : error));
+    logPlaidError('Plaid create-link-token error', error);
+    return res.status(500).json({ error: rec?.response?.data || rec?.message || (error instanceof Error ? error.message : String(error)) });
   }
 });
 

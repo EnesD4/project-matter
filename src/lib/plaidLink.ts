@@ -180,7 +180,7 @@ export const dispatchPlaidSandboxConnected = dispatchPlaidConnected;
 
 function plaidClientUserId(raw: string): string {
   const value = raw.trim();
-  if (!value) return "guest_user";
+  if (!value) return "user_default";
   const looksLikeEmail = /@/.test(value);
   const looksLikeJwt = value.split(".").length === 3 && value.length > 80;
   const looksLikeToken = value.length > 64 && /[-_]/.test(value);
@@ -198,10 +198,10 @@ export async function createPlaidLinkToken(): Promise<string> {
   );
   const response = await plaidApiFetch("/api/plaid/create-link-token", {
     method: "POST",
-    body: JSON.stringify({ client_user_id: clientUserId }),
+    body: JSON.stringify({ user_id: clientUserId, client_user_id: clientUserId }),
   });
   const text = await response.text();
-  let json: { link_token?: string; error?: string; error_message?: string } = {};
+  let json: { link_token?: string; error?: unknown; error_message?: string } = {};
   try {
     json = text ? (JSON.parse(text) as typeof json) : {};
   } catch {
@@ -209,7 +209,13 @@ export async function createPlaidLinkToken(): Promise<string> {
   }
   if (!response.ok || !json.link_token) {
     const htmlFallback = /^\s*</.test(text) ? "Plaid API route was not found" : "";
-    throw new Error(json.error || json.error_message || htmlFallback || "Could not start Plaid Link");
+    const errorText =
+      typeof json.error === "string"
+        ? json.error
+        : json.error && typeof json.error === "object"
+          ? String((json.error as { error_message?: string }).error_message || JSON.stringify(json.error))
+          : "";
+    throw new Error(errorText || json.error_message || htmlFallback || "Could not start Plaid Link");
   }
   return json.link_token;
 }
