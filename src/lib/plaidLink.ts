@@ -228,7 +228,11 @@ export async function exchangePlaidPublicToken(
   }
   const parsed = parsePlaidLinkResult(json);
   if (!parsed) throw new Error("Plaid did not return any accounts");
-  await persistBankAccounts(parsed.accounts);
+  try {
+    await persistBankAccounts(parsed.accounts);
+  } catch {
+    // Missing bank_accounts table must not fail the Plaid connection.
+  }
   return parsed;
 }
 
@@ -241,12 +245,21 @@ export async function refreshPlaidAccounts(): Promise<PlaidLinkResult | null> {
 export async function hydrateLinkedBank(
   onResult: (result: PlaidLinkResult) => void
 ): Promise<PlaidLinkResult | null> {
-  const stored = await fetchBankAccounts();
+  let stored: LinkedBankAccount[] = [];
+  try {
+    stored = await fetchBankAccounts();
+  } catch {
+    stored = [];
+  }
   if (stored.length > 0) onResult(resultFromAccounts(stored));
   try {
     const live = await refreshPlaidAccounts();
     if (live && live.accounts.length > 0) {
-      await persistBankAccounts(live.accounts);
+      try {
+        await persistBankAccounts(live.accounts);
+      } catch {
+        // Ignore missing bank_accounts / write errors.
+      }
       onResult(live);
       return live;
     }

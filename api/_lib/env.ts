@@ -47,12 +47,13 @@ export function getPlaidClientId(): string {
 }
 
 export function getPlaidSecret(): string {
+  const explicit = trim(process.env.PLAID_SECRET);
+  if (explicit) return explicit;
   const env = trim(process.env.PLAID_ENV).toLowerCase();
-  const named =
-    env === "production"
-      ? trim(process.env.PLAID_SECRET_PRODUCTION) || trim(process.env.PLAID_PRODUCTION_SECRET)
-      : trim(process.env.PLAID_SECRET_SANDBOX) || trim(process.env.PLAID_SANDBOX_SECRET);
-  return named || trim(process.env.PLAID_SECRET);
+  if (env === "production") {
+    return trim(process.env.PLAID_SECRET_PRODUCTION) || trim(process.env.PLAID_PRODUCTION_SECRET);
+  }
+  return trim(process.env.PLAID_SECRET_SANDBOX) || trim(process.env.PLAID_SANDBOX_SECRET);
 }
 
 export function missingPlaidEnvKeys(): string[] {

@@ -353,10 +353,10 @@ function profileInputFrom(
 function applyProfileRow(
   user: AuthUser,
   settings: UserSettings | null | undefined,
-  row: { name?: string | null; email?: string | null; birth_date?: string | null; age?: number | null; has_completed_onboarding?: boolean; has_completed_bank_setup?: boolean }
+  row: { name?: string | null; full_name?: string | null; email?: string | null; birth_date?: string | null; age?: number | null; has_completed_onboarding?: boolean; has_completed_bank_setup?: boolean }
 ): { user: AuthUser; settings: UserSettings } {
   const nextSettings = normalizeSettings(settings);
-  const name = row.name?.trim() || user.name;
+  const name = row.full_name?.trim() || row.name?.trim() || user.name;
   return {
     user: {
       ...user,

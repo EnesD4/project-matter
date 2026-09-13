@@ -7,6 +7,7 @@ create table if not exists public.profiles (
   app_user_id text,
   email text,
   name text not null default '',
+  full_name text,
   birth_date date,
   age integer,
   is_guest boolean not null default false,
@@ -15,6 +16,8 @@ create table if not exists public.profiles (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.profiles add column if not exists full_name text;
 
 create index if not exists profiles_app_user_id_idx on public.profiles (app_user_id);
 
@@ -160,11 +163,12 @@ security definer
 set search_path = public
 as $$
 begin
-  insert into public.profiles (id, email, name, is_guest)
+  insert into public.profiles (id, email, name, full_name, is_guest)
   values (
     new.id,
     new.email,
-    coalesce(new.raw_user_meta_data->>'name', ''),
+    coalesce(new.raw_user_meta_data->>'full_name', new.raw_user_meta_data->>'name', ''),
+    coalesce(new.raw_user_meta_data->>'full_name', new.raw_user_meta_data->>'name', ''),
     coalesce((new.raw_user_meta_data->>'is_guest')::boolean, false)
   )
   on conflict (id) do nothing;

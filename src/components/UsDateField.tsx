@@ -1,6 +1,11 @@
 import React from "react";
 import DarkCalendar from "./DarkCalendar";
-import { isoToUsDate, maskUsDateInput, parseToIsoDate } from "../lib/usDate";
+import {
+  isoToDisplayDate,
+  maskDateInput,
+  parseToIsoDate,
+  type DateDisplayOrder,
+} from "../lib/usDate";
 
 type UsDateFieldProps = {
   id?: string;
@@ -13,6 +18,7 @@ type UsDateFieldProps = {
   labelledBy?: string;
   autoFocus?: boolean;
   autoComplete?: string;
+  order?: DateDisplayOrder;
   inputStyle?: React.CSSProperties;
   wrapStyle?: React.CSSProperties;
 };
@@ -28,17 +34,18 @@ export default function UsDateField({
   labelledBy,
   autoFocus,
   autoComplete = "bday",
+  order = "MDY",
   inputStyle,
   wrapStyle,
 }: UsDateFieldProps) {
-  const iso = parseToIsoDate(value);
+  const iso = parseToIsoDate(value, order);
 
   const applyText = (raw: string) => {
-    onChange(maskUsDateInput(raw));
+    onChange(maskDateInput(raw, order));
   };
 
   const commit = (nextIso: string | null) => {
-    if (nextIso) onChange(isoToUsDate(nextIso));
+    if (nextIso) onChange(isoToDisplayDate(nextIso, order));
     onCommit?.(nextIso);
   };
 
@@ -50,13 +57,13 @@ export default function UsDateField({
         inputMode="numeric"
         autoComplete={autoComplete}
         autoFocus={autoFocus}
-        placeholder="MM/DD/YYYY"
+        placeholder={order === "DMY" ? "DD/MM/YYYY" : "MM/DD/YYYY"}
         maxLength={10}
         disabled={disabled}
         aria-labelledby={labelledBy}
         value={value}
         onChange={(event) => applyText(event.target.value)}
-        onBlur={() => commit(parseToIsoDate(value))}
+        onBlur={() => commit(parseToIsoDate(value, order))}
         style={{ flex: 1, minWidth: 0, ...inputStyle }}
       />
       <DarkCalendar

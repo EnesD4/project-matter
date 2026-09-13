@@ -11,6 +11,7 @@ export type ProfileRow = {
   app_user_id: string | null;
   email: string | null;
   name: string;
+  full_name?: string | null;
   birth_date: string | null;
   age: number | null;
   is_guest: boolean;
@@ -19,6 +20,28 @@ export type ProfileRow = {
   created_at: string;
   updated_at: string;
 };
+
+const missingTables = new Set<string>();
+
+export function isMissingSupabaseRelationError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const rec = error as { code?: string; message?: string; details?: string; hint?: string };
+  const blob = `${rec.code || ""} ${rec.message || ""} ${rec.details || ""} ${rec.hint || ""}`;
+  return /PGRST205|PGRST204|42P01|42703|does not exist|schema cache|could not find the table|could not find the .* column/i.test(
+    blob
+  );
+}
+
+export function isSupabaseTableUnavailable(table: string): boolean {
+  return missingTables.has(table);
+}
+
+/** Remember a missing table/column so later reads skip the 404/400 instead of repeating it. */
+export function noteSupabaseRelationError(table: string, error: unknown): boolean {
+  if (!isMissingSupabaseRelationError(error)) return false;
+  missingTables.add(table);
+  return true;
+}
 
 export type FinancialSnapshotRow = {
   user_id: string;

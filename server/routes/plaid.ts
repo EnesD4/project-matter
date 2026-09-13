@@ -2,11 +2,10 @@ import { Router, Response } from 'express';
 import { AuthedRequest, requireAuth } from '../middleware/auth';
 import { isPlaidConfigured, plaidCredentialsError } from '../../api/_lib/env';
 import {
-  createLinkToken,
+  linkTokenCreate,
   sanitizePlaidClientUserId,
   exchangePublicToken,
   fetchPlaidSnapshot,
-  isPlaidCredentialError,
   logPlaidError,
   pickBalance,
   type PlaidAccount,
@@ -65,20 +64,13 @@ router.post('/create-link-token', async (req: AuthedRequest, res: Response) => {
 
   try {
     const userId = sanitizePlaidClientUserId(
-      String(req.body?.client_user_id || req.user?.id || `guest-${Date.now()}`)
+      String(req.body?.client_user_id || req.user?.id || 'unique_user_id')
     );
-    const link_token = await createLinkToken(userId);
+    const link_token = await linkTokenCreate(userId);
     return res.status(200).json({ link_token });
-  } catch (error) {
-    logPlaidError('Plaid create-link-token error', error);
-    if (isPlaidCredentialError(error)) {
-      return res.status(500).json({
-        error: 'PLAID_CLIENT_ID or PLAID_SECRET is missing or invalid.',
-      });
-    }
-    return res.status(500).json({
-      error: error instanceof Error ? error.message : 'Failed to create Plaid link token',
-    });
+  } catch (err) {
+    logPlaidError('Plaid create-link-token error', err);
+    return res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
 

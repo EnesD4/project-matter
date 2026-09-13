@@ -11,6 +11,19 @@ export type StoredPlaidItem = {
 };
 
 const memoryItems = new Map<string, StoredPlaidItem[]>();
+const missingTables = new Set<string>();
+
+function isMissingRelationError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const rec = error as { code?: string; message?: string; details?: string; hint?: string };
+  const blob = `${rec.code || ""} ${rec.message || ""} ${rec.details || ""} ${rec.hint || ""}`;
+  return /PGRST205|PGRST204|42P01|42703|does not exist|schema cache|could not find the table/i.test(blob);
+}
+
+function tableUnavailable(table: string, error?: unknown): boolean {
+  if (error && isMissingRelationError(error)) missingTables.add(table);
+  return missingTables.has(table);
+}
 
 function headerValue(value: string | string[] | undefined): string {
   return Array.isArray(value) ? value[0] || "" : value || "";
@@ -146,19 +159,29 @@ export async function saveBankAccounts(userId: string, accounts: PlaidAccount[])
     apr: account.apr ?? null,
     updated_at: now,
   }));
+  if (tableUnavailable("bank_accounts")) return;
   try {
-    await admin.from("bank_accounts").upsert(rows, { onConflict: "user_id,plaid_account_id" });
+    const { error } = await admin.from("bank_accounts").upsert(rows, { onConflict: "user_id,plaid_account_id" });
+    if (error) {
+      if (tableUnavailable("bank_accounts", error)) return;
+      console.error("Failed to persist bank accounts:", error);
+    }
   } catch (error) {
+    if (tableUnavailable("bank_accounts", error)) return;
     console.error("Failed to persist bank accounts:", error);
   }
 }
 
 export async function loadBankAccounts(userId: string): Promise<PlaidAccount[]> {
   const admin = getSupabaseAdmin();
-  if (!admin) return [];
+  if (!admin || tableUnavailable("bank_accounts")) return [];
   try {
     const { data, error } = await admin.from("bank_accounts").select("*").eq("user_id", userId);
-    if (error || !Array.isArray(data)) return [];
+    if (error) {
+      tableUnavailable("bank_accounts", error);
+      return [];
+    }
+    if (!Array.isArray(data)) return [];
     return data.map((row) => {
       const rec = row as Record<string, unknown>;
       const type = String(rec.type || "depository");

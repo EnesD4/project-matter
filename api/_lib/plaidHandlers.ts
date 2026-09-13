@@ -1,11 +1,10 @@
 import type { IncomingMessage, ServerResponse } from "http";
 import { isPlaidConfigured, missingPlaidEnvKeys, plaidCredentialsError } from "./env";
 import {
-  createLinkToken,
+  linkTokenCreate,
   sanitizePlaidClientUserId,
   exchangePublicToken,
   fetchPlaidSnapshot,
-  isPlaidCredentialError,
   logPlaidError,
   pickBalance,
   type PlaidAccount,
@@ -97,19 +96,13 @@ export async function handleCreateLinkToken(req: IncomingMessage, res: ServerRes
   try {
     const user = await userFromRequest(req);
     const clientUserId = sanitizePlaidClientUserId(
-      String(body.client_user_id || user.supabaseUserId || user.id)
+      String(body.client_user_id || user.supabaseUserId || user.id || "unique_user_id")
     );
-    const link_token = await createLinkToken(clientUserId);
+    const link_token = await linkTokenCreate(clientUserId);
     sendJson(res, 200, { link_token });
-  } catch (error) {
-    logPlaidError("Plaid create-link-token error", error);
-    if (isPlaidCredentialError(error)) {
-      sendJson(res, 500, {
-        error: "PLAID_CLIENT_ID or PLAID_SECRET is missing or invalid.",
-      });
-      return;
-    }
-    sendJson(res, 500, { error: error instanceof Error ? error.message : "Failed to create Plaid link token" });
+  } catch (err) {
+    logPlaidError("Plaid create-link-token error", err);
+    sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
   }
 }
 
@@ -153,7 +146,11 @@ export async function handleExchangeToken(req: IncomingMessage, res: ServerRespo
       institutionName: institution.name,
     });
     if (user.supabaseUserId) {
-      await saveBankAccounts(user.supabaseUserId, snapshot.accounts);
+      try {
+        await saveBankAccounts(user.supabaseUserId, snapshot.accounts);
+      } catch {
+        // Missing bank_accounts must not fail token exchange.
+      }
     }
 
     sendJson(
@@ -207,7 +204,11 @@ export async function handleGetAccounts(req: IncomingMessage, res: ServerRespons
       }
 
       if (user.supabaseUserId && accounts.length > 0) {
-        await saveBankAccounts(user.supabaseUserId, accounts);
+        try {
+          await saveBankAccounts(user.supabaseUserId, accounts);
+        } catch {
+          // Missing bank_accounts must not fail account refresh.
+        }
       }
 
       if (accounts.length > 0) {

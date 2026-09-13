@@ -765,7 +765,7 @@ const App: React.FC = () => {
     void hydrateLinkedBank((result) => {
       if (cancelled) return;
       window.dispatchEvent(new CustomEvent<PlaidLinkResult>(PLAID_CONNECTED_EVENT, { detail: result }));
-    });
+    }).catch(() => {});
     return () => {
       cancelled = true;
     };

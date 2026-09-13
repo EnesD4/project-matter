@@ -1,6 +1,12 @@
 import type { CashFlowDebt } from "./auth";
 import type { SafetyNetReserveLine } from "./safetyNet";
-import { canReachSupabase, getSupabase, type BankAccountRow } from "./supabase";
+import {
+  canReachSupabase,
+  getSupabase,
+  isSupabaseTableUnavailable,
+  noteSupabaseRelationError,
+  type BankAccountRow,
+} from "./supabase";
 import { getSupabaseUserId } from "./supabaseSync";
 
 export type LinkedBankAccount = {
@@ -204,12 +210,16 @@ export function bankAccountFromRow(row: BankAccountRow): LinkedBankAccount {
 
 export async function fetchBankAccounts(): Promise<LinkedBankAccount[]> {
   const client = getSupabase();
-  if (!client || !canReachSupabase()) return [];
+  if (!client || !canReachSupabase() || isSupabaseTableUnavailable("bank_accounts")) return [];
   try {
     const userId = await getSupabaseUserId();
     if (!userId) return [];
     const { data, error } = await client.from("bank_accounts").select("*").eq("user_id", userId);
-    if (error || !Array.isArray(data)) return [];
+    if (error) {
+      noteSupabaseRelationError("bank_accounts", error);
+      return [];
+    }
+    if (!Array.isArray(data)) return [];
     return data.map((row) => bankAccountFromRow(row as BankAccountRow));
   } catch {
     return [];
@@ -218,7 +228,9 @@ export async function fetchBankAccounts(): Promise<LinkedBankAccount[]> {
 
 export async function persistBankAccounts(accounts: LinkedBankAccount[]): Promise<boolean> {
   const client = getSupabase();
-  if (!client || !canReachSupabase() || accounts.length === 0) return false;
+  if (!client || !canReachSupabase() || accounts.length === 0 || isSupabaseTableUnavailable("bank_accounts")) {
+    return false;
+  }
   try {
     const userId = await getSupabaseUserId();
     if (!userId) return false;
@@ -240,7 +252,11 @@ export async function persistBankAccounts(accounts: LinkedBankAccount[]): Promis
       updated_at: now,
     }));
     const { error } = await client.from("bank_accounts").upsert(rows, { onConflict: "user_id,plaid_account_id" });
-    return !error;
+    if (error) {
+      noteSupabaseRelationError("bank_accounts", error);
+      return false;
+    }
+    return true;
   } catch {
     return false;
   }

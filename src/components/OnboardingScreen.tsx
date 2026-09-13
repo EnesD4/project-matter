@@ -4,7 +4,7 @@ import { persistLocalUserSettings, type UserSettings } from "../lib/auth";
 import { ageFromBirthDate, maxBirthDateISO, minBirthDateISO } from "../lib/age";
 import { getSupabase } from "../lib/supabase";
 import { oauthNameFromSupabaseSession } from "../lib/supabaseSync";
-import { parseToIsoDate, toUsDateDisplay } from "../lib/usDate";
+import { parseToIsoDate, toDisplayDate } from "../lib/usDate";
 import UsDateField from "./UsDateField";
 
 type OnboardingScreenProps = {
@@ -21,9 +21,8 @@ export default function OnboardingScreen({
   onComplete,
 }: OnboardingScreenProps) {
   const oauthName = initialName.trim();
-  const hideNameField = skipNameStep;
   const [name, setName] = useState(oauthName);
-  const [birthDate, setBirthDate] = useState(initialBirthDate ? toUsDateDisplay(initialBirthDate) : "");
+  const [birthDate, setBirthDate] = useState(initialBirthDate ? toDisplayDate(initialBirthDate, "DMY") : "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -38,27 +37,23 @@ export default function OnboardingScreen({
     };
   }, [skipNameStep, name]);
 
-  const birthIso = parseToIsoDate(birthDate);
+  const birthIso = parseToIsoDate(birthDate, "DMY");
   const age = birthIso ? ageFromBirthDate(birthIso) : null;
 
   const finish = async (event: React.FormEvent) => {
     event.preventDefault();
     const nextName = name.trim() || oauthName;
     if (!nextName) {
-      setError(
-        hideNameField
-          ? "We couldn't read your name from your Google account. Try signing in again."
-          : "Enter your name to continue."
-      );
+      setError("Enter your full name (Ad Soyad) to continue.");
       return;
     }
     if (!birthIso) {
-      setError("Add your date of birth as MM/DD/YYYY to continue.");
+      setError("Add your date of birth as DD/MM/YYYY to continue.");
       return;
     }
     const nextAge = ageFromBirthDate(birthIso);
     if (nextAge == null) {
-      setError("Enter a valid date of birth as MM/DD/YYYY.");
+      setError("Enter a valid date of birth as DD/MM/YYYY.");
       return;
     }
     if (nextAge < 13) {
@@ -82,33 +77,38 @@ export default function OnboardingScreen({
         if (user) {
           const profilePatch = {
             name: nextName,
+            full_name: nextName,
             birth_date: birthIso,
             age: nextAge,
             has_completed_onboarding: true,
           };
 
-          const { data: updated, error: updateError } = await client
-            .from("profiles")
-            .update(profilePatch)
-            .eq("id", user.id)
-            .select("id")
-            .maybeSingle();
-
-          if (updateError) {
-            throw new Error(updateError.message || "Couldn't save your details. Try again.");
-          }
-
-          if (!updated) {
+          const writeProfile = async (patch: Record<string, unknown>) => {
+            const { data: updated, error: updateError } = await client
+              .from("profiles")
+              .update(patch)
+              .eq("id", user.id)
+              .select("id")
+              .maybeSingle();
+            if (updateError) return { updated: null, error: updateError };
+            if (updated) return { updated, error: null };
             const { error: upsertError } = await client.from("profiles").upsert({
               id: user.id,
               email: user.email ?? null,
-              ...profilePatch,
+              ...patch,
               has_completed_bank_setup: false,
               updated_at: new Date().toISOString(),
             });
-            if (upsertError) {
-              throw new Error(upsertError.message || "Couldn't save your details. Try again.");
-            }
+            return { updated: upsertError ? null : { id: user.id }, error: upsertError };
+          };
+
+          let result = await writeProfile(profilePatch);
+          if (result.error && /full_name|column|schema cache/i.test(result.error.message || "")) {
+            const { full_name: _ignored, ...withoutFullName } = profilePatch;
+            result = await writeProfile(withoutFullName);
+          }
+          if (result.error) {
+            throw new Error(result.error.message || "Couldn't save your details. Try again.");
           }
         }
       }
@@ -145,33 +145,32 @@ export default function OnboardingScreen({
         </div>
         <p style={styles.step}>Step 2 of 3</p>
         <p style={styles.eyebrow}>Welcome</p>
-        <h1 style={styles.headline}>{hideNameField ? "When were you born?" : "Let’s get you set up"}</h1>
+        <h1 style={styles.headline}>Let’s get you set up</h1>
         <p style={styles.subhead}>
-          {hideNameField
-            ? "Enter your date of birth as MM/DD/YYYY. Age personalizes Sprout AI and retirement projections — then you’ll connect a bank."
-            : "What is your name, and when were you born? Age personalizes Sprout AI and retirement projections — then you’ll connect a bank."}
+          Add your full name and date of birth as DD/MM/YYYY. Age personalizes Sprout AI and retirement
+          projections — then you’ll connect a bank.
         </p>
 
-        {hideNameField ? (
-          name.trim() || oauthName ? <p style={styles.signedIn}>Signed in as {name.trim() || oauthName}</p> : null
-        ) : (
-          <label style={styles.field}>
-            <span style={styles.label}>What is your name?</span>
-            <input
-              style={styles.input}
-              type="text"
-              autoComplete="given-name"
-              autoFocus
-              placeholder="Alex"
-              value={name}
-              onChange={(event) => {
-                setName(event.target.value);
-                setError(null);
-              }}
-              maxLength={48}
-            />
-          </label>
-        )}
+        {skipNameStep && (name.trim() || oauthName) ? (
+          <p style={styles.signedIn}>Signed in as {name.trim() || oauthName}</p>
+        ) : null}
+
+        <label style={styles.field}>
+          <span style={styles.label}>Full Name (Ad Soyad)</span>
+          <input
+            style={styles.input}
+            type="text"
+            autoComplete="name"
+            autoFocus={!skipNameStep || !name.trim()}
+            placeholder="Ada Lovelace"
+            value={name}
+            onChange={(event) => {
+              setName(event.target.value);
+              setError(null);
+            }}
+            maxLength={80}
+          />
+        </label>
 
         <label style={styles.field}>
           <span style={styles.label} id="onboard-dob-label">
@@ -180,7 +179,8 @@ export default function OnboardingScreen({
           <UsDateField
             id="onboard-dob"
             labelledBy="onboard-dob-label"
-            autoFocus={hideNameField}
+            autoFocus={Boolean(skipNameStep && name.trim())}
+            order="DMY"
             value={birthDate}
             min={minBirthDateISO()}
             max={maxBirthDateISO()}
@@ -194,7 +194,7 @@ export default function OnboardingScreen({
           <span style={styles.hint}>
             {age != null
               ? `Used for Sprout AI advice and compound growth projections · ${age} years old`
-              : "Enter MM/DD/YYYY. Used for customizing Sprout AI advice and compound growth projections."}
+              : "Enter DD/MM/YYYY. Used for customizing Sprout AI advice and compound growth projections."}
           </span>
         </label>
 

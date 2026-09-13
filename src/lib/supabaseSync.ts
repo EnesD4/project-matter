@@ -3,6 +3,8 @@ import { ageFromBirthDate } from "./age";
 import {
   canReachSupabase,
   getSupabase,
+  isSupabaseTableUnavailable,
+  noteSupabaseRelationError,
   supabase,
   SUPABASE_GUEST_CREDS_KEY,
   type FinancialSnapshotRow,
@@ -258,7 +260,9 @@ export async function fetchUserProfile(): Promise<ProfileRow | null> {
     if (!user) return null;
     const { data, error } = await client.from("profiles").select("*").eq("id", user.id).maybeSingle();
     if (error || !data) return null;
-    return data as ProfileRow;
+    const row = data as ProfileRow;
+    const displayName = row.full_name?.trim() || row.name?.trim() || "";
+    return { ...row, name: displayName, full_name: row.full_name ?? displayName };
   } catch {
     return null;
   }
@@ -277,11 +281,14 @@ export async function persistUserProfile(input: ProfileSyncInput): Promise<Profi
         : birthDate
           ? ageFromBirthDate(birthDate)
           : null;
+    const displayName =
+      input.name?.trim() || nameFromUserMetadata(user.user_metadata as Record<string, unknown> | undefined) || "";
     const payload = {
       id: user.id,
       app_user_id: input.appUserId ?? null,
       email: input.email?.trim().toLowerCase() || user.email || null,
-      name: input.name?.trim() || nameFromUserMetadata(user.user_metadata as Record<string, unknown> | undefined) || "",
+      name: displayName,
+      full_name: displayName,
       birth_date: birthDate,
       age,
       is_guest: Boolean(input.isGuest),
@@ -289,7 +296,13 @@ export async function persistUserProfile(input: ProfileSyncInput): Promise<Profi
       has_completed_bank_setup: Boolean(input.hasCompletedBankSetup),
       updated_at: new Date().toISOString(),
     };
-    const { data, error } = await client.from("profiles").upsert(payload, { onConflict: "id" }).select("*").maybeSingle();
+    let { data, error } = await client.from("profiles").upsert(payload, { onConflict: "id" }).select("*").maybeSingle();
+    if (error && /full_name|column|schema cache/i.test(error.message || "")) {
+      const { full_name: _ignored, ...withoutFullName } = payload;
+      const retry = await client.from("profiles").upsert(withoutFullName, { onConflict: "id" }).select("*").maybeSingle();
+      data = retry.data;
+      error = retry.error;
+    }
     if (error) return null;
     return (data as ProfileRow | null) ?? null;
   } catch {
@@ -299,7 +312,7 @@ export async function persistUserProfile(input: ProfileSyncInput): Promise<Profi
 
 export async function fetchFinancialSnapshot(): Promise<FinancialSnapshotRow | null> {
   const client = getSupabase();
-  if (!client || !canReachSupabase()) return null;
+  if (!client || !canReachSupabase() || isSupabaseTableUnavailable("financial_snapshots")) return null;
   try {
     const user = await currentUser();
     if (!user) return null;
@@ -308,7 +321,11 @@ export async function fetchFinancialSnapshot(): Promise<FinancialSnapshotRow | n
       .select("*")
       .eq("user_id", user.id)
       .maybeSingle();
-    if (error || !data) return null;
+    if (error) {
+      noteSupabaseRelationError("financial_snapshots", error);
+      return null;
+    }
+    if (!data) return null;
     return data as FinancialSnapshotRow;
   } catch {
     return null;
@@ -317,7 +334,7 @@ export async function fetchFinancialSnapshot(): Promise<FinancialSnapshotRow | n
 
 export async function persistFinancialSnapshot(input: FinancialSnapshotInput): Promise<FinancialSnapshotRow | null> {
   const client = getSupabase();
-  if (!client || !canReachSupabase()) return null;
+  if (!client || !canReachSupabase() || isSupabaseTableUnavailable("financial_snapshots")) return null;
   try {
     const user = await currentUser();
     if (!user) return null;
@@ -334,7 +351,10 @@ export async function persistFinancialSnapshot(input: FinancialSnapshotInput): P
       .upsert(payload, { onConflict: "user_id" })
       .select("*")
       .maybeSingle();
-    if (error) return null;
+    if (error) {
+      noteSupabaseRelationError("financial_snapshots", error);
+      return null;
+    }
     return (data as FinancialSnapshotRow | null) ?? null;
   } catch {
     return null;

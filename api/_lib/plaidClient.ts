@@ -56,13 +56,15 @@ function asRecord(value: unknown): Record<string, unknown> {
 }
 
 export async function plaidRequest(path: string, body: Record<string, unknown> = {}): Promise<PlaidJson> {
+  const client_id = String(process.env.PLAID_CLIENT_ID || "").trim() || getPlaidClientId();
+  const secret = String(process.env.PLAID_SECRET || "").trim() || getPlaidSecret();
   const host = PLAID_HOSTS[getPlaidEnv()];
   const response = await fetch(`${host}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      client_id: getPlaidClientId(),
-      secret: getPlaidSecret(),
+      client_id,
+      secret,
       ...body,
     }),
   });
@@ -115,13 +117,20 @@ export function sanitizePlaidClientUserId(raw: string): string {
   return `user-${hash.toString(16)}`;
 }
 
-export async function createLinkToken(clientUserId: string): Promise<string> {
+/** Official Plaid /link/token/create payload used by create-link-token. */
+export async function linkTokenCreate(clientUserId: string): Promise<string> {
+  const client_id = String(process.env.PLAID_CLIENT_ID || "").trim() || getPlaidClientId();
+  const secret = String(process.env.PLAID_SECRET || "").trim() || getPlaidSecret();
+  if (!client_id || !secret) {
+    throw new Error("PLAID_CLIENT_ID or PLAID_SECRET is missing or invalid.");
+  }
+
   const payload: Record<string, unknown> = {
+    user: { client_user_id: sanitizePlaidClientUserId(clientUserId) || "unique_user_id" },
     client_name: "Sprout",
-    language: "en",
-    country_codes: ["US"],
-    user: { client_user_id: sanitizePlaidClientUserId(clientUserId) },
     products: ["transactions"],
+    country_codes: ["US"],
+    language: "en",
   };
   const redirect = process.env.PLAID_REDIRECT_URI?.trim();
   if (redirect) payload.redirect_uri = redirect;
@@ -131,6 +140,8 @@ export async function createLinkToken(clientUserId: string): Promise<string> {
   if (!token) throw new Error("Plaid did not return a link token");
   return token;
 }
+
+export const createLinkToken = linkTokenCreate;
 
 export async function exchangePublicToken(publicToken: string): Promise<{ accessToken: string; itemId: string }> {
   const json = await plaidRequest("/item/public_token/exchange", { public_token: publicToken });
