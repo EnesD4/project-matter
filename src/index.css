@@ -3,12 +3,49 @@
 @tailwind utilities;
 
 html,
-body {
+body,
+#root {
+  min-height: 100%;
+  height: auto;
+  width: 100%;
+  max-width: 100%;
   background-color: #090d16;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: auto;
+  -webkit-overflow-scrolling: touch;
+  pointer-events: auto;
+}
+
+.drag-none {
+  -webkit-user-drag: none;
+  user-drag: none;
+}
+
+.matter-asset-logo,
+.matter-asset-logo img,
+.matter-asset-logo svg {
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-user-drag: none;
+  -webkit-touch-callout: none;
+}
+
+.matter-touch-scroll {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  pointer-events: auto;
 }
 
 .matter-dividend-scroll {
   overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  pointer-events: auto;
   scroll-behavior: smooth;
   scrollbar-width: thin;
   scrollbar-color: #2a2a2a transparent;
@@ -350,7 +387,7 @@ body {
   right: 12px;
   z-index: 100;
   margin: 0 auto;
-  max-width: 480px;
+  max-width: 28rem;
   pointer-events: none;
 }
 
@@ -1136,6 +1173,20 @@ body {
   content: "";
   position: absolute;
   inset: -7px;
+}
+
+@media (max-width: 1023px) {
+  html,
+  body,
+  #root {
+    max-width: 100%;
+  }
+
+  .matter-tab-panel,
+  .matter-safety-trigger {
+    min-width: 0;
+    max-width: 100%;
+  }
 }
 
 @keyframes roadmapRevealDot {

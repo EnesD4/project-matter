@@ -1,11 +1,10 @@
-import { useGoogleLogin } from "@react-oauth/google";
-import { Loader2, Lock, Mail, User } from "lucide-react";
+import { Eye, EyeOff, Loader2, Lock, Mail } from "lucide-react";
 import React, { useState } from "react";
 import {
   loginUser,
-  loginWithGoogle,
   registerUser,
   saveSession,
+  signInWithGoogleOAuth,
   type AuthUser,
   type UserSettings,
 } from "../lib/auth";
@@ -41,9 +40,9 @@ function GoogleGLogo() {
 
 export default function AuthScreen({ onAuthenticated }: AuthScreenProps) {
   const [mode, setMode] = useState<AuthMode>("login");
-  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -54,33 +53,21 @@ export default function AuthScreen({ onAuthenticated }: AuthScreenProps) {
     onAuthenticated(user, settings);
   };
 
-  const googleLogin = useGoogleLogin({
-    flow: "implicit",
-    scope: "openid email profile",
-    onSuccess: async (tokenResponse) => {
-      if (!tokenResponse.access_token) {
-        setError("Google did not return a credential.");
-        return;
-      }
-      setError(null);
-      setLoading(true);
-      try {
-        const result = await loginWithGoogle(tokenResponse.access_token);
-        finishAuth(result.token, result.user, result.settings ?? null);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Google sign-in failed");
-      } finally {
-        setLoading(false);
-      }
-    },
-    onError: () => {
-      setError("Google sign-in was cancelled or failed.");
-    },
-  });
+  const onGoogle = async () => {
+    setError(null);
+    setLoading(true);
+    try {
+      await signInWithGoogleOAuth();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Google sign-in failed");
+      setLoading(false);
+    }
+  };
 
   const switchMode = (next: AuthMode) => {
     setMode(next);
     setError(null);
+    setShowPassword(false);
   };
 
   const onSubmit = async (e: React.FormEvent) => {
@@ -89,7 +76,7 @@ export default function AuthScreen({ onAuthenticated }: AuthScreenProps) {
     setLoading(true);
     try {
       const result = isSignup
-        ? await registerUser({ name: name.trim(), email: email.trim(), password })
+        ? await registerUser({ email: email.trim(), password })
         : await loginUser({ email: email.trim(), password });
       finishAuth(result.token, result.user, result.settings ?? null);
     } catch (err) {
@@ -107,6 +94,7 @@ export default function AuthScreen({ onAuthenticated }: AuthScreenProps) {
       <div style={styles.shell}>
         <header style={styles.brandBlock}>
           <p style={styles.brand}>Sprout</p>
+          <p style={styles.step}>Step 1 of 3</p>
           <h1 style={styles.headline}>{isSignup ? "Create your account" : "Welcome back"}</h1>
           <p style={styles.subhead}>
             {isSignup
@@ -137,24 +125,6 @@ export default function AuthScreen({ onAuthenticated }: AuthScreenProps) {
         </div>
 
         <form onSubmit={onSubmit} style={styles.form} noValidate>
-          {isSignup && (
-            <label style={styles.field}>
-              <span style={styles.label}>Full name</span>
-              <span style={styles.inputWrap}>
-                <User size={16} color="#6B7280" />
-                <input
-                  style={styles.input}
-                  type="text"
-                  autoComplete="name"
-                  placeholder="Alex Morgan"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  required
-                />
-              </span>
-            </label>
-          )}
-
           <label style={styles.field}>
             <span style={styles.label}>Email</span>
             <span style={styles.inputWrap}>
@@ -177,7 +147,7 @@ export default function AuthScreen({ onAuthenticated }: AuthScreenProps) {
               <Lock size={16} color="#6B7280" />
               <input
                 style={styles.input}
-                type="password"
+                type={showPassword ? "text" : "password"}
                 autoComplete={isSignup ? "new-password" : "current-password"}
                 placeholder={isSignup ? "At least 6 characters" : "Your password"}
                 value={password}
@@ -185,6 +155,15 @@ export default function AuthScreen({ onAuthenticated }: AuthScreenProps) {
                 required
                 minLength={6}
               />
+              <button
+                type="button"
+                aria-label={showPassword ? "Hide password" : "Show password"}
+                title={showPassword ? "Hide password" : "Show password"}
+                onClick={() => setShowPassword((visible) => !visible)}
+                style={styles.eyeBtn}
+              >
+                {showPassword ? <EyeOff size={16} color="#9CA3AF" /> : <Eye size={16} color="#9CA3AF" />}
+              </button>
             </span>
           </label>
 
@@ -209,9 +188,9 @@ export default function AuthScreen({ onAuthenticated }: AuthScreenProps) {
             ...(loading ? styles.googleBtnDisabled : undefined),
           }}
           disabled={loading}
-          onClick={() => googleLogin()}
+          onClick={() => void onGoogle()}
         >
-          <GoogleGLogo />
+          {loading ? <Loader2 size={16} className="animate-spin" /> : <GoogleGLogo />}
           Continue with Google
         </button>
 
@@ -284,6 +263,14 @@ const styles: Record<string, React.CSSProperties> = {
     textTransform: "uppercase",
     color: "#10B981",
   },
+  step: {
+    margin: "10px 0 0",
+    fontSize: 11,
+    fontWeight: 800,
+    letterSpacing: "0.12em",
+    textTransform: "uppercase",
+    color: "#6B7280",
+  },
   headline: {
     margin: "10px 0 0",
     fontSize: 28,
@@ -355,6 +342,19 @@ const styles: Record<string, React.CSSProperties> = {
     color: "#FFFFFF",
     fontSize: 15,
     padding: "13px 0",
+    minWidth: 0,
+  },
+  eyeBtn: {
+    border: "none",
+    background: "transparent",
+    padding: "4px 0 4px 2px",
+    margin: 0,
+    cursor: "pointer",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+    lineHeight: 0,
   },
   error: {
     margin: 0,

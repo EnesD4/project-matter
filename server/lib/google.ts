@@ -7,6 +7,20 @@ export type GoogleProfile = {
   sub: string;
 };
 
+function displayNameFromGoogle(data: {
+  email?: string;
+  name?: string;
+  full_name?: string;
+  given_name?: string;
+  family_name?: string;
+}): string {
+  const full = (data.full_name || data.name || "").trim();
+  if (full) return full;
+  const parts = [data.given_name, data.family_name].map((part) => (part || "").trim()).filter(Boolean);
+  if (parts.length) return parts.join(" ");
+  return (data.email?.split("@")[0] || "").trim();
+}
+
 function getGoogleClientId(): string {
   const id = process.env.GOOGLE_CLIENT_ID?.trim();
   if (!id) {
@@ -39,7 +53,12 @@ export async function verifyGoogleCredential(rawToken: string): Promise<GooglePr
     }
     return {
       email,
-      name: (payload.name || email.split('@')[0]).trim(),
+      name: displayNameFromGoogle({
+        email,
+        name: payload.name,
+        given_name: payload.given_name,
+        family_name: payload.family_name,
+      }),
       picture: payload.picture || null,
       sub: payload.sub,
     };
@@ -55,6 +74,9 @@ export async function verifyGoogleCredential(rawToken: string): Promise<GooglePr
     email?: string;
     email_verified?: boolean | string;
     name?: string;
+    full_name?: string;
+    given_name?: string;
+    family_name?: string;
     picture?: string;
     sub?: string;
   }>({ url: 'https://www.googleapis.com/oauth2/v3/userinfo' });
@@ -70,7 +92,7 @@ export async function verifyGoogleCredential(rawToken: string): Promise<GooglePr
 
   return {
     email,
-    name: (data.name || email.split('@')[0]).trim(),
+    name: displayNameFromGoogle(data),
     picture: data.picture || null,
     sub: String(data.sub || tokenInfo.sub || email),
   };

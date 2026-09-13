@@ -1,14 +1,20 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import {
+  Banknote,
   Bell,
+  BookOpen,
   Check,
   ChevronDown,
   ChevronRight,
   ChevronUp,
   CircleDollarSign,
+  Coins,
+  Landmark,
   Lock,
   Plus,
+  ScrollText,
   Shield,
+  Sparkles,
+  ArrowUp,
   Receipt,
   Trash2,
   TrendingDown,
@@ -16,7 +22,9 @@ import {
   User,
   Volume2,
   VolumeX,
+  Wallet,
   X,
+  type LucideIcon,
 } from "lucide-react";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { type Debt } from "./src/components/DebtSnowballManager";
@@ -24,14 +32,15 @@ import { formatCurrencyInput, formatCurrencyValue, parseCurrency } from "./src/l
 import { privacyMoney } from "./src/lib/privacy";
 import { categoryIcon } from "./src/lib/categoryIcons";
 import AuthScreen from "./src/components/AuthScreen";
-import OnboardingScreen from "./src/components/OnboardingScreen";
+import DemoScenarioSwitcher from "./src/components/DemoScenarioSwitcher";
 import InvestmentScreen, { type Holding } from "./src/components/InvestmentScreen";
 import CashFlowScreen, { SafetyNetSection } from "./src/components/CashFlowScreen";
+import OnboardingScreen from "./src/components/OnboardingScreen";
+import BankConnectionScreen from "./src/components/BankConnectionScreen";
 import RetirementScreen from "./src/components/RetirementScreen";
 import LessonsScreen from "./src/components/LessonsScreen";
 import ProfileScreen from "./src/components/ProfileScreen";
 import FinancialOnboardingModal from "./src/components/FinancialOnboardingModal";
-import WebDashboard from "./src/components/WebDashboard";
 import AchievementBanner from "./src/components/AchievementBanner";
 import CertificateCelebration from "./src/components/CertificateCelebration";
 import { evaluateTrophies } from "./src/lib/achievements";
@@ -39,18 +48,33 @@ import { STREAK_UPDATED_EVENT } from "./src/lib/streakService";
 import {
   getRetirementDepositCount,
   RETIREMENT_UPDATED_EVENT,
+  seedRetirementFromAssets,
 } from "./src/components/RetirementPlanner";
 import {
+  COMPLETED_USER_SETTINGS,
+  DEFAULT_USER_SETTINGS,
   clearSession,
   emptyCashFlow,
   fetchCashFlow,
   fetchMe,
+  getStoredSettings,
   getStoredUser,
   getToken,
+  isDemoOrGuestSession,
+  isGoogleAuthUser,
+  clearGuestSessionFallbacks,
+  restoreSupabaseAuthSession,
+  needsBankSetup,
+  normalizeUserSettings,
+  queueFinancialSnapshotSync,
   readCashFlowCache,
+  resetLocalAppState,
+  resetRemoteUserProgress,
   saveCashFlow,
   saveSession,
   saveUserSettings,
+  updateStoredUser,
+  withTimeout,
   writeCashFlowCache,
   type AuthUser,
   type CashFlowExpense,
@@ -59,20 +83,39 @@ import {
 } from "./src/lib/auth";
 import { useSoundEnabled } from "./src/lib/audioService";
 import { OPEN_LESSON_EVENT } from "./src/lib/lessons";
+import { cashReservesFromAccounts, reserveLinesFromBalances } from "./src/lib/bankAccounts";
+import {
+  DEMO_SCENARIO_APPLIED_EVENT,
+  inferProfileFromBalances,
+  type DemoScenarioApplyDetail,
+} from "./src/lib/demoScenarios";
 import {
   OPEN_FINANCIAL_ONBOARDING_EVENT,
-  hasFinancialProfile,
   loadFinancialProfile,
+  saveFinancialProfile,
   type FinancialProfile,
 } from "./src/lib/roadmapService";
 import { saveAcademyStartPhase } from "./src/lib/certificates";
 import { useSafetyNetQuotes } from "./src/hooks/useSafetyNetQuotes";
 import {
   SAFETY_NET_RECOMMENDED_MONTHS,
+  SAFETY_NET_STARTER_MONTHS,
   computeSafetyNetTotals,
   emptySafetyNet,
   type SafetyNetConfig,
 } from "./src/lib/safetyNet";
+import { GeminiCoachError, requestGeminiCoach } from "./src/lib/geminiCoach";
+import {
+  EDUCATIONAL_DISCLAIMER,
+  firstNameOf,
+  stripEducationalDisclaimer,
+  type SproutAiFinancialSnapshot,
+} from "./src/lib/sproutAi";
+import {
+  PLAID_CONNECTED_EVENT,
+  hydrateLinkedBank,
+  type PlaidLinkResult,
+} from "./src/lib/plaidLink";
 
 type TabId = "dashboard" | "retirement" | "snowball" | "lessons" | "socrates" | "profile";
 
@@ -94,21 +137,18 @@ function createChatMessage(sender: ChatSender, text: string): ChatMessage {
   };
 }
 
-const TABS: Array<{ id: TabId; emoji: string; label: string }> = [
-  { id: "dashboard", emoji: "📊", label: "Investment" },
-  { id: "retirement", emoji: "🛡️", label: "Retirement" },
-  { id: "snowball", emoji: "💸", label: "Cash Flow" },
-  { id: "lessons", emoji: "📚", label: "Lessons" },
-  { id: "socrates", emoji: "🏛️", label: "Sprout AI" },
+const TABS: Array<{ id: TabId; icon: LucideIcon; label: string }> = [
+  { id: "dashboard", icon: TrendingUp, label: "Investment" },
+  { id: "retirement", icon: Shield, label: "Retirement" },
+  { id: "snowball", icon: Wallet, label: "Cash Flow" },
+  { id: "lessons", icon: BookOpen, label: "Lessons" },
+  { id: "socrates", icon: Sparkles, label: "Sprout AI" },
 ];
 
 const HEADER_TABS: TabId[] = ["dashboard", "retirement", "snowball", "lessons", "profile"];
 
-const GEMINI_API_KEY = "AQ.Ab8RN6LVBGK2nK4hRt3tLM01jc1i7r3CWL7paFYfl8QdYO4Rjg";
-const SOCRATES_PERSONA =
-  "You are Sprout AI, a warm, sharp, and encouraging personal finance and investment mentor for people of any age or background. Keep answers under 4 short sentences, use clear everyday language with relatable analogies, and sound like a supportive guide having a real conversation — never a lecture.";
 const SOCRATES_MOCK_REPLY =
-  "No API key yet, so I'll keep it analog: pay the high-interest debt first, keep stacking that emergency fund, then automate a broad ETF. Add VITE_GEMINI_API_KEY to unlock the live Sprout AI chat.";
+  "No API key yet, so I'll keep it analog: organize spending, pay down high-interest debt, then build a 3-month safety net before any investing lessons. Add GEMINI_API_KEY on the server to unlock the live Sprout AI chat.";
 
 const GREETING_WORDS = ["hi", "hello", "hey", "yo", "hiya", "howdy", "selam", "merhaba", "hola", "sup"];
 
@@ -121,19 +161,8 @@ function isSimpleGreeting(text: string): boolean {
   return GREETING_WORDS.includes(words[0]);
 }
 
-function useLgUp() {
-  const [matches, setMatches] = useState(() =>
-    typeof window !== "undefined" ? window.matchMedia("(min-width: 1024px)").matches : false
-  );
-  useEffect(() => {
-    const media = window.matchMedia("(min-width: 1024px)");
-    const sync = () => setMatches(media.matches);
-    sync();
-    media.addEventListener("change", sync);
-    return () => media.removeEventListener("change", sync);
-  }, []);
-  return matches;
-}
+const MOBILE_FRAME_CLASS =
+  "w-full max-w-md mx-auto min-h-screen bg-black shadow-2xl border-x border-slate-800";
 
 function greetingReplies(userName: string) {
   return [
@@ -143,15 +172,68 @@ function greetingReplies(userName: string) {
   ];
 }
 
-function getGeminiApiKey() {
-  const envKey = import.meta.env.VITE_GEMINI_API_KEY;
-  if (typeof envKey === "string" && envKey.trim()) {
-    return envKey.trim();
-  }
-  if (typeof GEMINI_API_KEY === "string" && GEMINI_API_KEY.trim()) {
-    return GEMINI_API_KEY.trim();
-  }
-  return "";
+function ChatInlineMarkdown({ text }: { text: string }) {
+  const parts = text.split(/(\*\*[^*]+?\*\*|`[^`]+`)/g);
+  return (
+    <>
+      {parts.map((part, index) => {
+        if (part.startsWith("**") && part.endsWith("**") && part.length >= 4) {
+          return (
+            <strong key={index} className="font-semibold text-white">
+              {part.slice(2, -2)}
+            </strong>
+          );
+        }
+        if (part.startsWith("`") && part.endsWith("`") && part.length >= 2) {
+          return (
+            <code
+              key={index}
+              className="rounded-md bg-white/10 px-1 py-0.5 font-mono text-[13px] text-emerald-200"
+            >
+              {part.slice(1, -1)}
+            </code>
+          );
+        }
+        return <React.Fragment key={index}>{part}</React.Fragment>;
+      })}
+    </>
+  );
+}
+
+function SproutChatMarkdown({ text }: { text: string }) {
+  const blocks = text.replace(/\r\n/g, "\n").trim().split(/\n{2,}/);
+  return (
+    <div className="space-y-3">
+      {blocks.map((block, index) => {
+        const heading = /^(#{1,3})\s+(.+)$/.exec(block);
+        if (heading) {
+          return (
+            <p key={index} className="m-0 text-[15px] font-extrabold text-white">
+              <ChatInlineMarkdown text={heading[2]} />
+            </p>
+          );
+        }
+        const lines = block.split("\n");
+        const isList = lines.length > 0 && lines.every((line) => /^\s*(?:[-*•]|\d+\.)\s+/.test(line));
+        if (isList) {
+          return (
+            <ul key={index} className="m-0 list-disc space-y-1 pl-4">
+              {lines.map((line, lineIndex) => (
+                <li key={lineIndex} className="pl-0.5">
+                  <ChatInlineMarkdown text={line.replace(/^\s*(?:[-*•]|\d+\.)\s+/, "")} />
+                </li>
+              ))}
+            </ul>
+          );
+        }
+        return (
+          <p key={index} className="m-0 whitespace-pre-wrap">
+            <ChatInlineMarkdown text={block} />
+          </p>
+        );
+      })}
+    </div>
+  );
 }
 
 function money(amount: number) {
@@ -176,9 +258,6 @@ const DEFICIT_TONE = {
   bg: "rgba(244, 63, 94, 0.10)",
   border: "rgba(244, 63, 94, 0.35)",
 };
-
-type DebtFormState = { title: string; balance: string; minPayment: string; apr: string };
-const EMPTY_DEBT_FORM: DebtFormState = { title: "", balance: "", minPayment: "", apr: "" };
 
 /** One editable line in the monthly spending breakdown. */
 type ExpenseItem = CashFlowExpense;
@@ -271,12 +350,6 @@ function CurrencyInput({
   );
 }
 
-let debtIdSeed = 0;
-function nextDebtId() {
-  debtIdSeed += 1;
-  return `debt-${Date.now()}-${debtIdSeed}`;
-}
-
 function cashFlowPayloadKey(snapshot: Pick<CashFlowSnapshot, "monthlyIncome" | "emergencyFund" | "extraPayoff" | "expenses" | "debts" | "safetyNet">) {
   return JSON.stringify({
     monthlyIncome: snapshot.monthlyIncome,
@@ -288,16 +361,24 @@ function cashFlowPayloadKey(snapshot: Pick<CashFlowSnapshot, "monthlyIncome" | "
   });
 }
 
+function initialRealUser(): AuthUser | null {
+  const user = getStoredUser();
+  const token = getToken();
+  if (!user || !token || isDemoOrGuestSession(token, user)) return null;
+  return user;
+}
+
 const App: React.FC = () => {
-  const isDesktop = useLgUp();
-  const [authUser, setAuthUser] = useState<AuthUser | null>(() => getStoredUser());
-  const [authChecking, setAuthChecking] = useState(() => Boolean(getToken()));
-  const [userSettings, setUserSettings] = useState<UserSettings | null>(null);
-  const [settingsReady, setSettingsReady] = useState(() => !getToken());
-  const [cashFlowBoot] = useState<CashFlowSnapshot>(() =>
-    getToken() ? readCashFlowCache(getStoredUser()?.id) : emptyCashFlow()
+  const [authUser, setAuthUser] = useState<AuthUser | null>(() => initialRealUser());
+  const [authChecking, setAuthChecking] = useState(true);
+  const [userSettings, setUserSettings] = useState<UserSettings | null>(() =>
+    initialRealUser() ? getStoredSettings() : null
   );
-  const [cashFlowReady, setCashFlowReady] = useState(() => !getToken());
+  const [cashFlowBoot] = useState<CashFlowSnapshot>(() => {
+    const user = initialRealUser();
+    return user ? readCashFlowCache(user.id) : emptyCashFlow();
+  });
+  const [cashFlowReady, setCashFlowReady] = useState(() => !initialRealUser());
   const [emergencyFund, setEmergencyFund] = useState(cashFlowBoot.emergencyFund);
   const [safetyNet, setSafetyNet] = useState<SafetyNetConfig>(cashFlowBoot.safetyNet ?? emptySafetyNet());
   const [question, setQuestion] = useState("");
@@ -306,6 +387,9 @@ const App: React.FC = () => {
   const chatLogRef = useRef<HTMLDivElement | null>(null);
   const askInputRef = useRef<HTMLTextAreaElement | null>(null);
   const [monthlyIncome, setMonthlyIncome] = useState(cashFlowBoot.monthlyIncome);
+  const [cashFlowLinked, setCashFlowLinked] = useState(
+    () => cashFlowBoot.monthlyIncome > 0 || cashFlowBoot.expenses.length > 0
+  );
   const [activeTab, setActiveTab] = useState<TabId>("dashboard");
   const lastContentTabRef = useRef<TabId>("dashboard");
   const [privacyMode, setPrivacyMode] = useState(false);
@@ -317,6 +401,7 @@ const App: React.FC = () => {
   const [financialModalOpen, setFinancialModalOpen] = useState(false);
   const [financialModalCancelable, setFinancialModalCancelable] = useState(false);
   const [financialDraft, setFinancialDraft] = useState<FinancialProfile | null>(null);
+  const [demoPanelOpen, setDemoPanelOpen] = useState(false);
 
   // Cash Flow & Debt Management module state.
   const [expenses, setExpenses] = useState<ExpenseItem[]>(cashFlowBoot.expenses);
@@ -326,9 +411,6 @@ const App: React.FC = () => {
   const [expenseFormError, setExpenseFormError] = useState("");
   const [extraPayoff, setExtraPayoff] = useState(cashFlowBoot.extraPayoff);
   const [debts, setDebts] = useState<Debt[]>(cashFlowBoot.debts);
-  const [debtFormOpen, setDebtFormOpen] = useState(false);
-  const [debtForm, setDebtForm] = useState<DebtFormState>(EMPTY_DEBT_FORM);
-  const [debtFormError, setDebtFormError] = useState("");
   const [debtAccordionOpen, setDebtAccordionOpen] = useState(false);
 
   // Live mirror of child-owned portfolio state, kept in sync via a callback prop so
@@ -337,6 +419,7 @@ const App: React.FC = () => {
   const [holdingsReady, setHoldingsReady] = useState(false);
 
   const userName = authUser?.name?.trim() || "Investor";
+  const firstName = firstNameOf(userName);
   const profileInitials = (authUser?.name || authUser?.email || "?")
     .split(/\s+/)
     .filter(Boolean)
@@ -345,41 +428,63 @@ const App: React.FC = () => {
     .join("") || "?";
 
   useEffect(() => {
-    const token = getToken();
-    if (!token) {
-      setAuthChecking(false);
-      setAuthUser(null);
-      setUserSettings(null);
-      setSettingsReady(true);
-      return;
-    }
-
     let cancelled = false;
+
     (async () => {
+      clearGuestSessionFallbacks();
+
       try {
-        const me = await fetchMe();
+        const restored = await restoreSupabaseAuthSession();
+        if (cancelled) return;
+        if (restored) {
+          saveSession(restored.token, restored.user);
+          setAuthUser(restored.user);
+          setUserSettings(restored.settings ?? getStoredSettings());
+          setAuthChecking(false);
+          return;
+        }
+      } catch {
+        // Fall through to a stored password session, or the login screen.
+      }
+
+      if (cancelled) return;
+
+      const token = getToken();
+      const stored = getStoredUser();
+      if (!token || !stored || isDemoOrGuestSession(token, stored)) {
+        setAuthUser(null);
+        setUserSettings(null);
+        setAuthChecking(false);
+        return;
+      }
+
+      try {
+        const me = await withTimeout(fetchMe(), 2500, "Session");
         if (cancelled) return;
         saveSession(token, me.user);
         setAuthUser(me.user);
-        setUserSettings(me.settings);
+        setUserSettings(me.settings ?? getStoredSettings());
       } catch {
         if (cancelled) return;
-        clearSession();
-        setAuthUser(null);
-        setUserSettings(null);
-        setHoldings([]);
-        setHoldingsReady(false);
-        setRetirementBalance(0);
-        setMonthlyIncome(0);
-        setEmergencyFund(0);
-        setSafetyNet(emptySafetyNet());
-        setExtraPayoff(0);
-        setExpenses([]);
-        setDebts([]);
+        if (getStoredUser() && !isDemoOrGuestSession()) {
+          setUserSettings((prev) => prev ?? getStoredSettings());
+        } else {
+          clearSession();
+          setAuthUser(null);
+          setUserSettings(null);
+          setHoldings([]);
+          setHoldingsReady(false);
+          setRetirementBalance(0);
+          setMonthlyIncome(0);
+          setEmergencyFund(0);
+          setSafetyNet(emptySafetyNet());
+          setExtraPayoff(0);
+          setExpenses([]);
+          setDebts([]);
+        }
         setCashFlowReady(true);
       } finally {
         if (!cancelled) {
-          setSettingsReady(true);
           setAuthChecking(false);
         }
       }
@@ -433,11 +538,11 @@ const App: React.FC = () => {
     let cancelled = false;
     const cached = readCashFlowCache(authUser.id);
     applyCashFlow(cached);
-    setCashFlowReady(false);
+    setCashFlowReady(true);
 
     (async () => {
       try {
-        const remote = await fetchCashFlow();
+        const remote = await withTimeout(fetchCashFlow(), 2000, "Cash flow");
         if (cancelled) return;
         const latest = readCashFlowCache(authUser.id);
         const live = cashFlowPersistRef.current.snapshot;
@@ -556,32 +661,14 @@ const App: React.FC = () => {
   const handleAuthenticated = (user: AuthUser, settings?: UserSettings | null) => {
     setAuthUser(user);
     setActiveTab("dashboard");
-    if (settings !== undefined) {
-      setUserSettings(settings);
-      setSettingsReady(true);
-      return;
-    }
-    setSettingsReady(false);
-    void (async () => {
-      try {
-        const me = await fetchMe();
-        setUserSettings(me.settings);
-      } catch {
-        setUserSettings(null);
-      } finally {
-        setSettingsReady(true);
-      }
-    })();
-  };
-
-  const handleOnboardingComplete = (settings: UserSettings) => {
-    setUserSettings(settings);
-    setActiveTab("dashboard");
-    if (!hasFinancialProfile(authUser?.id)) {
-      setFinancialDraft(null);
-      setFinancialModalCancelable(false);
-      setFinancialModalOpen(true);
-    }
+    setUserSettings(
+      normalizeUserSettings(
+        settings ?? {
+          ...DEFAULT_USER_SETTINGS,
+          hasCompletedOnboarding: Boolean(user.hasCompletedOnboarding),
+        }
+      )
+    );
   };
 
   const openFinancialProfile = (cancelable = true) => {
@@ -589,14 +676,6 @@ const App: React.FC = () => {
     setFinancialModalCancelable(cancelable);
     setFinancialModalOpen(true);
   };
-
-  useEffect(() => {
-    if (!authUser || !userSettings?.hasCompletedOnboarding) return;
-    if (hasFinancialProfile(authUser.id)) return;
-    setFinancialDraft(null);
-    setFinancialModalCancelable(false);
-    setFinancialModalOpen(true);
-  }, [authUser, userSettings?.hasCompletedOnboarding]);
 
   useEffect(() => {
     const onOpen = (event: Event) => {
@@ -613,10 +692,133 @@ const App: React.FC = () => {
     return () => window.removeEventListener(OPEN_LESSON_EVENT, onOpenLesson);
   }, []);
 
+  useEffect(() => {
+    const onPlaidSandbox = (event: Event) => {
+      const detail = (event as CustomEvent<PlaidLinkResult>).detail;
+      if (!detail) return;
+      const userId = getStoredUser()?.id;
+      const reserves = cashReservesFromAccounts(detail.accounts);
+      const linkedDebts = detail.debts?.length ? detail.debts : [];
+      setEmergencyFund(reserves.liquidCash || detail.chaseChecking);
+      setSafetyNet((prev) => ({
+        ...prev,
+        hysaCash: reserves.yieldCash || detail.marcusHysa + (detail.moneyMarket ?? 0),
+        reserveLines:
+          reserves.lines.length > 0
+            ? reserves.lines
+            : reserveLinesFromBalances({
+                cash: detail.chaseChecking,
+                hysa: detail.marcusHysa,
+                moneyMarket: detail.moneyMarket,
+              }),
+      }));
+      setDebts(linkedDebts);
+      setMonthlyIncome(detail.monthlyIncome);
+      setExpenses(detail.expenses);
+      setCashFlowLinked(true);
+      const investments = detail.holdings.reduce((sum, lot) => sum + lot.shares * lot.buyPrice, 0);
+      const monthlyEssentialExpenses = detail.expenses.reduce((sum, item) => sum + item.amount, 0);
+      saveFinancialProfile(
+        inferProfileFromBalances({
+          cash: detail.chaseChecking,
+          hysa: detail.marcusHysa + (detail.moneyMarket ?? 0),
+          investments,
+          debt: linkedDebts.reduce((sum, debt) => sum + debt.balance, 0),
+          monthlyIncome: detail.monthlyIncome,
+          monthlyEssentialExpenses,
+        }),
+        userId
+      );
+      setUserSettings((prev) => {
+        const next = {
+          ...(prev ?? DEFAULT_USER_SETTINGS),
+          hasActiveDebts: linkedDebts.length > 0,
+          hasActiveInvestments: detail.holdings.length > 0,
+          hasCompletedOnboarding: true,
+          hasCompletedBankSetup: true,
+        };
+        void saveUserSettings({
+          hasActiveInvestments: next.hasActiveInvestments,
+          hasActiveDebts: next.hasActiveDebts,
+          wantsCapitalGrowth: next.wantsCapitalGrowth,
+          wantsFinancialLiteracy: next.wantsFinancialLiteracy,
+          hasCompletedOnboarding: true,
+          hasCompletedBankSetup: true,
+        }).catch(() => {});
+        return next;
+      });
+      if (detail.retirement?.present && userId) {
+        seedRetirementFromAssets(userId, {
+          savings: detail.retirement.savings,
+          accountType: detail.retirement.accountType,
+          age: getStoredSettings().age ?? null,
+        });
+      }
+    };
+    window.addEventListener(PLAID_CONNECTED_EVENT, onPlaidSandbox);
+    return () => window.removeEventListener(PLAID_CONNECTED_EVENT, onPlaidSandbox);
+  }, []);
+
+  useEffect(() => {
+    if (!authUser?.id) return;
+    let cancelled = false;
+    void hydrateLinkedBank((result) => {
+      if (cancelled) return;
+      window.dispatchEvent(new CustomEvent<PlaidLinkResult>(PLAID_CONNECTED_EVENT, { detail: result }));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [authUser?.id]);
+
+  useEffect(() => {
+    const onDemo = (event: Event) => {
+      const detail = (event as CustomEvent<DemoScenarioApplyDetail>).detail;
+      if (!detail) return;
+      setEmergencyFund(detail.cash);
+      setSafetyNet((prev) => ({
+        ...prev,
+        hysaCash: detail.hysa,
+        reserveLines: reserveLinesFromBalances({ cash: detail.cash, hysa: detail.hysa }),
+      }));
+      setMonthlyIncome(detail.monthlyIncome);
+      setDebts(detail.debts);
+      setExpenses(detail.expenses);
+      setCashFlowLinked(true);
+      const userId = getStoredUser()?.id;
+      if (detail.retirement?.present && userId) {
+        seedRetirementFromAssets(userId, {
+          savings: detail.retirement.savings,
+          accountType: detail.retirement.accountType,
+          age: getStoredSettings().age ?? null,
+        });
+      }
+      setUserSettings((prev) => {
+        const next = {
+          ...(prev ?? DEFAULT_USER_SETTINGS),
+          hasActiveDebts: detail.hasActiveDebts,
+          hasActiveInvestments: detail.hasActiveInvestments,
+          hasCompletedOnboarding: true,
+          hasCompletedBankSetup: true,
+        };
+        void saveUserSettings({
+          hasActiveInvestments: next.hasActiveInvestments,
+          hasActiveDebts: next.hasActiveDebts,
+          wantsCapitalGrowth: next.wantsCapitalGrowth,
+          wantsFinancialLiteracy: next.wantsFinancialLiteracy,
+          hasCompletedOnboarding: true,
+          hasCompletedBankSetup: true,
+        }).catch(() => {});
+        return next;
+      });
+    };
+    window.addEventListener(DEMO_SCENARIO_APPLIED_EVENT, onDemo);
+    return () => window.removeEventListener(DEMO_SCENARIO_APPLIED_EVENT, onDemo);
+  }, []);
+
   const persistAge = async (nextAge: number, nextBirthDate: string) => {
-    if (!userSettings) return;
-    const previous = userSettings;
-    const optimistic: UserSettings = { ...userSettings, age: nextAge, birthDate: nextBirthDate };
+    const previous = userSettings ?? COMPLETED_USER_SETTINGS;
+    const optimistic: UserSettings = { ...previous, age: nextAge, birthDate: nextBirthDate };
     setUserSettings(optimistic);
     try {
       const saved = await saveUserSettings({
@@ -625,6 +827,7 @@ const App: React.FC = () => {
         wantsCapitalGrowth: optimistic.wantsCapitalGrowth,
         wantsFinancialLiteracy: optimistic.wantsFinancialLiteracy,
         hasCompletedOnboarding: true,
+        hasCompletedBankSetup: previous.hasCompletedBankSetup,
         age: nextAge,
         birthDate: nextBirthDate,
       });
@@ -634,11 +837,12 @@ const App: React.FC = () => {
     }
   };
 
-  const handleLogout = () => {
-    clearSession();
+  const returnToLogin = () => {
+    cashFlowHydratedJsonRef.current = cashFlowPayloadKey(emptyCashFlow());
+    applyCashFlow(emptyCashFlow());
     setAuthUser(null);
     setUserSettings(null);
-    setSettingsReady(true);
+    setAuthChecking(false);
     setHoldings([]);
     setHoldingsReady(false);
     setRetirementBalance(0);
@@ -648,9 +852,33 @@ const App: React.FC = () => {
     setExtraPayoff(0);
     setExpenses([]);
     setDebts([]);
+    setCashFlowLinked(false);
     setCashFlowReady(true);
     setMessages([]);
+    setQuestion("");
     setActiveTab("dashboard");
+    setPrivacyMode(false);
+    setNetWorthModalOpen(false);
+    setProfileMenuOpen(false);
+    setFinancialModalOpen(false);
+    setFinancialDraft(null);
+    setDemoPanelOpen(false);
+    setSpendingModalOpen(false);
+    setExpenseFormOpen(false);
+    setDebtAccordionOpen(false);
+  };
+
+  const handleLogout = () => {
+    resetLocalAppState();
+    returnToLogin();
+  };
+
+  const handleResetAppState = () => {
+    void (async () => {
+      await resetRemoteUserProgress();
+      resetLocalAppState();
+      returnToLogin();
+    })();
   };
 
   const emergencyGoal = 1000;
@@ -739,6 +967,16 @@ const App: React.FC = () => {
     stockHoldingsValue + retirementBalance + liquidCashValue + hysaCashValue + safetyTotals.gold + safetyTotals.bonds;
 
   useEffect(() => {
+    if (!authUser?.id || !cashFlowReady) return;
+    queueFinancialSnapshotSync({
+      cashBalance: availableCash,
+      debt: totalDebt,
+      investmentAssets: stockHoldingsValue,
+      monthlyIncome,
+    });
+  }, [authUser?.id, cashFlowReady, availableCash, totalDebt, stockHoldingsValue, monthlyIncome]);
+
+  useEffect(() => {
     if (!authUser) return;
     const userId = authUser.id;
     const refresh = () => {
@@ -803,6 +1041,55 @@ const App: React.FC = () => {
     activeDebts,
     isSurplus,
     netCashFlow,
+  ]);
+
+  const educationalSnapshot = useMemo<SproutAiFinancialSnapshot>(() => {
+    const safetyNetMonths = monthlyExpenses > 0 ? safetyTotals.total / monthlyExpenses : null;
+    const highestApr = debts.length === 0 ? null : Math.max(...debts.map((d) => d.apr));
+    return {
+      userName: firstName,
+      cash: {
+        liquidCash: safetyTotals.liquidCash,
+        hysaCash: safetyTotals.hysaCash,
+        safetyNetTotal: safetyTotals.total,
+        safetyNetMonths,
+        starterCashGoal: emergencyGoal,
+        starterMonths: SAFETY_NET_STARTER_MONTHS,
+        recommendedMonths: SAFETY_NET_RECOMMENDED_MONTHS,
+        recommendedGoal: monthlyExpenses * SAFETY_NET_RECOMMENDED_MONTHS,
+      },
+      debt: {
+        total: totalDebt,
+        count: debts.length,
+        highestApr,
+        focusTitle: focusDebt?.title ?? null,
+        summary: debtContext,
+      },
+      spending: {
+        monthlyIncome,
+        monthlyExpenses,
+        netCashFlow,
+        isSurplus,
+        categories: expenses.map((item) => ({ label: item.label, amount: item.amount })),
+        summary: cashFlowContext,
+      },
+    };
+  }, [
+    firstName,
+    safetyTotals.liquidCash,
+    safetyTotals.hysaCash,
+    safetyTotals.total,
+    monthlyExpenses,
+    emergencyGoal,
+    debts,
+    totalDebt,
+    focusDebt?.title,
+    debtContext,
+    monthlyIncome,
+    netCashFlow,
+    isSurplus,
+    expenses,
+    cashFlowContext,
   ]);
 
   useEffect(() => {
@@ -877,51 +1164,6 @@ const App: React.FC = () => {
     );
   };
 
-  const removeDebt = (id: string) => {
-    setDebts((prev) => prev.filter((debt) => debt.id !== id));
-  };
-
-  const openDebtForm = () => {
-    setDebtAccordionOpen(true);
-    setDebtForm(EMPTY_DEBT_FORM);
-    setDebtFormError("");
-    setDebtFormOpen(true);
-  };
-
-  const submitDebt = (event: React.FormEvent) => {
-    event.preventDefault();
-    const balance = parseCurrency(debtForm.balance);
-    const minPayment = parseCurrency(debtForm.minPayment);
-    const apr = debtForm.apr.trim() === "" ? 0 : Number(debtForm.apr);
-
-    if (!Number.isFinite(balance) || balance <= 0) {
-      setDebtFormError("Enter a balance greater than $0.");
-      return;
-    }
-    if (!Number.isFinite(minPayment) || minPayment <= 0) {
-      setDebtFormError("Enter a minimum monthly payment greater than $0.");
-      return;
-    }
-    if (!Number.isFinite(apr) || apr < 0) {
-      setDebtFormError("Enter a valid interest rate, or leave it blank.");
-      return;
-    }
-
-    setDebts((prev) => [
-      ...prev,
-      {
-        id: nextDebtId(),
-        title: debtForm.title.trim() || "Untitled Debt",
-        originalBalance: balance,
-        balance,
-        minPayment,
-        apr,
-      },
-    ]);
-    setDebtFormOpen(false);
-    setDebtForm(EMPTY_DEBT_FORM);
-    setDebtFormError("");
-  };
 
   const askSocrates = async () => {
     const prompt = question.trim();
@@ -938,7 +1180,7 @@ const App: React.FC = () => {
     // Simple greetings get a warm, direct reply instead of a full model round-trip —
     // keeps the very first hello feeling natural rather than clinical.
     if (isSimpleGreeting(prompt)) {
-      const replies = greetingReplies(userName);
+      const replies = greetingReplies(firstName);
       const reply = replies[Math.floor(Math.random() * replies.length)];
       window.setTimeout(() => {
         setMessages((prev) => [...prev, createChatMessage("socrates", reply)]);
@@ -947,37 +1189,48 @@ const App: React.FC = () => {
       return;
     }
 
+    let draftId: string | null = null;
     try {
-      const apiKey = getGeminiApiKey();
       const history = thread
         .slice(-12)
         .map((msg) => `${msg.sender === "user" ? "User" : "Sprout AI"}: ${msg.text}`)
         .join("\n");
-      const userPrompt = `${userName}'s live snapshot:\n- Safety net: $${money(safetyTotals.total)} total liquidity (liquid cash $${money(safetyTotals.liquidCash)}, HYSA $${money(safetyTotals.hysaCash)}, mapped stocks $${money(safetyTotals.stocks)}, gold $${money(safetyTotals.gold)}, bonds $${money(safetyTotals.bonds)})${monthlyExpenses > 0 ? ` — ${ (safetyTotals.total / monthlyExpenses).toFixed(1)} months of spending` : ""}. Starter cash goal $${money(emergencyGoal)}; recommended ${SAFETY_NET_RECOMMENDED_MONTHS}-month target $${money(monthlyExpenses * SAFETY_NET_RECOMMENDED_MONTHS)}.\n- Cash flow: ${cashFlowContext}\n- Debt: ${debtContext}\n- Investment portfolio: ${portfolioContext}\n\nConversation:\n${history}\n\nReply to the latest user message. If ${userName} asks about their income, spending, budget, debts, safety net, or portfolio balance, answer using the real snapshot data above.`;
+      const applyCoachText = (text: string) => {
+        if (!draftId) {
+          const draft = createChatMessage("socrates", text);
+          draftId = draft.id;
+          setSocratesLoading(false);
+          setMessages((prev) => [...prev, draft]);
+          return;
+        }
+        const id = draftId;
+        setMessages((prev) => prev.map((msg) => (msg.id === id ? { ...msg, text } : msg)));
+      };
 
-      if (!apiKey) {
-        setMessages((prev) => [...prev, createChatMessage("socrates", SOCRATES_MOCK_REPLY)]);
-        return;
-      }
-
-      const genAI = new GoogleGenerativeAI(apiKey);
-      const model = genAI.getGenerativeModel({ model: "gemini-3.6-flash" });
-      const result = await model.generateContent(`${SOCRATES_PERSONA}\n\n${userPrompt}`);
-      const text = result.response.text().trim();
-      if (!text) {
-        throw new Error("Sprout AI came back blank. Try that question again.");
-      }
-
-      setMessages((prev) => [...prev, createChatMessage("socrates", text)]);
+      const text = await requestGeminiCoach(
+        {
+          snapshot: educationalSnapshot,
+          conversation: history,
+          portfolioContext,
+        },
+        { stream: true, onDelta: applyCoachText }
+      );
+      applyCoachText(text);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Something glitched. Try again.";
-      setMessages((prev) => [
-        ...prev,
-        createChatMessage(
-          "socrates",
-          `Couldn't reach Gemini just now: ${message} Crush high-interest debt, keep the emergency fund growing, then automate investing — and try again in a minute.`
-        ),
-      ]);
+      const fallback =
+        err instanceof GeminiCoachError && (err.code === "unavailable" || err.status === 503)
+          ? SOCRATES_MOCK_REPLY
+          : err instanceof GeminiCoachError && err.code === "rate_limit"
+            ? "Sprout AI hit a request limit. Give it a minute, then ask again — I can still help with spending, debt, or your safety net."
+            : err instanceof GeminiCoachError && err.code === "timeout"
+              ? "That took too long. Try a shorter question — I can still help with spending, debt, or your safety net."
+              : `Couldn't reach Gemini just now. Organize spending, work high-interest debt, then grow a 3-month safety net — and try again in a minute.`;
+      if (draftId) {
+        const id = draftId;
+        setMessages((prev) => prev.map((msg) => (msg.id === id ? { ...msg, text: fallback } : msg)));
+      } else {
+        setMessages((prev) => [...prev, createChatMessage("socrates", fallback)]);
+      }
     } finally {
       setSocratesLoading(false);
     }
@@ -990,28 +1243,188 @@ const App: React.FC = () => {
     }
   };
 
-  if (authChecking || (authUser && !settingsReady)) {
+  if (authChecking && !authUser) {
     return (
-      <div style={{ ...styles.page, display: "grid", placeItems: "center", minHeight: "100vh" }}>
-        <p style={{ color: "#9CA3AF", fontWeight: 700, fontSize: 14 }}>Checking your session…</p>
+      <div className={MOBILE_FRAME_CLASS}>
+        <div style={{ ...styles.page, display: "grid", placeItems: "center", minHeight: "100vh" }}>
+          <p style={{ color: "#9CA3AF", fontWeight: 700, fontSize: 14 }}>Checking your session…</p>
+        </div>
       </div>
     );
   }
 
   if (!authUser) {
-    return <AuthScreen onAuthenticated={handleAuthenticated} />;
-  }
-
-  if (!userSettings?.hasCompletedOnboarding) {
     return (
-      <OnboardingScreen
-        onComplete={handleOnboardingComplete}
-      />
+      <div className={MOBILE_FRAME_CLASS}>
+        <AuthScreen onAuthenticated={handleAuthenticated} />
+      </div>
     );
   }
 
+  const resolvedSettings = userSettings ?? DEFAULT_USER_SETTINGS;
+
+  if (!resolvedSettings.hasCompletedOnboarding) {
+    return (
+      <div className={MOBILE_FRAME_CLASS}>
+        <OnboardingScreen
+          initialName={authUser.name}
+          initialBirthDate={resolvedSettings.birthDate ?? ""}
+          skipNameStep={isGoogleAuthUser(authUser)}
+          onComplete={(name, settings) => {
+            const nextUser = updateStoredUser({ name, hasCompletedOnboarding: true }) ?? {
+              ...authUser,
+              name,
+              hasCompletedOnboarding: true,
+            };
+            saveSession(getToken() || "local-demo", nextUser);
+            setAuthUser(nextUser);
+            setUserSettings({ ...settings, hasCompletedBankSetup: false });
+          }}
+        />
+      </div>
+    );
+  }
+
+  if (needsBankSetup(resolvedSettings)) {
+    return (
+      <div className={MOBILE_FRAME_CLASS}>
+        <BankConnectionScreen
+          currentSettings={resolvedSettings}
+          onComplete={(settings) => {
+            setUserSettings(settings);
+            setActiveTab("dashboard");
+          }}
+        />
+      </div>
+    );
+  }
+
+  const sproutChat = (
+    <div className="matter-tab-panel flex h-full min-h-0 flex-1 flex-col bg-black">
+      <div className="flex shrink-0 items-center gap-3 border-b border-white/5 bg-black/80 px-4 py-3 backdrop-blur-md">
+        <div
+          className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-gradient-to-br from-emerald-400 to-emerald-800 shadow-[0_0_0_3px_rgba(16,185,129,0.2)]"
+          aria-hidden="true"
+        >
+          <Sparkles size={16} color="#ECFDF5" />
+        </div>
+        <div className="min-w-0">
+          <p className="m-0 text-[15px] font-extrabold tracking-tight text-white">Sprout AI</p>
+          <p className="m-0 truncate text-[12px] font-semibold text-slate-400">Personal Finance Educational Coach</p>
+        </div>
+      </div>
+
+      <div
+        ref={chatLogRef}
+        className="matter-touch-scroll min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-5"
+        aria-live="polite"
+      >
+        {messages.length === 0 && !socratesLoading && (
+          <div className="flex h-full min-h-[240px] flex-col items-center justify-center px-4 text-center">
+            <div
+              className="grid h-14 w-14 place-items-center rounded-full bg-gradient-to-br from-emerald-400 to-emerald-800 shadow-[0_0_0_4px_rgba(16,185,129,0.16)]"
+              aria-hidden="true"
+            >
+              <Sparkles size={22} color="#ECFDF5" />
+            </div>
+            <p className="mt-4 text-[22px] font-extrabold tracking-tight text-white">Hey {firstName}</p>
+            <p className="mt-2 max-w-[280px] text-[14px] font-medium leading-relaxed text-slate-400">
+              Ask about budgeting, compound interest, or debt. Educational guidance only — never stock picks or tax
+              advice.
+            </p>
+          </div>
+        )}
+        {messages.map((msg) => {
+          const isUser = msg.sender === "user";
+          if (isUser) {
+            return (
+              <div key={msg.id} className="flex justify-end">
+                <div className="max-w-[82%] rounded-2xl rounded-br-md bg-gradient-to-br from-emerald-600 to-emerald-950 px-3.5 py-2.5 text-[15px] leading-relaxed text-white shadow-[0_10px_24px_rgba(6,78,59,0.35)]">
+                  <p className="m-0 whitespace-pre-wrap break-words">{msg.text}</p>
+                </div>
+              </div>
+            );
+          }
+          return (
+            <div key={msg.id} className="flex items-start gap-2.5">
+              <div
+                className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-gradient-to-br from-emerald-400 to-emerald-800"
+                aria-hidden="true"
+              >
+                <Sparkles size={12} color="#ECFDF5" />
+              </div>
+              <div className="min-w-0 flex-1 pt-0.5 text-[15px] leading-relaxed text-slate-100">
+                <SproutChatMarkdown text={stripEducationalDisclaimer(msg.text)} />
+                <p className="mt-2 text-[10px] font-semibold italic leading-snug text-slate-500">
+                  {EDUCATIONAL_DISCLAIMER}
+                </p>
+              </div>
+            </div>
+          );
+        })}
+        {socratesLoading && (
+          <div className="flex items-start gap-2.5">
+            <div
+              className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-gradient-to-br from-emerald-400 to-emerald-800"
+              aria-hidden="true"
+            >
+              <Sparkles size={12} color="#ECFDF5" />
+            </div>
+            <p className="m-0 pt-1 text-[14px] font-semibold italic text-emerald-300/80">Sprout AI is thinking…</p>
+          </div>
+        )}
+      </div>
+
+      <div className="sticky bottom-0 z-20 shrink-0 border-t border-white/5 bg-black/95 px-3 pb-2.5 pt-2 backdrop-blur-md">
+        <div className="flex items-end gap-2">
+          <textarea
+            ref={askInputRef}
+            className="matter-ask-input min-h-12 max-h-[129px] w-full flex-1 resize-none rounded-[26px] border border-[#262626] bg-[#121212] px-4 py-3 text-[16px] leading-snug text-slate-50 outline-none placeholder:text-slate-500 focus:border-emerald-500/50"
+            rows={1}
+            value={question}
+            onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setQuestion(e.target.value)}
+            onKeyDown={onAskKeyDown}
+            placeholder="Ask Sprout AI…"
+            aria-label="Ask Sprout AI"
+            disabled={socratesLoading}
+          />
+          <button
+            type="button"
+            className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-emerald-500 text-[#042F2E] shadow-[0_8px_20px_rgba(16,185,129,0.28)] transition enabled:active:scale-95 disabled:opacity-45"
+            onClick={() => void askSocrates()}
+            disabled={socratesLoading || !question.trim()}
+            aria-label="Send message"
+          >
+            <ArrowUp size={20} strokeWidth={2.4} />
+          </button>
+        </div>
+        <p className="mb-0 mt-2 text-center text-[10px] font-semibold italic leading-snug text-slate-500">
+          {EDUCATIONAL_DISCLAIMER}
+        </p>
+      </div>
+    </div>
+  );
+
   return (
-    <div style={isDesktop ? { ...styles.page, padding: 0, overflow: "hidden" } : styles.page}>
+    <div className={`${MOBILE_FRAME_CLASS}${activeTab === "socrates" ? " h-[100dvh] overflow-hidden" : ""}`}>
+      <div
+        style={{
+          ...styles.page,
+          ...(activeTab === "socrates"
+            ? {
+                height: "100%",
+                maxHeight: "100%",
+                overflow: "hidden",
+                paddingTop: 0,
+                paddingLeft: 0,
+                paddingRight: 0,
+                paddingBottom: "calc(60px + env(safe-area-inset-bottom, 0px))",
+                display: "flex",
+                flexDirection: "column",
+              }
+            : {}),
+        }}
+      >
       <style>{css}</style>
       <AchievementBanner userName={userName} />
       <CertificateCelebration />
@@ -1025,58 +1438,41 @@ const App: React.FC = () => {
           saveAcademyStartPhase(authUser.id, roadmap.recommendedPhaseId);
         }}
       />
+      {import.meta.env.DEV && activeTab !== "socrates" ? (
+        <div className="fixed bottom-[76px] left-1/2 z-[70] flex w-full max-w-md -translate-x-1/2 justify-end px-3">
+          <div className="flex max-w-[min(92vw,360px)] flex-col items-end gap-2">
+            {demoPanelOpen ? (
+              <div className="w-[min(92vw,360px)]">
+                <DemoScenarioSwitcher compact onApplied={() => setDemoPanelOpen(false)} />
+              </div>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => setDemoPanelOpen((open) => !open)}
+              className="rounded-full border border-emerald-500/40 bg-[#0A0A0A] px-3 py-2 text-[11px] font-extrabold uppercase tracking-[0.12em] text-emerald-300 shadow-[0_8px_24px_rgba(0,0,0,0.45)]"
+            >
+              {demoPanelOpen ? "Close demo" : "Demo bank"}
+            </button>
+          </div>
+        </div>
+      ) : null}
 
-      <div className="hidden h-screen overflow-hidden lg:block">
-        {isDesktop ? (
-          <WebDashboard
-            user={authUser}
-            userName={userName}
-            profileInitials={profileInitials}
-            privacyMode={privacyMode}
-            onTogglePrivacy={() => setPrivacyMode((value) => !value)}
-            netWorth={netWorth}
-            stockHoldingsValue={stockHoldingsValue}
-            retirementBalance={retirementBalance}
-            liquidCashValue={liquidCashValue}
-            hysaCashValue={hysaCashValue}
-            goldValue={safetyTotals.gold}
-            bondsValue={safetyTotals.bonds}
-            safetyNetTotal={safetyTotals.total}
-            monthlyExpenses={monthlyExpenses}
-            monthlyIncome={monthlyIncome}
-            totalDebt={totalDebt}
-            age={userSettings?.age ?? null}
-            birthDate={userSettings?.birthDate ?? null}
-            holdings={holdings}
-            holdingsReady={holdingsReady}
-            cashBalance={emergencyFund}
-            onHoldingsChange={(next) => {
-              setHoldings(next);
-              setHoldingsReady(true);
-            }}
-            onConsultSocrates={() => setActiveTab("socrates")}
-            onAgeChange={(nextAge, nextBirthDate) => {
-              void persistAge(nextAge, nextBirthDate);
-            }}
-            onBalanceChange={setRetirementBalance}
-            settings={userSettings}
-            onSettingsChange={setUserSettings}
-            onLogout={handleLogout}
-            onEditFinancialProfile={() => openFinancialProfile(true)}
-            safetyNet={safetyNet}
-            onSafetyNetChange={setSafetyNet}
-            onCashChange={setEmergencyFund}
-            goldPricePerOz={goldPricePerOz}
-            bondPrices={bondPrices}
-            safetyQuotesLoading={safetyQuotesLoading}
-          />
-        ) : null}
-      </div>
-
-      <div className="block lg:hidden">
-      {!isDesktop ? (
-      <>
-      <div style={styles.shell}>
+      <div
+        className={
+          activeTab === "socrates"
+            ? "flex min-h-0 flex-1 flex-col overflow-hidden"
+            : "overflow-y-auto overscroll-auto"
+        }
+        style={{ WebkitOverflowScrolling: "touch", pointerEvents: "auto" }}
+      >
+      <div
+        style={{
+          ...styles.shell,
+          ...(activeTab === "socrates"
+            ? { flex: 1, minHeight: 0, maxWidth: "100%", height: "100%", gap: 0 }
+            : {}),
+        }}
+      >
         {HEADER_TABS.includes(activeTab) && (
           <header style={styles.investHeader}>
             <p style={styles.brandLogo}>Sprout</p>
@@ -1219,7 +1615,7 @@ const App: React.FC = () => {
               <ul style={styles.netWorthBreakdown}>
                 <li style={styles.netWorthRow}>
                   <span style={styles.netWorthRowLabel}>
-                    <span aria-hidden="true">📈</span> Portfolio Value
+                    <TrendingUp size={14} aria-hidden="true" /> Portfolio Value
                   </span>
                   <span style={styles.netWorthRowValue}>
                     {privacyMoney(false, stockHoldingsValue)}
@@ -1227,7 +1623,7 @@ const App: React.FC = () => {
                 </li>
                 <li style={styles.netWorthRow}>
                   <span style={styles.netWorthRowLabel}>
-                    <span aria-hidden="true">🛡️</span> Retirement Savings
+                    <Shield size={14} aria-hidden="true" /> Retirement Savings
                   </span>
                   <span style={styles.netWorthRowValue}>
                     {privacyMoney(false, retirementBalance)}
@@ -1235,7 +1631,7 @@ const App: React.FC = () => {
                 </li>
                 <li style={styles.netWorthRow}>
                   <span style={styles.netWorthRowLabel}>
-                    <span aria-hidden="true">💵</span> Checking / Liquid Cash
+                    <Banknote size={14} aria-hidden="true" /> Checking / Liquid Cash
                   </span>
                   <span style={styles.netWorthRowValue}>
                     {privacyMoney(false, liquidCashValue)}
@@ -1243,7 +1639,7 @@ const App: React.FC = () => {
                 </li>
                 <li style={styles.netWorthRow}>
                   <span style={styles.netWorthRowLabel}>
-                    <span aria-hidden="true">🏦</span> HYSA (High-Yield Savings)
+                    <Landmark size={14} aria-hidden="true" /> HYSA (High-Yield Savings)
                   </span>
                   <span style={styles.netWorthRowValue}>
                     {privacyMoney(false, hysaCashValue)}
@@ -1252,7 +1648,7 @@ const App: React.FC = () => {
                 {safetyTotals.gold > 0 && (
                   <li style={styles.netWorthRow}>
                     <span style={styles.netWorthRowLabel}>
-                      <span aria-hidden="true">🪙</span> Gold
+                      <Coins size={14} aria-hidden="true" /> Gold
                     </span>
                     <span style={styles.netWorthRowValue}>
                       {privacyMoney(false, safetyTotals.gold)}
@@ -1262,7 +1658,7 @@ const App: React.FC = () => {
                 {safetyTotals.bonds > 0 && (
                   <li style={styles.netWorthRow}>
                     <span style={styles.netWorthRowLabel}>
-                      <span aria-hidden="true">📜</span> Bonds / T-bills
+                      <ScrollText size={14} aria-hidden="true" /> Bonds / T-bills
                     </span>
                     <span style={styles.netWorthRowValue}>
                       {privacyMoney(false, safetyTotals.bonds)}
@@ -1274,23 +1670,27 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {activeTab === "dashboard" && (
-          <div className="matter-tab-panel" style={styles.tabPanel}>
-            <InvestmentScreen
-              key={authUser.id}
-              holdings={holdings}
-              totalPortfolioValue={stockHoldingsValue}
-              onHoldingsChange={(next) => {
-                setHoldings(next);
-                setHoldingsReady(true);
-              }}
-              onConsultSocrates={() => setActiveTab("socrates")}
-              cashBalance={emergencyFund}
-              privacyMode={privacyMode}
-              onTogglePrivacy={() => setPrivacyMode((v) => !v)}
-            />
-          </div>
-        )}
+        <div
+          className={activeTab === "dashboard" ? "matter-tab-panel" : undefined}
+          style={{
+            ...styles.tabPanel,
+            display: activeTab === "dashboard" ? undefined : "none",
+          }}
+        >
+          <InvestmentScreen
+            key={authUser.id}
+            holdings={holdings}
+            totalPortfolioValue={stockHoldingsValue}
+            onHoldingsChange={(next) => {
+              setHoldings(next);
+              setHoldingsReady(true);
+            }}
+            onConsultSocrates={() => setActiveTab("socrates")}
+            cashBalance={emergencyFund}
+            privacyMode={privacyMode}
+            onTogglePrivacy={() => setPrivacyMode((v) => !v)}
+          />
+        </div>
 
         <div
           className={activeTab === "retirement" ? "matter-tab-panel" : undefined}
@@ -1326,7 +1726,14 @@ const App: React.FC = () => {
               aria-label="Monthly cash flow"
             >
               <div style={styles.flowPanelHead}>
-                <p style={styles.sectionLabel}>Monthly Cash Flow</p>
+                <p style={styles.sectionLabel}>
+                  Monthly Cash Flow
+                  {cashFlowLinked ? (
+                    <span style={{ marginLeft: 8, color: "#6EE7B7", fontSize: 10, letterSpacing: "0.08em" }}>
+                      FROM BANK
+                    </span>
+                  ) : null}
+                </p>
                 <span
                   style={{
                     ...styles.netChip,
@@ -1420,7 +1827,9 @@ const App: React.FC = () => {
                         ? `$${money(netCashFlow)} left to save or attack debt.`
                         : `You're short $${money(Math.abs(netCashFlow))} — trim a category or add income.`
                     }`
-                  : "Add your monthly earnings to see your net cash flow."}
+                  : cashFlowLinked
+                    ? "Imported from your connected bank. Edit any number if you want to override it."
+                    : "Add your monthly earnings to see your net cash flow."}
               </p>
             </article>
 
@@ -1596,21 +2005,24 @@ const App: React.FC = () => {
                     )}
                   </div>
 
-                  <div className="mt-3 grid grid-cols-3 gap-2">
-                    <div className="rounded-xl border border-neutral-800 bg-black/40 px-2.5 py-2">
-                      <p className="text-[10px] font-bold uppercase tracking-wide text-neutral-500">Total Debt</p>
-                      <p className="mt-1 text-sm font-extrabold tracking-tight text-white">${money(totalDebt)}</p>
+                  <div className="mt-3 grid grid-cols-3 gap-1.5 min-[400px]:gap-2">
+                    <div className="min-w-0 rounded-xl border border-neutral-800 bg-black/40 px-2 py-2 min-[400px]:px-2.5">
+                      <p className="truncate text-[10px] font-bold uppercase tracking-wide text-neutral-500">Total Debt</p>
+                      <p className="mt-1 truncate text-sm font-extrabold tracking-tight text-white">${money(totalDebt)}</p>
                     </div>
-                    <div className="rounded-xl border border-neutral-800 bg-black/40 px-2.5 py-2">
-                      <p className="text-[10px] font-bold uppercase tracking-wide text-neutral-500">Minimums</p>
-                      <p className="mt-1 text-sm font-extrabold tracking-tight text-white">
+                    <div className="min-w-0 rounded-xl border border-neutral-800 bg-black/40 px-2 py-2 min-[400px]:px-2.5">
+                      <p className="truncate text-[10px] font-bold uppercase tracking-wide text-neutral-500">Minimums</p>
+                      <p className="mt-1 truncate text-sm font-extrabold tracking-tight text-white">
                         ${money(totalMinPayment)}
                         <span className="text-[10px] font-semibold text-neutral-500">/mo</span>
                       </p>
                     </div>
-                    <div className="rounded-xl border border-neutral-800 bg-black/40 px-2.5 py-2">
-                      <p className="text-[10px] font-bold uppercase tracking-wide text-neutral-500">Avg Interest</p>
-                      <p className="mt-1 text-sm font-extrabold tracking-tight text-[#10B981]">
+                    <div className="min-w-0 rounded-xl border border-neutral-800 bg-black/40 px-2 py-2 min-[400px]:px-2.5">
+                      <p className="truncate text-[10px] font-bold uppercase tracking-wide text-neutral-500">
+                        <span className="min-[400px]:hidden">APR</span>
+                        <span className="hidden min-[400px]:inline">Avg Interest</span>
+                      </p>
+                      <p className="mt-1 truncate text-sm font-extrabold tracking-tight text-[#10B981]">
                         {debts.length === 0 ? "—" : `${avgApr.toFixed(1)}%`}
                       </p>
                     </div>
@@ -1628,12 +2040,17 @@ const App: React.FC = () => {
                     id="debt-accordion-panel"
                   >
                     <div className="space-y-3 border-t border-neutral-800 px-4 pb-4 pt-3">
-                      <div className="flex items-center justify-between gap-2">
-                        <p className="text-[11px] font-semibold text-neutral-500">Breakdown & snowball plan</p>
-                        <button type="button" onClick={openDebtForm} style={styles.addChip}>
-                          <Plus size={13} />
-                          Add Debt
-                        </button>
+                      <div className="flex min-w-0 items-center justify-between gap-2">
+                        <p className="min-w-0 text-[11px] font-semibold text-neutral-500">
+                          {debts.length > 0
+                            ? "From connected cards & loans"
+                            : "Balances sync from your bank"}
+                        </p>
+                        {debts.length > 0 ? (
+                          <span className="flex-shrink-0 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wide text-emerald-300">
+                            Auto
+                          </span>
+                        ) : null}
                       </div>
 
                       <article style={styles.toolCard} aria-label="Extra monthly payoff amount">
@@ -1664,85 +2081,11 @@ const App: React.FC = () => {
                         </p>
                       </article>
 
-                      {debtFormOpen && (
-                        <form className="matter-pop" onSubmit={submitDebt} style={styles.debtForm}>
-                          <div style={styles.debtFormHead}>
-                            <p style={styles.debtFormTitle}>Add a Debt</p>
-                            <button
-                              type="button"
-                              onClick={() => setDebtFormOpen(false)}
-                              aria-label="Cancel add debt"
-                              style={styles.iconBtn}
-                            >
-                              <X size={15} />
-                            </button>
-                          </div>
-
-                          <div style={styles.debtFormGrid}>
-                            <label style={{ ...styles.debtFormLabel, gridColumn: "1 / -1" }}>
-                              Title
-                              <input
-                                style={styles.debtFormInput}
-                                value={debtForm.title}
-                                onChange={(e) => setDebtForm((f) => ({ ...f, title: e.target.value }))}
-                                placeholder="e.g. Car Loan"
-                              />
-                            </label>
-                            <label style={styles.debtFormLabel}>
-                              Balance
-                              <input
-                                style={styles.debtFormInput}
-                                inputMode="decimal"
-                                value={debtForm.balance}
-                                onChange={(e) =>
-                                  setDebtForm((f) => ({
-                                    ...f,
-                                    balance: formatCurrencyInput(e.target.value, { symbol: true }),
-                                  }))
-                                }
-                                placeholder="$0"
-                              />
-                            </label>
-                            <label style={styles.debtFormLabel}>
-                              Min. Payment /mo
-                              <input
-                                style={styles.debtFormInput}
-                                inputMode="decimal"
-                                value={debtForm.minPayment}
-                                onChange={(e) =>
-                                  setDebtForm((f) => ({
-                                    ...f,
-                                    minPayment: formatCurrencyInput(e.target.value, { symbol: true }),
-                                  }))
-                                }
-                                placeholder="$0"
-                              />
-                            </label>
-                            <label style={{ ...styles.debtFormLabel, gridColumn: "1 / -1" }}>
-                              Interest Rate — optional (APR %)
-                              <input
-                                style={styles.debtFormInput}
-                                inputMode="decimal"
-                                value={debtForm.apr}
-                                onChange={(e) =>
-                                  setDebtForm((f) => ({ ...f, apr: e.target.value.replace(/[^0-9.]/g, "") }))
-                                }
-                                placeholder="0"
-                              />
-                            </label>
-                          </div>
-
-                          {debtFormError && <p style={styles.debtFormError}>{debtFormError}</p>}
-
-                          <button type="submit" style={styles.saveDebtBtn}>
-                            <Check size={15} />
-                            Save Debt
-                          </button>
-                        </form>
-                      )}
-
                       {debts.length === 0 ? (
-                        <div style={styles.emptyDebts}>No debts added yet</div>
+                        <div style={styles.emptyDebts}>
+                          No credit cards or loans on your connected accounts. Active Debt Payoff
+                          fills in automatically when a card or loan is linked.
+                        </div>
                       ) : (
                         <div style={styles.debtList}>
                           {debts.map((debt) => (
@@ -1752,7 +2095,6 @@ const App: React.FC = () => {
                               isFocus={debt.id === focusDebt?.id}
                               extraPayoff={extraPayoff}
                               onLogPayment={() => logDebtPayment(debt.id)}
-                              onRemove={() => removeDebt(debt.id)}
                             />
                           ))}
                         </div>
@@ -1801,80 +2143,7 @@ const App: React.FC = () => {
           />
         </div>
 
-        {activeTab === "socrates" && (
-          <div className="matter-tab-panel" style={styles.chatWindow}>
-            <div style={styles.chatHeader}>
-              <div style={styles.socratesAvatar} aria-hidden="true">
-                🏛️
-              </div>
-              <div>
-                <p style={styles.askLabel}>Sprout AI</p>
-                <p style={styles.askHint}>Your Personal Finance & Investment Guide</p>
-              </div>
-            </div>
-
-            <div ref={chatLogRef} style={styles.chatLog} aria-live="polite">
-              {messages.length === 0 && !socratesLoading && (
-                <p style={styles.chatEmpty}>Ask anything about debt, budget, or investing. The thread stays here.</p>
-              )}
-              {messages.map((msg) => {
-                const isUser = msg.sender === "user";
-                return (
-                  <div
-                    key={msg.id}
-                    style={{
-                      ...styles.chatRow,
-                      justifyContent: isUser ? "flex-end" : "flex-start",
-                    }}
-                  >
-                    {!isUser && (
-                      <div style={styles.socratesAvatarSm} aria-hidden="true">
-                        🏛️
-                      </div>
-                    )}
-                    <div style={isUser ? styles.bubbleUser : styles.bubbleSocrates}>
-                      {msg.text}
-                    </div>
-                  </div>
-                );
-              })}
-              {socratesLoading && (
-                <div style={{ ...styles.chatRow, justifyContent: "flex-start" }}>
-                  <div style={styles.socratesAvatarSm} aria-hidden="true">
-                    🏛️
-                  </div>
-                  <div style={styles.thinkingBubble}>Sprout AI is thinking...</div>
-                </div>
-              )}
-            </div>
-
-            <div style={styles.chatComposer}>
-              <textarea
-                ref={askInputRef}
-                className="matter-ask-input"
-                style={styles.askInput}
-                rows={1}
-                value={question}
-                onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setQuestion(e.target.value)}
-                onKeyDown={onAskKeyDown}
-                placeholder="Ask Sprout AI..."
-                aria-label="Ask Sprout AI"
-                disabled={socratesLoading}
-              />
-              <button
-                type="button"
-                style={{
-                  ...styles.sendBtn,
-                  opacity: socratesLoading || !question.trim() ? 0.55 : 1,
-                }}
-                onClick={() => void askSocrates()}
-                disabled={socratesLoading || !question.trim()}
-              >
-                {socratesLoading ? "..." : "Send"}
-              </button>
-            </div>
-          </div>
-        )}
+        {activeTab === "socrates" && sproutChat}
 
         {/* Keep Profile mounted so toggles/settings survive tab switches. */}
         <div
@@ -1887,9 +2156,10 @@ const App: React.FC = () => {
         >
           <ProfileScreen
             user={authUser}
-            settings={userSettings}
+            settings={resolvedSettings}
             onSettingsChange={setUserSettings}
             onLogout={handleLogout}
+            onResetAppState={handleResetAppState}
             holdings={holdings}
             holdingsReady={holdingsReady}
             netWorth={netWorth}
@@ -1907,11 +2177,12 @@ const App: React.FC = () => {
 
       <nav
         aria-label="Primary"
-        className="fixed bottom-0 left-0 right-0 z-50 border-t border-neutral-800/60 bg-black"
+        className="fixed bottom-0 left-1/2 z-50 w-full max-w-md -translate-x-1/2 border-t border-neutral-800/60 bg-black"
       >
         <div style={styles.tabBar}>
           {TABS.map((tab) => {
             const active = activeTab === tab.id;
+            const TabIcon = tab.icon;
             return (
               <button
                 key={tab.id}
@@ -1923,15 +2194,16 @@ const App: React.FC = () => {
                   ...(active ? styles.tabBtnActive : {}),
                 }}
               >
-                <span style={styles.tabEmoji}>{tab.emoji}</span>
+                <span style={styles.tabEmoji}>
+                  <TabIcon size={16} strokeWidth={2.15} aria-hidden="true" />
+                </span>
                 <span style={styles.tabLabel}>{tab.label}</span>
               </button>
             );
           })}
         </div>
       </nav>
-      </>
-      ) : null}
+      </div>
       </div>
     </div>
   );
@@ -2021,13 +2293,11 @@ function DebtPayoffCard({
   isFocus,
   extraPayoff,
   onLogPayment,
-  onRemove,
 }: {
   debt: Debt;
   isFocus: boolean;
   extraPayoff: number;
   onLogPayment: () => void;
-  onRemove: () => void;
 }) {
   const isPaid = debt.balance <= 0;
   const paidPct =
@@ -2063,12 +2333,14 @@ function DebtPayoffCard({
               {debt.apr > 0 ? `${debt.apr}% APR` : "0% APR"}
             </span>
             {isFocus && !isPaid && <span style={styles.focusChip}>Paying now</span>}
-            {isPaid && <span style={styles.paidChip}>Paid off 🎉</span>}
+            {isPaid && (
+              <span style={styles.paidChip}>
+                <Check size={11} aria-hidden="true" /> Paid off
+              </span>
+            )}
+            <span style={styles.bankChip}>From bank</span>
           </div>
         </div>
-        <button type="button" onClick={onRemove} aria-label={`Remove ${debt.title}`} style={styles.iconBtn}>
-          <Trash2 size={15} />
-        </button>
       </div>
 
       <div style={styles.debtBalanceRow}>
@@ -2119,9 +2391,14 @@ const styles: Record<string, React.CSSProperties> = {
     color: "#F8FAFC",
     fontFamily:
       'Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif',
-    padding: "24px 16px 96px",
+    padding: "max(16px, env(safe-area-inset-top, 0px)) 16px calc(96px + env(safe-area-inset-bottom, 0px))",
     boxSizing: "border-box",
     overflowX: "hidden",
+    overflowY: "auto",
+    WebkitOverflowScrolling: "touch",
+    overscrollBehaviorY: "auto",
+    touchAction: "pan-y",
+    pointerEvents: "auto",
   },
   shell: {
     maxWidth: 480,
@@ -2591,7 +2868,9 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    background: "#000000",
+    background: "rgba(2, 6, 23, 0.72)",
+    backdropFilter: "blur(8px)",
+    WebkitBackdropFilter: "blur(8px)",
     padding: 16,
   },
   spendingModal: {
@@ -2822,6 +3101,19 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 999,
     padding: "2px 6px",
   },
+  bankChip: {
+    display: "inline-block",
+    flexShrink: 0,
+    fontSize: 9,
+    fontWeight: 800,
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
+    color: "#6EE7B7",
+    background: "rgba(16, 185, 129, 0.12)",
+    border: "1px solid rgba(16, 185, 129, 0.28)",
+    borderRadius: 999,
+    padding: "2px 6px",
+  },
   rowSpacer: {
     width: 18,
     flexShrink: 0,
@@ -2930,7 +3222,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   statTiles: {
     display: "grid",
-    gridTemplateColumns: "repeat(3, 1fr)",
+    gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
     gap: 8,
   },
   statTile: {
@@ -3124,6 +3416,9 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 800,
     color: "#6EE7B7",
     background: "rgba(16, 185, 129, 0.15)",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 4,
   },
   debtBalanceRow: {
     display: "flex",
@@ -3164,7 +3459,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   debtMetrics: {
     display: "grid",
-    gridTemplateColumns: "repeat(3, 1fr)",
+    gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
     gap: 8,
     margin: "12px 0",
   },
@@ -3173,6 +3468,7 @@ const styles: Record<string, React.CSSProperties> = {
     border: "1px solid #1F1F1F",
     borderRadius: 10,
     padding: "8px 9px",
+    minWidth: 0,
   },
   metricLabel: {
     margin: 0,
@@ -3183,6 +3479,9 @@ const styles: Record<string, React.CSSProperties> = {
     color: "#64748B",
   },
   metricValue: {
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
     margin: "4px 0 0",
     fontSize: 12,
     fontWeight: 800,
@@ -3213,63 +3512,6 @@ const styles: Record<string, React.CSSProperties> = {
     padding: 0,
     alignSelf: "flex-start",
   },
-  askCard: {
-    background: "#0A0A0A",
-    border: "1px solid #1F1F1F",
-    borderRadius: 16,
-    padding: 16,
-  },
-  askLabel: {
-    margin: 0,
-    fontWeight: 800,
-    fontSize: 16,
-  },
-  askHint: {
-    margin: "4px 0 0",
-    color: "#94A3B8",
-    fontSize: 13,
-  },
-  askRow: {
-    display: "flex",
-    gap: 8,
-  },
-  askInput: {
-    flex: "1 1 0%",
-    minWidth: 0,
-    width: "100%",
-    maxWidth: "100%",
-    background: "#121212",
-    border: "1px solid #1F1F1F",
-    color: "#F8FAFC",
-    borderRadius: 12,
-    padding: "12px 14px",
-    fontSize: 14,
-    lineHeight: 1.5,
-    outline: "none",
-    resize: "none",
-    overflowX: "hidden",
-    overflowY: "auto",
-    minHeight: 44,
-    maxHeight: 129,
-    boxSizing: "border-box",
-    fontFamily: "inherit",
-    whiteSpace: "pre-wrap",
-    overflowWrap: "anywhere",
-    wordBreak: "break-word",
-  },
-  sendBtn: {
-    background: "#10B981",
-    color: "#042F2E",
-    border: "none",
-    borderRadius: 12,
-    padding: "0 16px",
-    fontWeight: 800,
-    cursor: "pointer",
-    flexShrink: 0,
-    alignSelf: "flex-end",
-    height: 44,
-    minHeight: 44,
-  },
   footer: {
     textAlign: "center",
     color: "#64748B",
@@ -3280,112 +3522,6 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     flexDirection: "column",
     gap: 16,
-  },
-  chatWindow: {
-    display: "flex",
-    flexDirection: "column",
-    minHeight: "calc(100vh - 120px)",
-    minWidth: 0,
-    maxWidth: "100%",
-    background: "linear-gradient(180deg, #0A0A0A 0%, #000000 100%)",
-    border: "1px solid #1F1F1F",
-    borderRadius: 20,
-    overflow: "hidden",
-  },
-  chatHeader: {
-    display: "flex",
-    alignItems: "center",
-    gap: 12,
-    padding: "14px 16px",
-    borderBottom: "1px solid rgba(16, 185, 129, 0.22)",
-    background: "rgba(0, 0, 0, 0.72)",
-  },
-  chatLog: {
-    flex: 1,
-    overflowY: "auto",
-    padding: "16px 12px 12px",
-    display: "flex",
-    flexDirection: "column",
-    gap: 12,
-    minHeight: 280,
-  },
-  chatEmpty: {
-    margin: "auto",
-    textAlign: "center",
-    color: "#94A3B8",
-    fontSize: 14,
-    lineHeight: 1.5,
-    maxWidth: 280,
-  },
-  chatRow: {
-    display: "flex",
-    alignItems: "flex-end",
-    gap: 8,
-  },
-  bubbleUser: {
-    maxWidth: "78%",
-    background: "linear-gradient(180deg, #1C1917 0%, #0C0A09 100%)",
-    border: "1px solid #44403C",
-    color: "#F5F5F4",
-    borderRadius: "16px 16px 4px 16px",
-    padding: "10px 12px",
-    fontSize: 14,
-    lineHeight: 1.45,
-    whiteSpace: "pre-wrap",
-    boxShadow: "0 8px 20px rgba(0,0,0,0.28)",
-  },
-  bubbleSocrates: {
-    maxWidth: "78%",
-    background: "rgba(16, 185, 129, 0.12)",
-    border: "1px solid rgba(16, 185, 129, 0.38)",
-    color: "#ECFDF5",
-    borderRadius: "16px 16px 16px 4px",
-    padding: "10px 12px",
-    fontSize: 14,
-    lineHeight: 1.45,
-    whiteSpace: "pre-wrap",
-  },
-  thinkingBubble: {
-    background: "rgba(16, 185, 129, 0.08)",
-    border: "1px dashed rgba(16, 185, 129, 0.4)",
-    color: "#6EE7B7",
-    borderRadius: "16px 16px 16px 4px",
-    padding: "10px 12px",
-    fontSize: 13,
-    fontWeight: 650,
-    fontStyle: "italic",
-  },
-  socratesAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: "50%",
-    background: "linear-gradient(135deg, #10B981, #064E3B)",
-    display: "grid",
-    placeItems: "center",
-    flexShrink: 0,
-    fontSize: 18,
-    boxShadow: "0 0 0 3px rgba(16, 185, 129, 0.22)",
-  },
-  socratesAvatarSm: {
-    width: 28,
-    height: 28,
-    borderRadius: "50%",
-    background: "linear-gradient(135deg, #10B981, #064E3B)",
-    display: "grid",
-    placeItems: "center",
-    flexShrink: 0,
-    fontSize: 13,
-  },
-  chatComposer: {
-    display: "flex",
-    alignItems: "flex-end",
-    gap: 8,
-    padding: 12,
-    borderTop: "1px solid #1F1F1F",
-    background: "rgba(0, 0, 0, 0.85)",
-    minWidth: 0,
-    width: "100%",
-    boxSizing: "border-box",
   },
   tabBar: {
     display: "grid",
@@ -3416,7 +3552,8 @@ const styles: Record<string, React.CSSProperties> = {
     color: "#10B981",
   },
   tabEmoji: {
-    fontSize: 15,
+    display: "grid",
+    placeItems: "center",
     lineHeight: 1,
   },
   tabLabel: {
@@ -3445,7 +3582,7 @@ const css = `
   .matter-slide-up { animation: matterSlideUp 0.28s ease-out; }
   .matter-pop { animation: matterPop 0.24s ease-out; }
   input::placeholder, textarea::placeholder { color: #64748B; }
-  .matter-ask-input { scrollbar-width: thin; scrollbar-color: #2A2A2A transparent; }
+  .matter-ask-input { scrollbar-width: thin; scrollbar-color: #2A2A2A transparent; overflow-wrap: anywhere; word-break: break-word; }
   .matter-ask-input::-webkit-scrollbar { width: 6px; }
   .matter-ask-input::-webkit-scrollbar-thumb { background: #2A2A2A; border-radius: 999px; }
   button:disabled { cursor: default; }

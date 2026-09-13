@@ -19,7 +19,7 @@ export type ChartResponse = {
   symbol: string;
   range: ChartRange;
   interval: YahooInterval;
-  source: 'yahoo' | 'finnhub' | 'fallback';
+  source: 'polygon' | 'yahoo' | 'finnhub' | 'fallback';
   points: ChartPoint[];
 };
 
@@ -136,7 +136,7 @@ export type HistoricalClose = {
   high: number;
   low: number;
   close: number;
-  source: 'yahoo' | 'finnhub';
+  source: 'polygon' | 'yahoo' | 'finnhub';
 };
 
 const chartCache = new Map<string, { expires: number; value: ChartResponse }>();
@@ -539,7 +539,7 @@ function toHistoricalClose(
   symbol: string,
   requestedDate: string,
   point: ChartPoint,
-  source: 'yahoo' | 'finnhub'
+  source: 'polygon' | 'yahoo' | 'finnhub'
 ): HistoricalClose {
   return {
     symbol,

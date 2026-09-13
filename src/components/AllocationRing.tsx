@@ -50,7 +50,9 @@ export default function AllocationRing({ slices, privacyMode }: AllocationRingPr
           Asset & Sector Allocation
         </h2>
         <span className="text-[10px] font-semibold text-[#6B7280]">
-          {collapsed ? `Top ${Math.min(TOP_ALLOCATION_SLICES, displaySlices.length)} + Other` : `${slices.length} groups`}
+          {collapsed
+            ? `Top ${Math.min(TOP_ALLOCATION_SLICES, displaySlices.length)} + Other · invested assets`
+            : `${slices.length} groups · invested assets`}
         </span>
       </div>
 
@@ -209,7 +211,7 @@ function AllocationBreakdownModal({
 }) {
   return (
     <div
-      className="fixed inset-0 z-[65] flex items-end justify-center bg-slate-950/75 p-4 sm:items-center"
+      className="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm"
       onClick={onClose}
       role="presentation"
     >

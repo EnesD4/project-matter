@@ -7,7 +7,6 @@ import {
   LineChart,
   Loader2,
   Map as MapIcon,
-  Plus,
   ShieldCheck,
   Sparkles,
   Trash2,
@@ -15,6 +14,7 @@ import {
   Wallet,
   X,
 } from "lucide-react";
+import RoadmapGlyph from "./RoadmapGlyph";
 import { fetchPortfolio, getApiBaseUrl } from "../lib/auth";
 import {
   annualDividendIncome,
@@ -38,6 +38,8 @@ import {
   nextBondId,
   type SafetyNetBond,
   type SafetyNetConfig,
+  type SafetyNetReserveKind,
+  type SafetyNetReserveLine,
 } from "../lib/safetyNet";
 import { useFinancialRoadmap, useRoadmapTodoProgress } from "../hooks/useFinancialRoadmap";
 import {
@@ -58,7 +60,7 @@ type DividendsResponse = {
   items?: DividendDetails[];
 };
 
-const API_BASE_URL = getApiBaseUrl();
+const apiBase = () => getApiBaseUrl();
 
 /** Compact payout row: 34px logo + 16px vertical padding + 2px border. */
 const PAYOUT_ROW_PX = 52;
@@ -172,7 +174,7 @@ export default function CashFlowScreen({
       setError(null);
       try {
         const res = await fetch(
-          `${API_BASE_URL}/api/stocks/dividends?symbols=${encodeURIComponent(symbolsKey)}`,
+          `${apiBase()}/api/stocks/dividends?symbols=${encodeURIComponent(symbolsKey)}`,
           { signal: controller.signal }
         );
         if (!res.ok) throw new Error(`Dividend request failed (${res.status})`);
@@ -251,9 +253,14 @@ export default function CashFlowScreen({
                 />
               </p>
               <p className="mt-0.5 text-[11px] font-semibold text-[#042F2E]/70">
-                {roadmap
-                  ? `${roadmap.emoji} ${roadmap.title} · ${roadmapDone}/${roadmapTotal} tasks`
-                  : "Build a real-life to-do list from your budget"}
+                {roadmap ? (
+                  <span className="inline-flex items-center gap-1">
+                    <RoadmapGlyph archetype={roadmap.archetype} size={12} />
+                    {roadmap.title} · {roadmapDone}/{roadmapTotal} tasks
+                  </span>
+                ) : (
+                  "Build a real-life to-do list from your budget"
+                )}
               </p>
             </div>
           </div>
@@ -327,7 +334,7 @@ export default function CashFlowScreen({
 
       {calendarOpen && (
         <div
-          className="fixed inset-0 z-[65] flex items-end justify-center bg-slate-950/75 p-4 sm:items-center"
+          className="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm"
           onClick={() => setCalendarOpen(false)}
           role="presentation"
         >
@@ -467,7 +474,7 @@ export type SafetyNetSectionProps = {
   holdings: Holding[];
   monthlyExpenses: number;
   cash: number;
-  onCashChange: (next: number) => void;
+  onCashChange?: (next: number) => void;
   config: SafetyNetConfig;
   onConfigChange: (next: SafetyNetConfig) => void;
   goldPricePerOz: number | null;
@@ -480,7 +487,6 @@ export function SafetyNetSection({
   holdings,
   monthlyExpenses,
   cash,
-  onCashChange,
   config,
   onConfigChange,
   goldPricePerOz,
@@ -532,9 +538,9 @@ export function SafetyNetSection({
     onConfigChange({ ...config, ...partial });
   };
 
-  const setHysaCash = (next: number) => {
-    patchConfig({ hysaCash: Math.max(0, next) });
-  };
+  const reserveLines = config.reserveLines ?? [];
+  const liquidLines = reserveLines.filter((line) => line.kind === "checking" || line.kind === "cash");
+  const yieldLines = reserveLines.filter((line) => line.kind === "hysa" || line.kind === "money-market");
 
   const updateBond = (id: string, partial: Partial<SafetyNetBond>) => {
     onConfigChange({
@@ -650,13 +656,13 @@ export function SafetyNetSection({
 
       {open && (
         <div
-          className="fixed inset-0 z-[65] flex items-end justify-center bg-slate-950/75 p-4 sm:items-center"
+          className="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/75 p-3 backdrop-blur-sm sm:p-4"
           onClick={() => setOpen(false)}
           role="presentation"
         >
           <div
             id="safety-net-dialog"
-            className="matter-pop flex max-h-[88vh] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-[#1F1F1F] bg-[#0A0A0A]"
+            className="matter-pop flex max-h-[min(88dvh,88vh)] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-[#1F1F1F] bg-[#0A0A0A]"
             onClick={(event) => event.stopPropagation()}
             role="dialog"
             aria-modal="true"
@@ -705,50 +711,31 @@ export function SafetyNetSection({
               <SafetyBucket
                 icon={<Wallet size={15} />}
                 title="Liquid Cash Reserves"
-                hint="Checking, physical cash, or any account you keep ready for instant access — no yield assumed."
+                hint="Checking and cash accounts imported from your connected bank — ready for instant access."
                 value={privacyMoney(privacyMode, totals.liquidCash, 0)}
+                badge={totals.liquidCash > 0 ? "From connected bank" : undefined}
               >
-                <div className="flex items-center gap-2">
-                  <CurrencyField
-                    value={cash}
-                    onValueChange={onCashChange}
-                    aria-label="Liquid cash reserves"
-                    className="min-w-0 flex-1"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => onCashChange(cash + 100)}
-                    className="flex flex-shrink-0 items-center gap-1 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-2 text-[11px] font-extrabold text-emerald-400"
-                  >
-                    <Plus size={12} />
-                    $100
-                  </button>
-                </div>
+                <LinkedReserveList
+                  lines={liquidLines}
+                  fallbackLabel="No checking or cash reserve accounts linked yet."
+                  fallbackValue={totals.liquidCash}
+                  privacyMode={privacyMode}
+                />
               </SafetyBucket>
 
               <SafetyBucket
                 icon={<TrendingUp size={15} />}
                 title="HYSA & Yield Accounts"
-                hint="FDIC-insured high-yield savings and similar cash vehicles earning about 4.5% APY."
+                hint="High-yield savings, money market, and cash-reserve yield accounts imported automatically."
                 value={privacyMoney(privacyMode, totals.hysaCash, 0)}
                 badge={`${apyLabel} · FDIC insured · ~${privacyMoney(privacyMode, hysaYield, 0)}/yr`}
               >
-                <div className="flex items-center gap-2">
-                  <CurrencyField
-                    value={hysaCash}
-                    onValueChange={setHysaCash}
-                    aria-label="HYSA and yield account balance"
-                    className="min-w-0 flex-1"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setHysaCash(hysaCash + 100)}
-                    className="flex flex-shrink-0 items-center gap-1 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-2 text-[11px] font-extrabold text-emerald-400"
-                  >
-                    <Plus size={12} />
-                    $100
-                  </button>
-                </div>
+                <LinkedReserveList
+                  lines={yieldLines}
+                  fallbackLabel="No HYSA or money market accounts linked yet."
+                  fallbackValue={totals.hysaCash}
+                  privacyMode={privacyMode}
+                />
               </SafetyBucket>
 
               <SafetyBucket
@@ -1059,6 +1046,56 @@ export function SafetyNetSection({
         </div>
       )}
     </section>
+  );
+}
+
+function reserveKindLabel(kind: SafetyNetReserveKind): string {
+  if (kind === "hysa") return "HYSA";
+  if (kind === "money-market") return "Money market";
+  if (kind === "checking") return "Checking";
+  return "Cash";
+}
+
+function LinkedReserveList({
+  lines,
+  fallbackLabel,
+  fallbackValue,
+  privacyMode,
+}: {
+  lines: SafetyNetReserveLine[];
+  fallbackLabel: string;
+  fallbackValue: number;
+  privacyMode: boolean;
+}) {
+  if (lines.length === 0) {
+    return (
+      <p className="m-0 text-[11px] font-semibold text-neutral-500">
+        {fallbackValue > 0
+          ? `${privacyMoney(privacyMode, fallbackValue, 0)} imported from your connected bank.`
+          : fallbackLabel}
+      </p>
+    );
+  }
+
+  return (
+    <ul className="m-0 flex list-none flex-col gap-2 p-0">
+      {lines.map((line) => (
+        <li
+          key={line.id}
+          className="flex min-w-0 items-center justify-between gap-2 rounded-lg border border-neutral-800 bg-black/40 px-2.5 py-2"
+        >
+          <div className="min-w-0">
+            <p className="m-0 truncate text-[12px] font-extrabold text-white">{line.label}</p>
+            <p className="m-0 text-[10px] font-bold uppercase tracking-wide text-emerald-400">
+              {reserveKindLabel(line.kind)}
+            </p>
+          </div>
+          <p className="m-0 flex-shrink-0 text-[12px] font-extrabold text-white">
+            {privacyMoney(privacyMode, line.balance, 0)}
+          </p>
+        </li>
+      ))}
+    </ul>
   );
 }
 

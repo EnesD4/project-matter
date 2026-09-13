@@ -25,6 +25,7 @@ type DarkCalendarProps = {
   max?: string;
   onChange: (iso: string) => void;
   labelledBy?: string;
+  ariaLabel?: string;
 };
 
 type CalendarCell = {
@@ -77,6 +78,7 @@ export default function DarkCalendar({
   max,
   onChange,
   labelledBy,
+  ariaLabel = "Choose date from calendar",
 }: DarkCalendarProps) {
   const today = todayISODate();
   const maxIso = max && max < today ? max : today;
@@ -183,7 +185,7 @@ export default function DarkCalendar({
       <button
         ref={triggerRef}
         type="button"
-        aria-label="Choose purchase date from calendar"
+        aria-label={ariaLabel}
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-controls={open ? dialogId : undefined}

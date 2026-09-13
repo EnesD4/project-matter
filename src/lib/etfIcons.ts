@@ -1,7 +1,6 @@
 /**
  * Curated circular icon metadata for popular ETFs / index funds.
- * Finnhub & Clearbit often lack reliable logos for these tickers, so we
- * render issuer-branded badges instead of broken image URLs.
+ * Used as the initials-style fallback when a Clearbit issuer logo fails.
  */
 
 export type EtfIconMeta = {

@@ -34,6 +34,8 @@ router.post('/settings', async (req: AuthedRequest, res: Response) => {
       parseBool(req.body?.wantsFinancialLiteracy) ?? existing?.wantsFinancialLiteracy;
     const hasCompletedOnboarding =
       parseBool(req.body?.hasCompletedOnboarding) ?? existing?.hasCompletedOnboarding;
+    const hasCompletedBankSetup =
+      parseBool(req.body?.hasCompletedBankSetup) ?? existing?.hasCompletedBankSetup ?? existing?.hasCompletedOnboarding ?? false;
 
     if (
       hasActiveInvestments === undefined ||
@@ -62,7 +64,7 @@ router.post('/settings', async (req: AuthedRequest, res: Response) => {
       birthDateIn === undefined &&
       Object.prototype.hasOwnProperty.call(req.body ?? {}, 'birthDate')
     ) {
-      return res.status(400).json({ error: 'birthDate must be YYYY-MM-DD' });
+      return res.status(400).json({ error: 'birthDate must be MM/DD/YYYY or YYYY-MM-DD' });
     }
 
     const data = {
@@ -71,6 +73,7 @@ router.post('/settings', async (req: AuthedRequest, res: Response) => {
       wantsCapitalGrowth,
       wantsFinancialLiteracy,
       hasCompletedOnboarding,
+      hasCompletedBankSetup,
       investmentGoal: wantsCapitalGrowth ? 'growth' : 'preservation',
       experienceLevel: wantsFinancialLiteracy ? 'beginner' : 'experienced',
       age: ageIn === undefined ? existing?.age ?? null : ageIn,

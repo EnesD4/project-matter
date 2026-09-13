@@ -23,25 +23,21 @@ export type KnowledgeLevel = "beginner" | "intermediate" | "advanced";
 
 export const KNOWLEDGE_OPTIONS: Array<{
   id: KnowledgeLevel;
-  emoji: string;
   label: string;
   hint: string;
 }> = [
   {
     id: "beginner",
-    emoji: "🐣",
     label: "Beginner",
     hint: "Phases 2–5 stay locked until you finish the previous phase.",
   },
   {
     id: "intermediate",
-    emoji: "📘",
     label: "Intermediate",
     hint: "All 5 curriculum phases unlock immediately for browsing.",
   },
   {
     id: "advanced",
-    emoji: "🚀",
     label: "Advanced",
     hint: "All 5 curriculum phases unlock immediately for browsing.",
   },
@@ -237,7 +233,6 @@ export type FinancialRoadmap = {
   archetype: FinancialArchetype;
   title: string;
   modeLabel: string;
-  emoji: string;
   accent: string;
   accentSoft: string;
   summary: string;
@@ -571,7 +566,6 @@ export function buildFinancialRoadmap(answers: FinancialProfileAnswers, userId?:
       archetype,
       title: "Survival & Income Growth",
       modeLabel: "Survival & Income Growth Mode",
-      emoji: "🔴",
       accent: "#F43F5E",
       accentSoft: "rgba(244, 63, 94, 0.12)",
       summary: shortfall
@@ -600,7 +594,6 @@ export function buildFinancialRoadmap(answers: FinancialProfileAnswers, userId?:
       archetype,
       title: "Micro-Match & Shield",
       modeLabel: "Micro-Match & Shield Mode",
-      emoji: "🟡",
       accent: "#F59E0B",
       accentSoft: "rgba(245, 158, 11, 0.12)",
       summary: `A ${usd(monthlyMargin)} surplus is enough to grab free money and a tiny buffer — not enough to skip defense.`,
@@ -626,7 +619,6 @@ export function buildFinancialRoadmap(answers: FinancialProfileAnswers, userId?:
     archetype,
     title: "Wealth Building & Tax Optimization",
     modeLabel: "Wealth Building & Tax Optimization Mode",
-    emoji: "🟢",
     accent: "#10B981",
     accentSoft: "rgba(16, 185, 129, 0.12)",
     summary: `With ${usd(monthlyMargin)} of monthly margin you can play offense — but the order still matters more than the ticker.`,

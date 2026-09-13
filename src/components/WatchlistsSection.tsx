@@ -16,21 +16,28 @@ import {
   deleteWatchlist,
   deleteWatchlistItem,
   fetchWatchlists,
-  getApiBaseUrl,
   getStoredUser,
   readWatchlistCache,
   writeWatchlistCache,
   type WatchlistApiItem,
   type WatchlistApiList,
 } from "../lib/auth";
+import { getCachedQuote, getCachedSpark } from "../lib/marketCache";
 import { privacyMoney } from "../lib/privacy";
+import { sparklineValues } from "../lib/priceSimulation";
 import { readLocalItem } from "../lib/storage";
+import {
+  fetchStockChart,
+  fetchStockProfile,
+  fetchStockQuote,
+  fetchStockSearch,
+} from "../lib/stockService";
+import Sparkline from "./Sparkline";
 import StockLogo from "./StockLogo";
 
 const GAIN_GREEN = "#10B981";
 const LOSS_RED = "#EF4444";
 const SEARCH_DEBOUNCE_MS = 350;
-const API_BASE_URL = getApiBaseUrl();
 
 type StockSearchResult = {
   symbol: string;
@@ -55,15 +62,6 @@ export type WatchlistStockPick = {
   logo?: string;
   domain?: string;
 };
-
-function extractDomain(url?: string): string | undefined {
-  if (!url) return undefined;
-  try {
-    return new URL(url).hostname.replace(/^www\./, "");
-  } catch {
-    return undefined;
-  }
-}
 
 const KNOWN_NAMES: Record<string, string> = {
   AAPL: "Apple Inc.",
@@ -103,19 +101,26 @@ function activeListLegacyKey() {
   return `matterpro_active_watchlist_${user?.id ?? "anon"}`;
 }
 
-function mockLiveQuote(symbol: string): LiveQuote {
-  let h = 2166136261;
-  for (let i = 0; i < symbol.length; i++) {
-    h ^= symbol.charCodeAt(i);
-    h = Math.imul(h, 16777619);
+function cachedOrPendingQuote(symbol: string): LiveQuote {
+  const cached = getCachedQuote(symbol);
+  if (cached) {
+    return {
+      price: cached.price,
+      changePct: cached.changePct,
+      name: cached.name || KNOWN_NAMES[symbol],
+      logo: cached.logo,
+      domain: cached.domain,
+    };
   }
-  const price = 12 + (Math.abs(h) % 620) + (Math.abs(h >> 8) % 100) / 100;
-  const changePct = ((Math.abs(h >> 4) % 900) / 100) - 4.5;
   return {
-    price: Math.round(price * 100) / 100,
-    changePct: Math.round(changePct * 100) / 100,
+    price: 0,
+    changePct: 0,
     name: KNOWN_NAMES[symbol],
   };
+}
+
+function rowSparkValues(symbol: string, price: number, changePct: number): number[] {
+  return getCachedSpark(symbol) ?? sparklineValues(symbol, price, changePct);
 }
 
 function companyName(item: WatchlistApiItem, quote?: LiveQuote) {
@@ -177,11 +182,7 @@ function WatchlistCard({
     const controller = new AbortController();
     const timeoutId = window.setTimeout(async () => {
       try {
-        const res = await fetch(`${API_BASE_URL}/api/stocks/search?q=${encodeURIComponent(query)}`, {
-          signal: controller.signal,
-        });
-        if (!res.ok) throw new Error("search failed");
-        const data: StockSearchResult[] = await res.json();
+        const data = await fetchStockSearch(query, controller.signal);
         const primary = data.filter((r) => !r.symbol.includes("."));
         setSearchResults((primary.length > 0 ? primary : data).slice(0, 6));
       } catch (err) {
@@ -277,7 +278,7 @@ function WatchlistCard({
               </div>
 
               {searchResults.length > 0 && (
-                <div className="absolute z-10 mt-1.5 w-full overflow-hidden rounded-xl border border-[#1F2937] bg-[#0A0A0A]">
+                <div className="matter-touch-scroll absolute z-10 mt-1.5 max-h-56 w-full overflow-y-auto overscroll-contain rounded-xl border border-[#1F2937] bg-[#0A0A0A]">
                   {searchResults.map((result) => {
                     const symbol = result.displaySymbol || result.symbol;
                     return (
@@ -312,14 +313,14 @@ function WatchlistCard({
 
             {addError && <p className="mt-1.5 text-[11px] font-semibold text-rose-300">{addError}</p>}
 
-            <div className="mt-2 divide-y divide-[#1F2937]">
+            <div className="matter-touch-scroll mt-2 max-h-[min(48vh,380px)] divide-y divide-[#1F2937] overflow-y-auto overscroll-contain touch-pan-y md:max-h-none">
               {list.items.length === 0 ? (
                 <p className="py-4 text-center text-[11px] text-[#6B7280]">
                   This list is empty. Add a ticker to start tracking it.
                 </p>
               ) : (
                 list.items.map((item) => {
-                  const quote = quotes[item.symbol] ?? mockLiveQuote(item.symbol);
+                  const quote = quotes[item.symbol] ?? cachedOrPendingQuote(item.symbol);
                   const up = quote.changePct > 0;
                   const down = quote.changePct < 0;
                   const changeColor = down ? LOSS_RED : up ? GAIN_GREEN : "#9CA3AF";
@@ -349,11 +350,18 @@ function WatchlistCard({
                           <p className="truncate text-sm font-bold text-white">{item.symbol}</p>
                           <p className="truncate text-[11px] text-[#9CA3AF]">{companyName(item, quote)}</p>
                         </div>
+                        <Sparkline
+                          values={rowSparkValues(item.symbol, quote.price, quote.changePct)}
+                          width={58}
+                          height={26}
+                          color={changeColor}
+                        />
                         <div className="flex-shrink-0 text-right">
-                          <p className="text-sm font-bold tabular-nums text-white">{privacyMoney(privacyMode, quote.price)}</p>
+                          <p className="text-sm font-bold tabular-nums text-white">
+                            {quote.price > 0 ? privacyMoney(privacyMode, quote.price) : "—"}
+                          </p>
                           <p className="text-[11px] font-bold tabular-nums" style={{ color: changeColor }}>
-                            {up ? "+" : ""}
-                            {quote.changePct.toFixed(2)}%
+                            {quote.price > 0 ? `${up ? "+" : ""}${quote.changePct.toFixed(2)}%` : "—"}
                           </p>
                         </div>
                         <ChevronRight size={14} className="flex-shrink-0 text-[#9CA3AF]" />
@@ -510,38 +518,32 @@ export default function WatchlistsSection({
     let cancelled = false;
 
     symbols.forEach((symbol) => {
-      const mock = mockLiveQuote(symbol);
-      setQuotes((prev) => (prev[symbol] ? prev : { ...prev, [symbol]: mock }));
+      const pending = cachedOrPendingQuote(symbol);
+      setQuotes((prev) => (prev[symbol] ? prev : { ...prev, [symbol]: pending }));
 
       (async () => {
         try {
           const [quoteRes, profileRes] = await Promise.allSettled([
-            fetch(`${API_BASE_URL}/api/stocks/quote?symbol=${encodeURIComponent(symbol)}`).then((r) => {
-              if (!r.ok) throw new Error("quote failed");
-              return r.json() as Promise<{ c: number; dp: number }>;
-            }),
-            fetch(`${API_BASE_URL}/api/stocks/profile?symbol=${encodeURIComponent(symbol)}`).then((r) => {
-              if (!r.ok) throw new Error("profile failed");
-              return r.json() as Promise<{ name?: string; logo?: string; weburl?: string }>;
-            }),
+            fetchStockQuote(symbol),
+            fetchStockProfile(symbol),
           ]);
+          void fetchStockChart(symbol, "1M").catch(() => null);
 
           if (cancelled) return;
 
-          const live: LiveQuote = { ...mock };
-          if (quoteRes.status === "fulfilled" && quoteRes.value.c > 0) {
+          const live: LiveQuote = { ...pending };
+          if (quoteRes.status === "fulfilled" && quoteRes.value && quoteRes.value.c > 0) {
             live.price = quoteRes.value.c;
-            live.changePct = quoteRes.value.dp ?? mock.changePct;
+            live.changePct = quoteRes.value.dp ?? pending.changePct;
           }
-          if (profileRes.status === "fulfilled") {
+          if (profileRes.status === "fulfilled" && profileRes.value) {
             if (profileRes.value.name) live.name = profileRes.value.name;
             if (profileRes.value.logo) live.logo = profileRes.value.logo;
-            const domain = extractDomain(profileRes.value.weburl);
-            if (domain) live.domain = domain;
+            if (profileRes.value.domain) live.domain = profileRes.value.domain;
           }
           setQuotes((prev) => ({ ...prev, [symbol]: live }));
         } catch {
-          // keep the seeded mock quote
+          // keep the last cached quote
         }
       })();
     });
@@ -589,7 +591,7 @@ export default function WatchlistsSection({
 
   const addTicker = async (targetList: WatchlistApiList, symbolRaw: string, description?: string) => {
     if (adding) return;
-    const symbol = symbolRaw.trim().toUpperCase().replace(/[^A-Z0-9.]/g, "");
+    const symbol = symbolRaw.trim().toUpperCase().replace(/[^A-Z0-9.\-]/g, "");
     if (!symbol) {
       throw new Error("Enter a ticker symbol");
     }

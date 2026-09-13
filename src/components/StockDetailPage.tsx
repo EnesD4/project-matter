@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
+  AlertTriangle,
   Banknote,
+  BarChart3,
   Loader2,
   Minus,
   Plus,
@@ -14,11 +16,11 @@ import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "rec
 import { playTransactionClick } from "../lib/audioService";
 import { getApiBaseUrl } from "../lib/auth";
 import { isEtfAsset } from "../lib/etfIcons";
+import { getCachedChart, getCachedQuote, setCachedChart, setCachedQuote } from "../lib/marketCache";
+import { fetchStockChart, fetchStockQuote, isLiveChartSource } from "../lib/stockService";
 import { privacyMoney, privacyShares, privacySignedMoney } from "../lib/privacy";
 import {
   buildHistoricalSeries,
-  ChartCandle,
-  chartPointsToSeries,
   formatCompactUsd,
   RANGE_OPTIONS,
   RangeOption,
@@ -27,12 +29,13 @@ import {
   seriesChangePct,
 } from "../lib/priceSimulation";
 import { useMarketPolling } from "../hooks/useMarketPolling";
+import { EDUCATIONAL_DISCLAIMER } from "../lib/sproutAi";
 import type { StockHolding, StockQuote } from "./InvestmentPortfolioCard";
 import StockLogo from "./StockLogo";
 
 const GAIN_GREEN = "#10B981";
 const LOSS_RED = "#EF4444";
-const API_BASE_URL = getApiBaseUrl();
+const apiBase = () => getApiBaseUrl();
 
 type StockMetricsSnapshot = {
   symbol: string;
@@ -59,6 +62,7 @@ type SproutAnalysis = {
   sentiment: "Buy" | "Hold" | "Sell";
   source: "ai" | "fallback";
   warning?: string;
+  disclaimer?: string;
 };
 
 export type SellPositionResult = {
@@ -164,26 +168,8 @@ function MetricSkeleton() {
   );
 }
 
-async function fetchStockQuote(symbol: string): Promise<StockQuote | null> {
-  const res = await fetch(
-    `${API_BASE_URL}/api/stocks/quote?symbol=${encodeURIComponent(symbol)}`
-  );
-  if (!res.ok) return null;
-  const data = (await res.json()) as StockQuote;
-  return data?.c > 0 ? data : null;
-}
-
-async function fetchChartSeries(symbol: string, range: RangeOption): Promise<{
-  mapped: SeriesPoint[];
-  source?: string;
-} | null> {
-  const res = await fetch(
-    `${API_BASE_URL}/api/stocks/${encodeURIComponent(symbol)}/chart?range=${encodeURIComponent(range)}`
-  );
-  if (!res.ok) return null;
-  const data = (await res.json()) as { points?: ChartCandle[]; source?: string };
-  const mapped = chartPointsToSeries(Array.isArray(data.points) ? data.points : [], range);
-  return { mapped, source: data.source };
+async function fetchChartSeries(symbol: string, range: RangeOption) {
+  return fetchStockChart(symbol, range);
 }
 
 export default function StockDetailPage({
@@ -198,10 +184,27 @@ export default function StockDetailPage({
 }: StockDetailPageProps) {
   const [range, setRange] = useState<RangeOption>("1D");
   const [hoverPoint, setHoverPoint] = useState<SeriesPoint | null>(null);
-  const [liveSeries, setLiveSeries] = useState<SeriesPoint[] | null>(null);
-  const [chartLoading, setChartLoading] = useState(true);
+  const [liveSeries, setLiveSeries] = useState<SeriesPoint[] | null>(() =>
+    getCachedChart(holding.symbol, "1D")
+  );
+  const [chartLoading, setChartLoading] = useState(() => !getCachedChart(holding.symbol, "1D"));
   const [chartLive, setChartLive] = useState(false);
-  const [liveQuote, setLiveQuote] = useState<StockQuote | null>(null);
+  const [chartSource, setChartSource] = useState<string | null>(null);
+  const [liveQuote, setLiveQuote] = useState<StockQuote | null>(() => {
+    const cached = getCachedQuote(holding.symbol);
+    if (!cached) return null;
+    const prev = cached.price / (1 + cached.changePct / 100);
+    return {
+      c: cached.price,
+      dp: cached.changePct,
+      d: cached.price - prev,
+      o: prev,
+      h: Math.max(cached.price, prev),
+      l: Math.min(cached.price, prev),
+      pc: prev,
+      t: cached.updatedAt,
+    };
+  });
   const [metrics, setMetrics] = useState<StockMetricsSnapshot | null>(null);
   const [metricsLoading, setMetricsLoading] = useState(true);
   const [metricsError, setMetricsError] = useState(false);
@@ -234,7 +237,8 @@ export default function StockDetailPage({
       if (chart && chart.mapped.length > 0) {
         setChartAnimate(false);
         setLiveSeries(chart.mapped);
-        setChartLive(chart.source === "yahoo" || chart.source === "finnhub");
+        setChartLive(isLiveChartSource(chart.source));
+        setChartSource(chart.source ?? null);
       }
       if (!quote && !(chart && chart.mapped.length > 0)) {
         throw new Error("refresh failed");
@@ -262,8 +266,7 @@ export default function StockDetailPage({
       }),
     [holding.symbol, range, price, dayChangePct, open, high, low]
   );
-  const series =
-    liveSeries && liveSeries.length > 0 ? liveSeries : chartLoading ? [] : fallbackSeries;
+  const series = liveSeries && liveSeries.length > 0 ? liveSeries : fallbackSeries;
 
   const rangeChangePct = useMemo(() => seriesChangePct(series), [series]);
   const rangeChangeAbs = useMemo(() => seriesChangeAbs(series), [series]);
@@ -326,8 +329,23 @@ export default function StockDetailPage({
 
   useEffect(() => {
     let cancelled = false;
-    setLiveQuote(null);
-    setLiveSeries(null);
+    const cached = getCachedQuote(holding.symbol);
+    const prev = cached ? cached.price / (1 + cached.changePct / 100) : 0;
+    setLiveQuote(
+      cached
+        ? {
+            c: cached.price,
+            dp: cached.changePct,
+            d: cached.price - prev,
+            o: prev,
+            h: Math.max(cached.price, prev),
+            l: Math.min(cached.price, prev),
+            pc: prev,
+            t: cached.updatedAt,
+          }
+        : null
+    );
+    setLiveSeries(getCachedChart(holding.symbol, "1D"));
     setChartLive(false);
     setRange("1D");
     setAnalysis(null);
@@ -338,6 +356,13 @@ export default function StockDetailPage({
         const data = await fetchStockQuote(holding.symbol);
         if (!cancelled && data) {
           setLiveQuote(data);
+          setCachedQuote(holding.symbol, {
+            price: data.c,
+            changePct: data.dp ?? holding.dayChangePct,
+            name: holding.description,
+            logo: holding.logo,
+            domain: holding.domain,
+          });
           markUpdated();
         }
       } catch {
@@ -356,8 +381,14 @@ export default function StockDetailPage({
 
   useEffect(() => {
     let cancelled = false;
-    setChartLoading(true);
-    setLiveSeries(null);
+    const cached = getCachedChart(holding.symbol, range);
+    if (cached && cached.length > 0) {
+      setLiveSeries(cached);
+      setChartLoading(false);
+    } else {
+      setLiveSeries(null);
+      setChartLoading(true);
+    }
     setChartAnimate(true);
 
     (async () => {
@@ -366,17 +397,15 @@ export default function StockDetailPage({
         if (cancelled) return;
         if (data && data.mapped.length > 0) {
           setLiveSeries(data.mapped);
-          setChartLive(data.source === "yahoo" || data.source === "finnhub");
+          setCachedChart(holding.symbol, range, data.mapped);
+          setChartLive(isLiveChartSource(data.source));
+          setChartSource(data.source ?? null);
           markUpdated();
         } else {
-          setLiveSeries(null);
           setChartLive(false);
         }
       } catch {
-        if (!cancelled) {
-          setLiveSeries(null);
-          setChartLive(false);
-        }
+        if (!cancelled) setChartLive(false);
       } finally {
         if (!cancelled) setChartLoading(false);
       }
@@ -404,7 +433,7 @@ export default function StockDetailPage({
     (async () => {
       try {
         const res = await fetch(
-          `${API_BASE_URL}/api/stocks/metrics?symbol=${encodeURIComponent(holding.symbol)}`
+          `${apiBase()}/api/stocks/metrics?symbol=${encodeURIComponent(holding.symbol)}`
         );
         if (!res.ok) throw new Error("metrics failed");
         const data = (await res.json()) as StockMetricsSnapshot;
@@ -426,7 +455,7 @@ export default function StockDetailPage({
     setAnalysisLoading(true);
     setAnalysisError(null);
     try {
-      const res = await fetch(`${API_BASE_URL}/api/stocks/analysis`, {
+      const res = await fetch(`${apiBase()}/api/stocks/analysis`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -520,7 +549,7 @@ export default function StockDetailPage({
 
   return (
     <div
-      className="fixed inset-0 z-[70] flex items-end justify-center bg-black/80 p-0 sm:items-center sm:p-4"
+      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
       onClick={() => {
         if (sellOpen) return;
         onBack();
@@ -528,7 +557,7 @@ export default function StockDetailPage({
       role="presentation"
     >
       <div
-        className="matter-pop flex max-h-[100vh] w-full max-w-2xl flex-col overflow-hidden rounded-t-2xl border border-[#1F1F1F] bg-[#000000] sm:max-h-[92vh] sm:rounded-2xl"
+        className="matter-pop flex max-h-[min(94vh,860px)] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-[#1F1F1F] bg-[#000000]"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
@@ -634,8 +663,8 @@ export default function StockDetailPage({
 
           <div className="relative mt-4 h-56 -mx-1 sm:h-64">
             {chartLoading && (
-              <div className="absolute inset-0 z-10 grid place-items-center bg-[#000000]/40">
-                <Loader2 className="h-5 w-5 animate-spin text-emerald-400" />
+              <div className="pointer-events-none absolute right-2 top-2 z-10 grid h-6 w-6 place-items-center rounded-full bg-black/50">
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-400" />
               </div>
             )}
             <ResponsiveContainer width="100%" height="100%">
@@ -684,7 +713,9 @@ export default function StockDetailPage({
           </div>
           <p className="mt-1 text-[10px] text-[#4B5563]">
             {chartLive
-              ? "Live Yahoo Finance candles, split-adjusted."
+              ? chartSource === "polygon"
+                ? "Live Polygon.io aggregates, split-adjusted."
+                : "Live market candles, split-adjusted."
               : range === "1D"
                 ? "Intraday path anchored to today's real open/high/low/current values."
                 : "Historical trend anchored to the live current price."}
@@ -875,7 +906,8 @@ export default function StockDetailPage({
                 onClick={() => void generateReport()}
                 className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-[#10B981] px-4 py-3.5 text-sm font-bold text-[#042F2E] transition hover:bg-emerald-400 active:scale-[0.99]"
               >
-                ✨ Generate Sprout AI Report
+                <Sparkles size={15} />
+                Generate Sprout AI Report
               </button>
             )}
 
@@ -930,7 +962,7 @@ export default function StockDetailPage({
                   </p>
                 )}
                 <div className="flex items-center justify-between rounded-xl border border-[#1F1F1F] bg-[#121212] px-3.5 py-2.5">
-                  <p className="text-[11px] font-semibold text-[#9CA3AF]">Overall sentiment</p>
+                  <p className="text-[11px] font-semibold text-[#9CA3AF]">Published Street consensus</p>
                   <span
                     className={`rounded-full border px-2.5 py-0.5 text-[11px] font-extrabold ${sentimentTone(analysis.sentiment)}`}
                   >
@@ -939,7 +971,10 @@ export default function StockDetailPage({
                 </div>
                 <article className="rounded-2xl border border-[#1F1F1F] bg-[#121212] p-4 sm:p-5">
                   <div>
-                    <p className="text-[11px] font-bold text-white">🚀 Growth Drivers & Highlights</p>
+                    <p className="inline-flex items-center gap-1.5 text-[11px] font-bold text-white">
+                      <TrendingUp size={13} className="text-emerald-400" aria-hidden />
+                      Growth Drivers & Highlights
+                    </p>
                     <ul className="mt-2 space-y-1.5">
                       {analysis.growthDrivers.map((item, index) => (
                         <li key={`growth-${index}`} className="flex gap-2 text-[13px] leading-relaxed text-[#D1D5DB]">
@@ -950,7 +985,10 @@ export default function StockDetailPage({
                     </ul>
                   </div>
                   <div className="mt-5 border-t border-[#1F1F1F] pt-4">
-                    <p className="text-[11px] font-bold text-white">⚠️ Key Risks to Watch</p>
+                    <p className="inline-flex items-center gap-1.5 text-[11px] font-bold text-white">
+                      <AlertTriangle size={13} className="text-amber-400" aria-hidden />
+                      Key Risks to Watch
+                    </p>
                     <ul className="mt-2 space-y-1.5">
                       {analysis.keyRisks.map((item, index) => (
                         <li key={`risk-${index}`} className="flex gap-2 text-[13px] leading-relaxed text-[#D1D5DB]">
@@ -961,11 +999,17 @@ export default function StockDetailPage({
                     </ul>
                   </div>
                   <div className="mt-5 border-t border-[#1F1F1F] pt-4">
-                    <p className="text-[11px] font-bold text-white">📊 Analyst Consensus</p>
+                    <p className="inline-flex items-center gap-1.5 text-[11px] font-bold text-white">
+                      <BarChart3 size={13} className="text-sky-400" aria-hidden />
+                      Analyst Consensus
+                    </p>
                     <p className="mt-2 text-[13px] leading-relaxed text-[#D1D5DB]">
                       {analysis.analystConsensus}
                     </p>
                   </div>
+                  <p className="mt-5 text-center text-[10px] font-semibold italic leading-relaxed text-[#6B7280]">
+                    {analysis.disclaimer || EDUCATIONAL_DISCLAIMER}
+                  </p>
                 </article>
                 <button
                   type="button"
@@ -995,7 +1039,7 @@ export default function StockDetailPage({
 
       {sellOpen ? (
         <div
-          className="fixed inset-0 z-[90] flex items-end justify-center bg-slate-950/75 p-4 sm:items-center"
+          className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm"
           onClick={(e) => {
             e.stopPropagation();
             closeSell();

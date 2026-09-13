@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import path from 'path';
 import axios from 'axios';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import authRoutes from './routes/auth';
@@ -8,6 +9,7 @@ import portfolioRoutes from './routes/portfolio';
 import userRoutes from './routes/user';
 import watchlistRoutes from './routes/watchlists';
 import cashFlowRoutes from './routes/cashFlow';
+import plaidRoutes from './routes/plaid';
 import {
   fetchDividendDetailsMany,
   fetchHistoricalClose,
@@ -15,9 +17,25 @@ import {
   fetchYahooQuote,
   parseChartRange,
   rangeInterval,
+  type QuoteSnapshot,
 } from './lib/yahooFinance';
+import {
+  fetchPolygonChart,
+  fetchPolygonHistory,
+  fetchPolygonProfile,
+  fetchPolygonQuote,
+  fetchPolygonQuotes,
+  fetchPolygonSearch,
+} from './lib/stockService';
 import { parseFlexibleDate, todayIsoLocal } from './lib/dates';
+import {
+  EDUCATIONAL_DISCLAIMER,
+  SPROUT_SYSTEM_INSTRUCTION,
+  stripEducationalDisclaimer,
+} from './lib/sproutAi';
 
+dotenv.config({ path: path.resolve(__dirname, '../.env') });
+dotenv.config({ path: path.resolve(__dirname, '../.env.local') });
 dotenv.config();
 
 const app = express();
@@ -25,7 +43,47 @@ const PORT = process.env.PORT || 5000;
 const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY?.trim() || '';
 
-app.use(cors());
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '0.0.0.0']);
+
+function normalizeHost(host: string): string {
+  return host.toLowerCase().replace(/^\[|\]$/g, '');
+}
+
+function isLanOrLoopbackHost(host: string): boolean {
+  const normalized = normalizeHost(host);
+  if (LOOPBACK_HOSTS.has(normalized)) return true;
+  if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(normalized)) return true;
+  if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(normalized)) return true;
+  if (/^172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}$/.test(normalized)) return true;
+  if (/^169\.254\.\d{1,3}\.\d{1,3}$/.test(normalized)) return true;
+  return false;
+}
+
+function isAllowedCorsOrigin(origin?: string): boolean {
+  if (!origin) return true;
+  try {
+    const { hostname } = new URL(origin);
+    if (isLanOrLoopbackHost(hostname)) return true;
+    return process.env.NODE_ENV !== 'production';
+  } catch {
+    return false;
+  }
+}
+
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (isAllowedCorsOrigin(origin)) {
+        callback(null, true);
+        return;
+      }
+      callback(new Error('Not allowed by CORS'));
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+  })
+);
 app.use(express.json());
 
 app.use('/api/auth', authRoutes);
@@ -33,6 +91,7 @@ app.use('/api/portfolio', portfolioRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/watchlists', watchlistRoutes);
 app.use('/api/cash-flow', cashFlowRoutes);
+app.use('/api/plaid', plaidRoutes);
 
 type MarketNewsItem = {
   headline?: string;
@@ -48,6 +107,7 @@ type DailyReportPayload = {
   indexMovements: string;
   sentimentTakeaway: string;
   source: 'ai' | 'fallback';
+  disclaimer: string;
 };
 
 function isUsMarketOpen(date = new Date()): boolean {
@@ -95,6 +155,7 @@ function fallbackReport(marketOpen: boolean): DailyReportPayload {
       ? 'Overall sentiment remains macro-driven rather than single-stock driven: watch yields, Fed speak, and major data releases for directional cues. Stay focused on index-level risk appetite and sector rotation instead of name-specific noise.'
       : 'The wrap takeaway is portfolio-level: US equity direction still tracks policy odds and growth/inflation balance more than idiosyncratic headlines. Use the closed-session window to reassess allocation risk rather than chase individual names.',
     source: 'fallback',
+    disclaimer: EDUCATIONAL_DISCLAIMER,
   };
 }
 
@@ -135,7 +196,11 @@ function parseAiJson(text: string): {
     const indexMovements = String(parsed.indexMovements || '').trim();
     const sentimentTakeaway = String(parsed.sentimentTakeaway || '').trim();
     if (!macroDrivers || !indexMovements || !sentimentTakeaway) return null;
-    return { macroDrivers, indexMovements, sentimentTakeaway };
+    return {
+      macroDrivers: stripEducationalDisclaimer(macroDrivers),
+      indexMovements: stripEducationalDisclaimer(indexMovements),
+      sentimentTakeaway: stripEducationalDisclaimer(sentimentTakeaway),
+    };
   } catch {
     return null;
   }
@@ -148,7 +213,10 @@ async function generateAiReport(
   if (!GEMINI_API_KEY) return null;
 
   const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-  const model = genAI.getGenerativeModel({ model: 'gemini-3.6-flash' });
+  const model = genAI.getGenerativeModel({
+    model: 'gemini-3.6-flash',
+    systemInstruction: SPROUT_SYSTEM_INSTRUCTION,
+  });
 
   const sessionLabel = marketOpen ? 'US cash equity markets are OPEN' : 'US cash equity markets are CLOSED';
   const headlineBlock =
@@ -156,7 +224,9 @@ async function generateAiReport(
       ? headlines.map((h, i) => `${i + 1}. ${h}`).join('\n')
       : 'No live headlines available — reason from current US macro consensus.';
 
-  const prompt = `You are a senior US equity market strategist writing a concise daily brief for retail investors.
+  const prompt = `${SPROUT_SYSTEM_INSTRUCTION}
+
+Write a concise educational US market briefing. You are teaching context, not giving trade signals.
 
 Context: ${sessionLabel} (America/New_York session).
 Recent market headlines:
@@ -166,12 +236,12 @@ Return ONLY valid JSON with exactly these keys (no markdown, no extra keys):
 {
   "macroDrivers": "1 short paragraph on macro catalysts (Fed stance, Treasury yields, inflation/growth data, earnings-season tone). No single-stock picks.",
   "indexMovements": "1 short paragraph on overall performance trends across the S&P 500, Nasdaq, and Dow Jones. No ticker laundry lists.",
-  "sentimentTakeaway": "1 short paragraph on high-level market direction and portfolio-level takeaway. Avoid individual stock noise."
+  "sentimentTakeaway": "1 short paragraph on high-level market direction as education. Avoid individual stock noise."
 }
 
 Rules:
 - Exactly 3 paragraphs as the three JSON string values.
-- Holistic / macro only. Do not recommend buying or selling specific stocks.
+- Holistic / macro only. Do not recommend buying or selling specific stocks. No trade signals or tax advice.
 - Clear everyday language. Each paragraph 2–4 sentences.`;
 
   try {
@@ -187,6 +257,7 @@ Rules:
       title: reportTitle(marketOpen),
       ...parsed,
       source: 'ai',
+      disclaimer: EDUCATIONAL_DISCLAIMER,
     };
   } catch (error) {
     console.error('Error generating AI market report:', error);
@@ -194,15 +265,52 @@ Rules:
   }
 }
 
-// Stock Search Endpoint
+async function resolveStockQuote(symbol: string): Promise<(QuoteSnapshot & { source?: string }) | null> {
+  const polygonQuote = await fetchPolygonQuote(symbol);
+  if (polygonQuote) return { ...polygonQuote, source: 'polygon' };
+
+  const yahooQuote = await fetchYahooQuote(symbol);
+  if (yahooQuote) return { ...yahooQuote, source: 'yahoo' };
+
+  if (!FINNHUB_API_KEY) return null;
+  const response = await axios.get(
+    `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(symbol)}&token=${FINNHUB_API_KEY}`,
+    { timeout: 8000 }
+  );
+  const data = (response.data || {}) as Record<string, unknown>;
+  const price = typeof data.c === 'number' ? data.c : Number(data.c);
+  if (!Number.isFinite(price) || price <= 0) return null;
+  return {
+    c: price,
+    d: Number(data.d) || 0,
+    dp: Number(data.dp) || 0,
+    h: Number(data.h) || price,
+    l: Number(data.l) || price,
+    o: Number(data.o) || price,
+    pc: Number(data.pc) || price,
+    t: Number(data.t) || Math.floor(Date.now() / 1000),
+    dividendYield: (data.dividendYield as number | null) ?? null,
+    dividendRate: (data.dividendRate as number | null) ?? null,
+    exDividendDate: (data.exDividendDate as string | null) ?? null,
+    dividendDate: (data.dividendDate as string | null) ?? null,
+    source: 'finnhub',
+  };
+}
+
+// Stock Search Endpoint — Polygon first, Finnhub fallback
 app.get('/api/stocks/search', async (req, res) => {
   try {
-    const query = req.query.q as string;
+    const query = String(req.query.q || '').trim();
     if (!query) {
       return res.json([]);
     }
+    const polygonResults = await fetchPolygonSearch(query);
+    if (polygonResults.length > 0) {
+      return res.json(polygonResults);
+    }
+    if (!FINNHUB_API_KEY) return res.json([]);
     const response = await axios.get(
-      `https://finnhub.io/api/v1/search?q=${query}&token=${FINNHUB_API_KEY}`
+      `https://finnhub.io/api/v1/search?q=${encodeURIComponent(query)}&token=${FINNHUB_API_KEY}`
     );
     res.json(response.data.result || []);
   } catch (error) {
@@ -211,51 +319,75 @@ app.get('/api/stocks/search', async (req, res) => {
   }
 });
 
-// Company Profile Endpoint (logo, market cap, website domain, etc.)
+// Company Profile Endpoint — Polygon ticker details first, Finnhub fallback
 app.get('/api/stocks/profile', async (req, res) => {
   try {
-    const symbol = req.query.symbol as string;
+    const symbol = String(req.query.symbol || '').trim().toUpperCase();
     if (!symbol) {
       return res.status(400).json({ error: 'Symbol is required' });
     }
+    const polygonProfile = await fetchPolygonProfile(symbol);
+    if (polygonProfile?.name || polygonProfile?.weburl) {
+      return res.json(polygonProfile);
+    }
+    if (!FINNHUB_API_KEY) {
+      return res.json(polygonProfile || {});
+    }
     const response = await axios.get(
-      `https://finnhub.io/api/v1/stock/profile2?symbol=${symbol}&token=${FINNHUB_API_KEY}`
+      `https://finnhub.io/api/v1/stock/profile2?symbol=${encodeURIComponent(symbol)}&token=${FINNHUB_API_KEY}`
     );
-    res.json(response.data);
+    res.json({
+      ...(polygonProfile || {}),
+      ...response.data,
+    });
   } catch (error) {
     console.error('Error fetching company profile:', error);
     res.status(500).json({ error: 'Failed to fetch company profile' });
   }
 });
 
-// Stock Quote Endpoint — Yahoo Finance first, Finnhub fallback
+// Stock Quote Endpoint — Polygon previous close / snapshot first
 app.get('/api/stocks/quote', async (req, res) => {
   try {
     const symbol = String(req.query.symbol || '').trim().toUpperCase();
     if (!symbol) {
       return res.status(400).json({ error: 'Symbol is required' });
     }
-
-    const yahooQuote = await fetchYahooQuote(symbol);
-    if (yahooQuote) {
-      return res.json(yahooQuote);
-    }
-
-    const response = await axios.get(
-      `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(symbol)}&token=${FINNHUB_API_KEY}`,
-      { timeout: 8000 }
-    );
-    const data = (response.data || {}) as Record<string, unknown>;
-    res.json({
-      ...data,
-      dividendYield: data.dividendYield ?? null,
-      dividendRate: data.dividendRate ?? null,
-      exDividendDate: data.exDividendDate ?? null,
-      dividendDate: data.dividendDate ?? null,
-    });
+    const quote = await resolveStockQuote(symbol);
+    if (quote) return res.json(quote);
+    return res.status(502).json({ error: 'Failed to fetch stock quote' });
   } catch (error) {
     console.error('Error fetching stock quote:', error);
     res.status(500).json({ error: 'Failed to fetch stock quote' });
+  }
+});
+
+app.get('/api/stocks/quotes', async (req, res) => {
+  try {
+    const symbols = String(req.query.symbols || req.query.symbol || '')
+      .split(',')
+      .map((s) => s.trim().toUpperCase())
+      .filter(Boolean)
+      .slice(0, 40);
+    if (symbols.length === 0) {
+      return res.status(400).json({ error: 'symbols is required' });
+    }
+
+    const polygonMap = await fetchPolygonQuotes(symbols);
+    const items: Array<QuoteSnapshot & { symbol: string; source?: string }> = [];
+    for (const symbol of symbols) {
+      const cached = polygonMap.get(symbol);
+      if (cached) {
+        items.push({ ...cached, symbol, source: 'polygon' });
+        continue;
+      }
+      const quote = await resolveStockQuote(symbol);
+      if (quote) items.push({ ...quote, symbol });
+    }
+    return res.json({ items });
+  } catch (error) {
+    console.error('Error fetching stock quotes:', error);
+    return res.status(500).json({ error: 'Failed to fetch stock quotes' });
   }
 });
 
@@ -284,6 +416,10 @@ app.get('/api/stocks/:symbol/chart', async (req, res) => {
   }
 
   try {
+    const polygonChart = await fetchPolygonChart(symbol, range);
+    if (polygonChart && polygonChart.points.length > 0) {
+      return res.json(polygonChart);
+    }
     const payload = await fetchStockChart(symbol, range);
     return res.json(payload);
   } catch (error) {
@@ -312,6 +448,8 @@ app.get('/api/stocks/:symbol/history', async (req, res) => {
   }
 
   try {
+    const polygonHistory = await fetchPolygonHistory(symbol, isoDate);
+    if (polygonHistory) return res.json(polygonHistory);
     const payload = await fetchHistoricalClose(symbol, isoDate);
     if (payload) return res.json(payload);
   } catch (error) {
@@ -386,6 +524,7 @@ type StockAnalysisPayload = {
   sentiment: 'Buy' | 'Hold' | 'Sell';
   source: 'ai' | 'fallback';
   warning?: string;
+  disclaimer: string;
 };
 
 function asFiniteNumber(value: unknown): number | null {
@@ -539,7 +678,9 @@ async function fetchCompanyHeadlines(symbol: string): Promise<string[]> {
     .slice(0, 8);
 }
 
-function parseStockAnalysisJson(text: string): Omit<StockAnalysisPayload, 'source'> | null {
+function parseStockAnalysisJson(
+  text: string
+): Omit<StockAnalysisPayload, 'source' | 'warning' | 'disclaimer'> | null {
   const cleaned = text
     .replace(/^```json\s*/i, '')
     .replace(/^```\s*/i, '')
@@ -619,6 +760,7 @@ function fallbackStockAnalysis(
     analystConsensus: consensus,
     sentiment,
     source: 'fallback',
+    disclaimer: EDUCATIONAL_DISCLAIMER,
   };
 }
 
@@ -636,7 +778,10 @@ async function generateStockAnalysis(
   if (!GEMINI_API_KEY) return null;
 
   const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-  const model = genAI.getGenerativeModel({ model: 'gemini-3.6-flash' });
+  const model = genAI.getGenerativeModel({
+    model: 'gemini-3.6-flash',
+    systemInstruction: SPROUT_SYSTEM_INSTRUCTION,
+  });
   const f = extras.fundamentals;
   const rec = f.recommendation;
   const recLine = rec
@@ -651,7 +796,9 @@ async function generateStockAnalysis(
       ? `Current price: $${extras.price.toFixed(2)}${extras.changePct != null ? ` (${extras.changePct >= 0 ? '+' : ''}${extras.changePct.toFixed(2)}%)` : ''}`
       : 'Current price: not provided.';
 
-  const prompt = `You are Sprout AI, a senior equity analyst writing a concise stock briefing for a retail investor inside the Sprout Finance app.
+  const prompt = `${SPROUT_SYSTEM_INSTRUCTION}
+
+Write a concise educational briefing about a company the user already opened. Teach context only — never a stock pick or trade signal.
 
 Stock: ${symbol} (${name})
 ${priceLine}
@@ -659,23 +806,23 @@ Revenue growth YoY: ${f.revenueGrowthYoy != null ? `${f.revenueGrowthYoy.toFixed
 P/E: ${f.pe != null ? f.pe.toFixed(1) : 'n/a'} (${f.peTag})
 Cash: ${f.cash != null ? Math.round(f.cash) : 'n/a'}  Debt: ${f.debt != null ? Math.round(f.debt) : 'n/a'}
 Free cash flow: ${f.fcf != null ? Math.round(f.fcf) : 'n/a'}
-Analyst ratings: ${recLine}
-${extras.positionNote ? `Investor context: ${extras.positionNote}` : ''}
+Published analyst ratings (report as facts, not as your recommendation): ${recLine}
+${extras.positionNote ? `User already holds or viewed this name: ${extras.positionNote}` : ''}
 Recent headlines:
 ${headlineBlock}
 
 Return ONLY valid JSON (no markdown) with exactly these keys:
 {
-  "growthDrivers": ["2-4 short bullets on recent earnings, key deals, product cycles, or operating highlights"],
+  "growthDrivers": ["2-4 short educational bullets on recent earnings, key deals, product cycles, or operating highlights"],
   "keyRisks": ["2-4 short bullets on material risks to watch"],
-  "analystConsensus": "1-2 sentences summarizing overall Buy/Hold/Sell sentiment in plain English",
+  "analystConsensus": "1-2 sentences summarizing published Buy/Hold/Sell ratings in plain English. This is Street data, not your advice.",
   "sentiment": "Buy" | "Hold" | "Sell"
 }
 
 Rules:
 - Everyday language. No ticker-dump. No fabricated precise earnings numbers that are not implied above.
-- Educational briefing, not personalized financial advice. Do not tell the user to buy or sell.
-- Keep each bullet to 1-2 sentences.`;
+- Educational briefing only. Do not tell the user to buy, sell, or hold. sentiment must mirror published Street ratings, never a Sprout trade signal.
+- No licensed tax advice. Keep each bullet to 1-2 sentences.`;
 
   try {
     const result = await model.generateContent(prompt);
@@ -685,7 +832,7 @@ Rules:
       console.error('Sprout stock analysis JSON parse failed. Raw:', text.slice(0, 400));
       return null;
     }
-    return { ...parsed, source: 'ai' };
+    return { ...parsed, source: 'ai', disclaimer: EDUCATIONAL_DISCLAIMER };
   } catch (error) {
     console.error('Error generating Sprout stock analysis:', error);
     return null;
@@ -782,6 +929,7 @@ app.get('/api/market/daily-report', async (_req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+const HOST = process.env.HOST || "0.0.0.0";
+app.listen(Number(PORT), HOST, () => {
+  console.log(`Server listening on ${HOST}:${PORT} (reachable from LAN devices)`);
 });

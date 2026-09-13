@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Banknote,
+  BarChart3,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -33,8 +34,11 @@ import {
   createPortfolioItem,
   deletePortfolioItem,
   fetchPortfolio,
-  getApiBaseUrl,
+  getStoredUser,
+  readPortfolioCache,
   sellPortfolioItem,
+  withTimeout,
+  writePortfolioCache,
   type PortfolioApiItem,
 } from "../lib/auth";
 import {
@@ -46,10 +50,21 @@ import {
   PORTFOLIO_LINE,
   pricesOnTimestamps,
   reconstructPortfolioValues,
-  resampleValuesToLength,
   SP500_LINE,
   type BenchmarkChartPoint,
 } from "../lib/benchmarkChart";
+import { getCachedSpark } from "../lib/marketCache";
+import {
+  fetchHistoricalClose,
+  fetchStockProfile,
+  fetchStockQuote,
+  fetchStockQuotes,
+  fetchStockSearch,
+  type StockProfile,
+  type StockQuote,
+  type StockSearchResult,
+} from "../lib/stockService";
+import { clearbitLogoUrl } from "../lib/assetLogos";
 import {
   buildHistoricalSeries,
   ChartCandle,
@@ -57,6 +72,7 @@ import {
   RangeOption,
   SeriesPoint,
   seriesChangePct,
+  sparklineValues,
 } from "../lib/priceSimulation";
 import { privacyAxis, privacyMoney, privacyShares, privacySignedMoney, formatMoney } from "../lib/privacy";
 import { todayISODate } from "../lib/age";
@@ -65,12 +81,24 @@ import { clearPaperTickerIntent, peekPaperTickerIntent } from "../lib/lessonProg
 import { readLocalItem } from "../lib/storage";
 import { isoToUsDate, maskUsDateInput, parseToIsoDate } from "../lib/usDate";
 import { useMarketPolling } from "../hooks/useMarketPolling";
+import {
+  DEMO_SCENARIOS,
+  DEMO_SCENARIO_APPLIED_EVENT,
+  readActiveDemoScenario,
+  type DemoScenarioApplyDetail,
+} from "../lib/demoScenarios";
+import {
+  PLAID_CONNECTED_EVENT,
+  type PlaidLinkResult,
+} from "../lib/plaidLink";
 import AccountKindBadge, { PortfolioOriginBadges } from "./AccountKindBadge";
 import AllocationRing from "./AllocationRing";
 import DailyReportScreen from "./DailyReportScreen";
 import DarkCalendar from "./DarkCalendar";
 import LiveStatusBadge from "./LiveStatusBadge";
+import PlaidConnectButton from "./PlaidConnectButton";
 import SocratesPortfolioReport from "./SocratesPortfolioReport";
+import Sparkline from "./Sparkline";
 import StockDetailPage from "./StockDetailPage";
 import StockLogo from "./StockLogo";
 
@@ -234,7 +262,7 @@ const BROKER_PLATFORMS: BrokerPlatform[] = [
 
 function BrokerLogo({ platform }: { platform: BrokerPlatform }) {
   const [failed, setFailed] = useState(false);
-  const src = `https://www.google.com/s2/favicons?sz=128&domain=${platform.domain}`;
+  const src = clearbitLogoUrl(platform.domain, 128);
 
   return (
     <span
@@ -249,7 +277,11 @@ function BrokerLogo({ platform }: { platform: BrokerPlatform }) {
           alt={`${platform.name} logo`}
           width={28}
           height={28}
-          className="h-7 w-7 rounded-md object-contain"
+          draggable={false}
+          onContextMenu={(event) => event.preventDefault()}
+          onDragStart={(event) => event.preventDefault()}
+          className="pointer-events-none h-7 w-7 select-none rounded-md object-contain drag-none"
+          style={{ WebkitTouchCallout: "none", WebkitUserDrag: "none" } as React.CSSProperties}
           onError={() => setFailed(true)}
         />
       )}
@@ -257,43 +289,9 @@ function BrokerLogo({ platform }: { platform: BrokerPlatform }) {
   );
 }
 
-/** Base URL of our Express backend (see /server). Override with VITE_API_BASE_URL if needed. */
-const API_BASE_URL = getApiBaseUrl();
-
 const SEARCH_DEBOUNCE_MS = 350;
 
-/** Shape returned by GET /api/stocks/search (proxied from Finnhub's /search). */
-type StockSearchResult = {
-  symbol: string;
-  displaySymbol: string;
-  description: string;
-  type: string;
-};
-
-/** Shape returned by GET /api/stocks/quote (Yahoo first, Finnhub fallback). `c` = current price. */
-export type StockQuote = {
-  c: number;
-  d: number;
-  dp: number;
-  h: number;
-  l: number;
-  o: number;
-  pc: number;
-  t: number;
-  dividendYield?: number | null;
-  dividendRate?: number | null;
-  exDividendDate?: string | null;
-  dividendDate?: string | null;
-};
-
-/** Shape returned by GET /api/stocks/profile (proxied from Finnhub's /stock/profile2). */
-type StockProfile = {
-  name?: string;
-  logo?: string;
-  weburl?: string;
-  marketCapitalization?: number;
-  finnhubIndustry?: string;
-};
+export type { StockQuote };
 
 type SelectedStock = {
   symbol: string;
@@ -439,16 +437,53 @@ function PortfolioActionButtons({
   );
 }
 
+function stockHoldingFromItem(item: PortfolioApiItem, name?: string): StockHolding {
+  const currentPrice = item.buyPrice;
+  return {
+    id: item.id,
+    kind: "stock",
+    symbol: item.symbol,
+    description: name || item.symbol,
+    quantity: item.shares,
+    avgCost: item.buyPrice,
+    currentPrice,
+    dayChangePct: 0,
+    dayChangeAbs: 0,
+    open: currentPrice,
+    high: currentPrice,
+    low: currentPrice,
+    prevClose: currentPrice,
+    purchasedAt: isoDateFromApi(item.purchasedAt),
+    account: parseAccountKind(item.accountType),
+  };
+}
+
+function holdingsFromApiItems(items: PortfolioApiItem[]): StockHolding[] {
+  return items.map((item) =>
+    stockHoldingFromItem(item, "name" in item && typeof item.name === "string" ? item.name : undefined)
+  );
+}
+
+function persistHoldingsCache(holdings: Holding[]) {
+  const items: PortfolioApiItem[] = holdings
+    .filter((holding): holding is StockHolding => holding.kind === "stock")
+    .map((holding) => ({
+      id: holding.id,
+      userId: getStoredUser()?.id ?? "local",
+      symbol: holding.symbol,
+      shares: holding.quantity,
+      buyPrice: holding.avgCost,
+      purchasedAt: holding.purchasedAt,
+      accountType: holding.account,
+      createdAt: new Date().toISOString(),
+    }));
+  writePortfolioCache(items);
+}
+
 async function enrichStockHolding(item: PortfolioApiItem): Promise<StockHolding> {
   const [quoteResult, profileResult] = await Promise.allSettled([
-    fetch(`${API_BASE_URL}/api/stocks/quote?symbol=${encodeURIComponent(item.symbol)}`).then((r) => {
-      if (!r.ok) throw new Error(`Quote request failed (${r.status})`);
-      return r.json() as Promise<StockQuote>;
-    }),
-    fetch(`${API_BASE_URL}/api/stocks/profile?symbol=${encodeURIComponent(item.symbol)}`).then((r) => {
-      if (!r.ok) throw new Error(`Profile request failed (${r.status})`);
-      return r.json() as Promise<StockProfile>;
-    }),
+    withTimeout(fetchStockQuote(item.symbol), 12000, "Quote"),
+    withTimeout(fetchStockProfile(item.symbol), 12000, "Profile"),
   ]);
 
   const quote = quoteResult.status === "fulfilled" ? quoteResult.value : null;
@@ -470,9 +505,10 @@ async function enrichStockHolding(item: PortfolioApiItem): Promise<StockHolding>
     low: quote?.l ?? currentPrice,
     prevClose: quote?.pc ?? currentPrice,
     logo: profile?.logo,
-    domain: extractDomain(profile?.weburl),
+    domain: profile?.domain || extractDomain(profile?.weburl),
     marketCap: profile?.marketCapitalization,
     industry: profile?.finnhubIndustry,
+    instrumentType: profile?.type,
     dividendYield: quote?.dividendYield ?? null,
     purchasedAt: isoDateFromApi(item.purchasedAt),
     account: parseAccountKind(item.accountType),
@@ -525,17 +561,8 @@ async function fetchHistoricalPrice(
   symbol: string,
   date: string
 ): Promise<{ price: number; date: string; requestedDate: string; source: string } | null> {
-  const res = await fetch(
-    `${API_BASE_URL}/api/stocks/${encodeURIComponent(symbol)}/history?date=${encodeURIComponent(date)}`
-  );
-  if (!res.ok) return null;
-  const data = (await res.json()) as {
-    price?: number | null;
-    date?: string | null;
-    requestedDate?: string;
-    source?: string;
-  };
-  if (typeof data.price !== "number" || !(data.price > 0)) return null;
+  const data = await fetchHistoricalClose(symbol, date);
+  if (!data || typeof data.price !== "number" || !(data.price > 0)) return null;
   return {
     price: data.price,
     date: data.date || date,
@@ -559,12 +586,6 @@ function applyQuoteToHolding(holding: StockHolding, quote: StockQuote): StockHol
   };
 }
 
-async function fetchStockQuote(symbol: string): Promise<StockQuote | null> {
-  const res = await fetch(`${API_BASE_URL}/api/stocks/quote?symbol=${encodeURIComponent(symbol)}`);
-  if (!res.ok) return null;
-  const data = (await res.json()) as StockQuote;
-  return data?.c > 0 ? data : null;
-}
 
 export default function InvestmentPortfolioCard({
   onHoldingsChange,
@@ -580,10 +601,14 @@ export default function InvestmentPortfolioCard({
   const [benchmarkLoading, setBenchmarkLoading] = useState(false);
   const [spCandles, setSpCandles] = useState<ChartCandle[]>([]);
   const [holdingCandles, setHoldingCandles] = useState<Map<string, ChartCandle[]>>(new Map());
-  const [holdings, setHoldings] = useState<Holding[]>([]);
+  const [holdings, setHoldings] = useState<Holding[]>(() => {
+    const cached = readPortfolioCache();
+    return cached ? holdingsFromApiItems(cached.items) : [];
+  });
   const [assetsPerfMode, setAssetsPerfMode] = useState<AssetsPerfMode>(readAssetsPerfMode);
   const [hoverPoint, setHoverPoint] = useState<SeriesPoint | null>(null);
-  const [portfolioLoading, setPortfolioLoading] = useState(true);
+  const [portfolioLoading, setPortfolioLoading] = useState(() => !readPortfolioCache());
+  const holdingsEpochRef = useRef(0);
   const [portfolioError, setPortfolioError] = useState<string | null>(null);
   const [savingAsset, setSavingAsset] = useState(false);
   const [removingId, setRemovingId] = useState<string | null>(null);
@@ -591,6 +616,7 @@ export default function InvestmentPortfolioCard({
   useEffect(() => {
     if (portfolioLoading) return;
     onHoldingsChange?.(holdings);
+    persistHoldingsCache(holdings);
   }, [holdings, onHoldingsChange, portfolioLoading]);
   const [holdingsExpanded, setHoldingsExpanded] = useState(true);
   const [selectedHolding, setSelectedHolding] = useState<StockHolding | null>(null);
@@ -643,20 +669,7 @@ export default function InvestmentPortfolioCard({
       const stocks = holdingsRef.current.filter((h): h is StockHolding => h.kind === "stock");
       if (stocks.length === 0) return;
       const uniqueSymbols = [...new Set(stocks.map((s) => s.symbol))];
-      const entries = await Promise.all(
-        uniqueSymbols.map(async (symbol) => {
-          try {
-            const quote = await fetchStockQuote(symbol);
-            return quote ? ([symbol, quote] as const) : null;
-          } catch {
-            return null;
-          }
-        })
-      );
-      const quotes = new Map<string, StockQuote>();
-      for (const entry of entries) {
-        if (entry) quotes.set(entry[0], entry[1]);
-      }
+      const quotes = await fetchStockQuotes(uniqueSymbols);
       if (quotes.size === 0) throw new Error("no quotes");
 
       setChartAnimate(false);
@@ -675,25 +688,142 @@ export default function InvestmentPortfolioCard({
     },
   });
 
-  // Load persisted portfolio for the authenticated user, then enrich with live quotes.
+  useEffect(() => {
+    const applyStocks = (stocks: StockHolding[], replaceVerified: boolean) => {
+      holdingsEpochRef.current += 1;
+      setPortfolioLoading(false);
+      setHoldings((prev) => {
+        const incomingSymbols = new Set(stocks.map((stock) => stock.symbol.toUpperCase()));
+        const kept = prev.filter((holding) => {
+          if (holding.kind === "broker") return true;
+          if (replaceVerified) return holding.account !== "verified";
+          return !(holding.account === "verified" && incomingSymbols.has(holding.symbol.toUpperCase()));
+        });
+        return sortHoldingsByOrder([...kept, ...stocks], readHoldingOrder());
+      });
+      setHoldingsExpanded(true);
+      setModalOpen(false);
+      if (stocks.length > 0) markUpdated();
+    };
+
+    const onPlaidSandbox = (event: Event) => {
+      const detail = (event as CustomEvent<PlaidLinkResult>).detail;
+      if (!detail?.holdings) return;
+      const stocks = detail.holdings.map((item) => ({
+        ...stockHoldingFromItem(item, item.name),
+        account: "verified" as const,
+        description: item.name || item.symbol,
+      }));
+      applyStocks(stocks, false);
+      const first = stocks[0];
+      if (first) {
+        setJustAddedId(first.id);
+        window.setTimeout(() => setJustAddedId(null), 2000);
+      }
+      void Promise.all(detail.holdings.map((item) => enrichStockHolding(item)))
+        .then((enriched) => {
+          setHoldings((prev) =>
+            prev.map((holding) => {
+              if (holding.kind !== "stock") return holding;
+              return enriched.find((item) => item.id === holding.id) ?? holding;
+            })
+          );
+        })
+        .catch(() => {});
+    };
+
+    const onDemo = (event: Event) => {
+      const detail = (event as CustomEvent<DemoScenarioApplyDetail>).detail;
+      if (!detail) return;
+      const stocks = detail.holdings.map((item) => {
+        const lot =
+          detail.lots?.find((row) => row.symbol === item.symbol) ??
+          (detail.id !== "custom" ? DEMO_SCENARIOS[detail.id]?.lots.find((row) => row.symbol === item.symbol) : undefined);
+        return stockHoldingFromItem(item, lot?.name);
+      });
+      holdingsEpochRef.current += 1;
+      setPortfolioLoading(false);
+      setHoldings(stocks);
+      writePortfolioCache(detail.holdings);
+      setHoldingsExpanded(true);
+      if (stocks.length > 0) markUpdated();
+    };
+
+    window.addEventListener(PLAID_CONNECTED_EVENT, onPlaidSandbox);
+    window.addEventListener(DEMO_SCENARIO_APPLIED_EVENT, onDemo);
+    return () => {
+      window.removeEventListener(PLAID_CONNECTED_EVENT, onPlaidSandbox);
+      window.removeEventListener(DEMO_SCENARIO_APPLIED_EVENT, onDemo);
+    };
+  }, [markUpdated]);
+
+  // Load persisted portfolio instantly from cache, then refresh quotes in the background.
   useEffect(() => {
     let cancelled = false;
+    const startedAt = Date.now();
+    const epoch = holdingsEpochRef.current;
+    const cached = readPortfolioCache();
+    if (cached) {
+      setHoldings((prev) => {
+        const brokers = prev.filter((h): h is BrokerHolding => h.kind === "broker");
+        return sortHoldingsByOrder([...holdingsFromApiItems(cached.items), ...brokers], readHoldingOrder());
+      });
+      setPortfolioLoading(false);
+    }
 
     (async () => {
-      setPortfolioLoading(true);
       setPortfolioError(null);
+      if (!cached) setPortfolioLoading(true);
       try {
-        const items = await fetchPortfolio();
+        const items = await withTimeout(fetchPortfolio(), 2000, "Portfolio");
+        if (cancelled || holdingsEpochRef.current !== epoch) return;
+        const latestCache = readPortfolioCache();
+        if (latestCache && (latestCache.updatedAt > startedAt || readActiveDemoScenario())) {
+          const cachedStocks = holdingsFromApiItems(latestCache.items);
+          void Promise.all(latestCache.items.map((item) => enrichStockHolding(item)))
+            .then((stocks) => {
+              if (cancelled || holdingsEpochRef.current !== epoch) return;
+              setHoldings((prev) => {
+                const brokers = prev.filter((h): h is BrokerHolding => h.kind === "broker");
+                return sortHoldingsByOrder([...stocks, ...brokers], readHoldingOrder());
+              });
+            })
+            .catch(() => {});
+          if (cachedStocks.length > 0) markUpdated();
+          return;
+        }
+        if (items.length === 0 && cached && cached.items.length > 0) {
+          const stocks = await Promise.all(cached.items.map((item) => enrichStockHolding(item)));
+          if (cancelled || holdingsEpochRef.current !== epoch) return;
+          setHoldings((prev) => {
+            const brokers = prev.filter((h): h is BrokerHolding => h.kind === "broker");
+            return sortHoldingsByOrder([...stocks, ...brokers], readHoldingOrder());
+          });
+          return;
+        }
+        const instant = holdingsFromApiItems(items);
+        setHoldings((prev) => {
+          const brokers = prev.filter((h): h is BrokerHolding => h.kind === "broker");
+          return sortHoldingsByOrder([...instant, ...brokers], readHoldingOrder());
+        });
+        writePortfolioCache(items);
+        if (instant.length > 0) markUpdated();
         const stocks = await Promise.all(items.map((item) => enrichStockHolding(item)));
-        if (cancelled) return;
+        if (cancelled || holdingsEpochRef.current !== epoch) return;
         setHoldings((prev) => {
           const brokers = prev.filter((h): h is BrokerHolding => h.kind === "broker");
           return sortHoldingsByOrder([...stocks, ...brokers], readHoldingOrder());
         });
-        if (stocks.length > 0) markUpdated();
       } catch (err) {
-        if (!cancelled) {
+        if (!cancelled && !cached) {
           setPortfolioError(err instanceof Error ? err.message : "Couldn't load portfolio");
+        } else if (!cancelled && cached) {
+          const stocks = await Promise.all(cached.items.map((item) => enrichStockHolding(item)));
+          if (cancelled || holdingsEpochRef.current !== epoch) return;
+          setHoldings((prev) => {
+            const brokers = prev.filter((h): h is BrokerHolding => h.kind === "broker");
+            return sortHoldingsByOrder([...stocks, ...brokers], readHoldingOrder());
+          });
         }
       } finally {
         if (!cancelled) setPortfolioLoading(false);
@@ -729,11 +859,7 @@ export default function InvestmentPortfolioCard({
     const controller = new AbortController();
     const timeoutId = window.setTimeout(async () => {
       try {
-        const res = await fetch(`${API_BASE_URL}/api/stocks/search?q=${encodeURIComponent(query)}`, {
-          signal: controller.signal,
-        });
-        if (!res.ok) throw new Error(`Search request failed (${res.status})`);
-        const data: StockSearchResult[] = await res.json();
+        const data = await fetchStockSearch(query, controller.signal);
 
         // Prefer primary US listings (no exchange suffix like ".TO"/".SW") when available.
         const primary = data.filter((r) => !r.symbol.includes("."));
@@ -767,17 +893,9 @@ export default function InvestmentPortfolioCard({
   const totalValue = investmentValue + cashValue;
 
   const allocationSlices = useMemo(() => {
-    const items = holdings.map((h) => {
-      if (h.kind === "broker") {
-        return {
-          bucket: classifyHolding({ kind: "broker" }),
-          value: h.balance,
-          holdingId: h.id,
-          holdingLabel: h.name,
-          holdingDetail: h.account === "verified" ? "Verified brokerage" : "Paper cash account",
-        };
-      }
-      return {
+    const items = holdings
+      .filter((h): h is StockHolding => h.kind === "stock")
+      .map((h) => ({
         bucket: classifyHolding({
           kind: "stock",
           symbol: h.symbol,
@@ -789,19 +907,10 @@ export default function InvestmentPortfolioCard({
         holdingId: h.id,
         holdingLabel: h.symbol,
         holdingDetail: h.account === "verified" ? `${h.description} · Verified` : `${h.description} · Paper`,
-      };
-    });
-    if (cashBalance > 0) {
-      items.push({
-        bucket: classifyHolding({ kind: "cash" }),
-        value: cashBalance,
-        holdingId: "cash:balance",
-        holdingLabel: "Cash",
-        holdingDetail: "Available cash",
-      });
-    }
+      }))
+      .filter((item) => item.bucket !== "Cash" && item.value > 0);
     return buildAllocationSlices(items);
-  }, [holdings, cashBalance]);
+  }, [holdings]);
 
   const holdingOrderKey = holdings.map((h) => h.id).join("\0");
   useEffect(() => {
@@ -839,15 +948,20 @@ export default function InvestmentPortfolioCard({
   );
 
   useEffect(() => {
-    if (!benchmarkOn) return;
     let cancelled = false;
+    const unique = stockSymbolsKey ? stockSymbolsKey.split(",") : [];
+    if (unique.length === 0) {
+      setHoldingCandles(new Map());
+      setSpCandles([]);
+      setBenchmarkLoading(false);
+      return;
+    }
 
     (async () => {
-      setBenchmarkLoading(true);
+      if (benchmarkOn) setBenchmarkLoading(true);
       try {
-        const unique = stockSymbolsKey ? stockSymbolsKey.split(",") : [];
         const [sp, holdingEntries] = await Promise.all([
-          fetchSp500Candles(range),
+          benchmarkOn ? fetchSp500Candles(range) : Promise.resolve([] as ChartCandle[]),
           Promise.all(
             unique.map(async (symbol) => [symbol, await fetchChartCandles(symbol, range)] as const)
           ),
@@ -878,41 +992,37 @@ export default function InvestmentPortfolioCard({
   const benchmarkReady = benchmarkOn && spCandles.length > 0;
 
   const chartData = useMemo(() => {
-    if (!benchmarkReady) {
+    const fallback = () => {
       const first = simulatedChartData[0]?.value ?? 0;
       return simulatedChartData.map((p) => ({
         ...p,
         portfolioValue: p.value,
         portfolioPct: first > 0 ? ((p.value - first) / first) * 100 : 0,
       }));
-    }
+    };
 
-    const timestamps = canonicalTimestamps(spCandles, [...holdingCandles.values()]);
-    if (timestamps.length === 0) {
-      const first = simulatedChartData[0]?.value ?? 0;
-      return simulatedChartData.map((p) => ({
-        ...p,
-        portfolioValue: p.value,
-        portfolioPct: first > 0 ? ((p.value - first) / first) * 100 : 0,
-      }));
-    }
+    const liveCandles = [...holdingCandles.values()].filter((pts) => pts.length > 0);
+    const timestamps = canonicalTimestamps(
+      benchmarkReady ? spCandles : undefined,
+      liveCandles
+    );
+    if (timestamps.length < 2) return fallback();
 
     const stocks = holdings
       .filter((h): h is StockHolding => h.kind === "stock")
       .map((h) => ({ symbol: h.symbol, quantity: h.quantity, currentPrice: h.currentPrice }));
     const reconstructed = reconstructPortfolioValues(stocks, holdingCandles, cashValue, timestamps);
     const hasLivePath = reconstructed.some((v) => v > 0);
-    const portfolioValues = hasLivePath
-      ? reconstructed
-      : resampleValuesToLength(
-          simulatedChartData.map((p) => p.value),
-          timestamps.length
-        );
-    if (portfolioValues.length > 0 && totalValue > 0) {
+    if (!hasLivePath) return fallback();
+
+    const portfolioValues = reconstructed;
+    if (totalValue > 0) {
       portfolioValues[portfolioValues.length - 1] = totalValue;
     }
     const spPrices = pricesOnTimestamps(spCandles, timestamps);
-    return buildBenchmarkChartData({ range, timestamps, portfolioValues, spPrices });
+    const built = buildBenchmarkChartData({ range, timestamps, portfolioValues, spPrices });
+    if (benchmarkReady) return built;
+    return built.map((p) => ({ ...p, value: p.portfolioValue }));
   }, [
     benchmarkReady,
     simulatedChartData,
@@ -1106,23 +1216,17 @@ export default function InvestmentPortfolioCard({
     setQuoteLoading(true);
 
     const [quoteResult, profileResult] = await Promise.allSettled([
-      fetch(`${API_BASE_URL}/api/stocks/quote?symbol=${encodeURIComponent(result.symbol)}`).then((r) => {
-        if (!r.ok) throw new Error(`Quote request failed (${r.status})`);
-        return r.json() as Promise<StockQuote>;
-      }),
-      fetch(`${API_BASE_URL}/api/stocks/profile?symbol=${encodeURIComponent(result.symbol)}`).then((r) => {
-        if (!r.ok) throw new Error(`Profile request failed (${r.status})`);
-        return r.json() as Promise<StockProfile>;
-      }),
+      fetchStockQuote(result.symbol),
+      fetchStockProfile(result.symbol),
     ]);
 
-    if (quoteResult.status === "fulfilled" && quoteResult.value.c > 0) {
+    if (quoteResult.status === "fulfilled" && quoteResult.value && quoteResult.value.c > 0) {
       setSelectedQuote(quoteResult.value);
     } else {
       setQuoteError("Couldn't fetch the live price. You can enter it manually.");
     }
 
-    if (profileResult.status === "fulfilled") {
+    if (profileResult.status === "fulfilled" && profileResult.value) {
       setSelectedProfile(profileResult.value);
     }
 
@@ -1232,7 +1336,7 @@ export default function InvestmentPortfolioCard({
         low: selectedQuote?.l ?? existing?.low ?? currentPrice,
         prevClose: selectedQuote?.pc ?? existing?.prevClose ?? currentPrice,
         logo: selectedProfile?.logo ?? existing?.logo,
-        domain: extractDomain(selectedProfile?.weburl) ?? existing?.domain,
+        domain: selectedProfile?.domain ?? extractDomain(selectedProfile?.weburl) ?? existing?.domain,
         marketCap: selectedProfile?.marketCapitalization ?? existing?.marketCap,
         instrumentType: selectedTicker.type || existing?.instrumentType,
         industry: selectedProfile?.finnhubIndustry ?? existing?.industry,
@@ -1318,13 +1422,17 @@ export default function InvestmentPortfolioCard({
     const id = row?.dataset.holdingId;
     if (!id) return;
 
-    setPressingId(id);
-    if (target.closest("[data-drag-handle]")) {
+    const fromHandle = Boolean(target.closest("[data-drag-handle]"));
+    // Touch: only the grip starts a drag so the asset list can scroll freely.
+    if (e.pointerType === "touch" && !fromHandle) return;
+
+    if (fromHandle) {
       e.preventDefault();
       startHoldingDrag(id, e.pointerId);
       return;
     }
 
+    setPressingId(id);
     pendingDragRef.current = {
       id,
       pointerId: e.pointerId,
@@ -1551,7 +1659,7 @@ export default function InvestmentPortfolioCard({
                       : "border-[#1F2937] bg-black/40 text-[#9CA3AF] hover:border-[#374151] hover:text-white"
                   }`}
                 >
-                  <span aria-hidden="true">📊</span>
+                  <BarChart3 size={11} aria-hidden="true" />
                   VS S&amp;P 500
                 </button>
                 {benchmarkOn && (
@@ -1761,14 +1869,14 @@ export default function InvestmentPortfolioCard({
             <div
               className={`transition-all duration-300 ease-in-out ${
                 holdingsExpanded
-                  ? "mt-2 max-h-[2000px] overflow-visible opacity-100"
+                  ? "mt-2 max-h-[min(52vh,420px)] overflow-hidden opacity-100 md:max-h-[2000px]"
                   : "max-h-0 overflow-hidden opacity-0"
               }`}
             >
               <div
                 ref={holdingsListRef}
-                className={`divide-y divide-[#1F2937] select-none ${
-                  draggingId ? "cursor-grabbing touch-none" : ""
+                className={`matter-touch-scroll divide-y divide-[#1F2937] select-none overflow-y-auto overscroll-contain ${
+                  draggingId ? "cursor-grabbing touch-none" : "touch-pan-y"
                 }`}
                 onPointerDown={handleHoldingsPointerDown}
                 onPointerMove={handleHoldingsPointerMove}
@@ -1880,6 +1988,17 @@ export default function InvestmentPortfolioCard({
                             </>
                           )}
                         </div>
+                        {isStock ? (
+                          <Sparkline
+                            values={
+                              getCachedSpark(h.symbol) ??
+                              sparklineValues(h.symbol, h.currentPrice, h.dayChangePct)
+                            }
+                            width={56}
+                            height={26}
+                            color={dayColor}
+                          />
+                        ) : null}
                         <div className="flex-shrink-0 text-right">
                           <p className="text-sm font-bold tabular-nums text-white">
                             {privacyMoney(privacyMode, value)}
@@ -1922,12 +2041,12 @@ export default function InvestmentPortfolioCard({
 
       {modalOpen && (
         <div
-          className="fixed inset-0 z-[80] flex items-end justify-center bg-slate-950/75 p-4 sm:items-center"
+          className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm"
           onClick={closeModal}
           role="presentation"
         >
           <div
-            className="matter-pop w-full max-w-md overflow-y-auto rounded-2xl border border-[#1F1F1F] bg-[#0A0A0A] p-5 max-h-[min(88vh,720px)]"
+            className="matter-pop matter-touch-scroll w-full max-w-md overflow-y-auto overscroll-contain rounded-2xl border border-[#1F1F1F] bg-[#0A0A0A] p-5 max-h-[min(88vh,720px)]"
             onClick={(e) => e.stopPropagation()}
             role="dialog"
             aria-modal="true"
@@ -1972,6 +2091,16 @@ export default function InvestmentPortfolioCard({
 
             {modalTab === "connect" && (
               <div className="mt-4 space-y-2.5">
+                <div className="rounded-2xl border border-emerald-500/25 bg-emerald-500/8 p-3">
+                  <p className="text-[11px] font-extrabold uppercase tracking-[0.14em] text-emerald-300">
+                    Connect with Plaid
+                  </p>
+                  <p className="mt-1.5 text-[11px] leading-relaxed text-slate-300">
+                    Open Plaid Link and import live sandbox balances and any investment holdings the
+                    institution returns.
+                  </p>
+                  <PlaidConnectButton className="mt-3" />
+                </div>
                 <div className="rounded-xl border border-amber-500/25 bg-amber-500/8 px-3 py-2.5 text-[11px] leading-relaxed text-amber-100/90">
                   Partner links open the broker in a new tab. They do not import a Verified Brokerage
                   Portfolio, so investment achievement badges stay locked until API sync is connected.
@@ -2082,7 +2211,7 @@ export default function InvestmentPortfolioCard({
                           <StockLogo
                             symbol={selectedTicker.symbol}
                             finnhubLogo={selectedProfile?.logo}
-                            domain={extractDomain(selectedProfile?.weburl)}
+                            domain={selectedProfile?.domain ?? extractDomain(selectedProfile?.weburl)}
                             size={32}
                           />
                           <span className="flex-shrink-0 rounded-md bg-emerald-500/20 px-1.5 py-0.5 text-[10px] font-extrabold text-emerald-300">

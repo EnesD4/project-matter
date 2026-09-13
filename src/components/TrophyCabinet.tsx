@@ -132,7 +132,7 @@ function BadgeDetailModal({
 
   return (
     <div
-      className="fixed inset-0 z-[90] flex items-end justify-center bg-slate-950/80 p-4 sm:items-center"
+      className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm"
       onClick={onClose}
       role="presentation"
     >
@@ -452,7 +452,7 @@ function CabinetModal({
 
   return (
     <div
-      className="fixed inset-0 z-[70] flex items-end justify-center bg-slate-950/80 p-4 sm:items-center"
+      className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm"
       onClick={onClose}
       role="presentation"
     >

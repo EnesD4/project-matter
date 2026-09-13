@@ -1,18 +1,25 @@
 import {
-  Award,
+  Banknote,
   BookOpen,
   Check,
   ChevronRight,
-  LayoutDashboard,
+  Coins,
+  Flame,
+  Landmark,
   Lock,
   Map,
   Play,
+  ScrollText,
+  Settings,
   Shield,
   Sparkles,
+  Sprout,
   TrendingUp,
   User,
   Wallet,
+  type LucideIcon,
 } from "lucide-react";
+import RoadmapGlyph from "./RoadmapGlyph";
 import React, { useEffect, useMemo, useState } from "react";
 import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts";
 import { useFinancialRoadmap, useRoadmapTodoProgress } from "../hooks/useFinancialRoadmap";
@@ -55,20 +62,25 @@ import RetirementScreen from "./RetirementScreen";
 import StreakBadge from "./StreakBadge";
 
 export type WebDashboardNavId =
-  | "dashboard"
-  | "cashflow"
   | "investments"
+  | "retirement"
+  | "cashflow"
   | "lessons"
-  | "certificates"
-  | "profile"
-  | "retirement";
+  | "settings"
+  | "sprout"
+  | "dashboard"
+  | "certificates";
 
-const NAV_ITEMS: Array<{ id: Exclude<WebDashboardNavId, "profile" | "retirement">; label: string; icon: React.ReactNode }> = [
-  { id: "dashboard", label: "Dashboard", icon: <LayoutDashboard size={16} /> },
-  { id: "cashflow", label: "Cash Flow", icon: <Wallet size={16} /> },
+const NAV_ITEMS: Array<{
+  id: Exclude<WebDashboardNavId, "sprout" | "dashboard" | "certificates">;
+  label: string;
+  icon: React.ReactNode;
+}> = [
   { id: "investments", label: "Investments", icon: <TrendingUp size={16} /> },
+  { id: "retirement", label: "Retirement", icon: <Shield size={16} /> },
+  { id: "cashflow", label: "Cash Flow", icon: <Wallet size={16} /> },
   { id: "lessons", label: "Lessons", icon: <BookOpen size={16} /> },
-  { id: "certificates", label: "Certificates", icon: <Award size={16} /> },
+  { id: "settings", label: "Settings", icon: <Settings size={16} /> },
 ];
 
 const RETIRE_AGE = 65;
@@ -87,7 +99,7 @@ type BreakdownSlice = {
   label: string;
   value: number;
   color: string;
-  emoji: string;
+  Icon: LucideIcon;
 };
 
 export type WebDashboardProps = {
@@ -127,6 +139,7 @@ export type WebDashboardProps = {
   bondPrices: Record<string, number>;
   safetyQuotesLoading?: boolean;
   cashFlowExtra?: React.ReactNode;
+  sproutExtra?: React.ReactNode;
 };
 
 function activeLesson(completed: string[]): LessonModuleDef {
@@ -282,8 +295,9 @@ export default function WebDashboard({
   bondPrices,
   safetyQuotesLoading = false,
   cashFlowExtra,
+  sproutExtra,
 }: WebDashboardProps) {
-  const [view, setView] = useState<WebDashboardNavId>("dashboard");
+  const [view, setView] = useState<WebDashboardNavId>("investments");
   const [streak, setStreak] = useState(() => getLessonStreak(user.id).current);
   const [completed, setCompleted] = useState(() => readLessonProgress(user.id).completed);
   const [goldEarned, setGoldEarned] = useState(() => loadCertificates(user.id).some((cert) => cert.tier === "gold"));
@@ -310,12 +324,12 @@ export default function WebDashboard({
   const slices = useMemo<BreakdownSlice[]>(
     () =>
       [
-        { key: "portfolio", label: "Portfolio", value: stockHoldingsValue, color: BREAKDOWN_COLORS.portfolio, emoji: "📈" },
-        { key: "retirement", label: "Retirement", value: retirementBalance, color: BREAKDOWN_COLORS.retirement, emoji: "🛡️" },
-        { key: "checking", label: "Checking", value: liquidCashValue, color: BREAKDOWN_COLORS.checking, emoji: "💵" },
-        { key: "hysa", label: "HYSA", value: hysaCashValue, color: BREAKDOWN_COLORS.hysa, emoji: "🏦" },
-        { key: "gold", label: "Gold", value: goldValue, color: BREAKDOWN_COLORS.gold, emoji: "🪙" },
-        { key: "bonds", label: "Bonds", value: bondsValue, color: BREAKDOWN_COLORS.bonds, emoji: "📜" },
+        { key: "portfolio", label: "Portfolio", value: stockHoldingsValue, color: BREAKDOWN_COLORS.portfolio, Icon: TrendingUp },
+        { key: "retirement", label: "Retirement", value: retirementBalance, color: BREAKDOWN_COLORS.retirement, Icon: Shield },
+        { key: "checking", label: "Checking", value: liquidCashValue, color: BREAKDOWN_COLORS.checking, Icon: Banknote },
+        { key: "hysa", label: "HYSA", value: hysaCashValue, color: BREAKDOWN_COLORS.hysa, Icon: Landmark },
+        { key: "gold", label: "Gold", value: goldValue, color: BREAKDOWN_COLORS.gold, Icon: Coins },
+        { key: "bonds", label: "Bonds", value: bondsValue, color: BREAKDOWN_COLORS.bonds, Icon: ScrollText },
       ].filter((slice) => slice.value > 0),
     [stockHoldingsValue, retirementBalance, liquidCashValue, hysaCashValue, goldValue, bondsValue]
   );
@@ -347,16 +361,20 @@ export default function WebDashboard({
     requestOpenLesson({ moduleId: lesson.id, phaseId: lesson.phaseId });
     setView("lessons");
   };
+  const openSprout = () => {
+    setView("sprout");
+    onConsultSocrates();
+  };
 
   return (
     <div className="flex h-screen overflow-hidden bg-black text-slate-50">
       <aside className="flex h-full w-[240px] flex-shrink-0 flex-col border-r border-[#1F1F1F] bg-[#050505]">
         <div className="flex items-center gap-2 px-5 pb-4 pt-6">
-          <span className="grid h-9 w-9 place-items-center rounded-xl border border-emerald-500/25 bg-emerald-500/10 text-lg" aria-hidden>
-            🌿
+          <span className="grid h-9 w-9 place-items-center rounded-xl border border-emerald-500/25 bg-emerald-500/10 text-emerald-400" aria-hidden>
+            <Sprout size={18} />
           </span>
           <div>
-            <p className="m-0 text-[15px] font-extrabold tracking-tight text-white">Sprout 🌿</p>
+            <p className="m-0 text-[15px] font-extrabold tracking-tight text-white">Sprout</p>
             <p className="m-0 text-[10px] font-bold uppercase tracking-[0.16em] text-emerald-400/80">Desktop</p>
           </div>
         </div>
@@ -389,14 +407,44 @@ export default function WebDashboard({
             <StreakBadge streak={streak} size="sm" />
           </div>
           <p className="m-0 px-1 text-[11px] font-semibold text-slate-500">
-            {streak > 0 ? `${streak} day${streak === 1 ? "" : "s"} · keep the 🔥 lit` : "Complete a lesson to start 🔥"}
+            <span className="inline-flex items-center gap-1">
+              <Flame size={11} className={streak > 0 ? "text-orange-400" : "text-slate-600"} aria-hidden />
+              {streak > 0
+                ? `${streak} day${streak === 1 ? "" : "s"} · keep the streak going`
+                : "Complete a lesson to start a streak"}
+            </span>
           </p>
 
           <button
             type="button"
-            onClick={() => setView("profile")}
+            onClick={openSprout}
+            aria-current={view === "sprout" ? "page" : undefined}
+            className={`flex w-full items-center gap-2.5 rounded-2xl border px-3 py-2.5 text-left transition ${
+              view === "sprout"
+                ? "border-emerald-400/50 bg-gradient-to-br from-emerald-500/25 via-emerald-500/10 to-[#0A0A0A] shadow-[0_0_24px_rgba(16,185,129,0.18)]"
+                : "border-emerald-500/25 bg-gradient-to-br from-emerald-500/15 via-[#0A0A0A] to-[#050505] hover:border-emerald-400/40 hover:from-emerald-500/20"
+            }`}
+          >
+            <span
+              className="grid h-9 w-9 flex-shrink-0 place-items-center rounded-xl border border-emerald-400/30 bg-emerald-500/15 text-emerald-300"
+              aria-hidden
+            >
+              <Sparkles size={16} />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-[13px] font-extrabold text-white">Sprout AI</span>
+              <span className="block truncate text-[11px] font-semibold text-emerald-300/80">
+                Educational finance coach
+              </span>
+            </span>
+            <Sparkles size={14} className="flex-shrink-0 text-emerald-400" />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setView("settings")}
             className={`flex w-full items-center gap-2.5 rounded-2xl border px-2.5 py-2 text-left transition ${
-              view === "profile"
+              view === "settings"
                 ? "border-emerald-500/40 bg-emerald-500/10"
                 : "border-[#1F1F1F] bg-[#0A0A0A] hover:border-emerald-500/25"
             }`}
@@ -449,7 +497,7 @@ export default function WebDashboard({
                       : "border-[#1F1F1F] bg-[#0A0A0A] text-slate-300 hover:border-emerald-500/30"
                   }`}
                 >
-                  <span aria-hidden="true">🛡️</span>
+                  <Shield size={18} aria-hidden="true" />
                 </button>
               </header>
 
@@ -624,7 +672,7 @@ export default function WebDashboard({
         </div>
       </div>
 
-      <div className={view === "profile" ? "matter-dividend-scroll min-w-0 flex-1 overflow-y-auto px-6 py-6" : "hidden"}>
+      <div className={view === "settings" ? "matter-dividend-scroll min-w-0 flex-1 overflow-y-auto px-6 py-6" : "hidden"}>
         <div className="mx-auto w-full max-w-2xl">
           <ProfileScreen
             user={user}
@@ -649,7 +697,7 @@ export default function WebDashboard({
             holdings={holdings}
             totalPortfolioValue={stockHoldingsValue}
             onHoldingsChange={onHoldingsChange}
-            onConsultSocrates={onConsultSocrates}
+            onConsultSocrates={openSprout}
             cashBalance={cashBalance}
             privacyMode={privacyMode}
             onTogglePrivacy={onTogglePrivacy}
@@ -680,6 +728,34 @@ export default function WebDashboard({
             onAgeChange={onAgeChange}
             onBalanceChange={onBalanceChange}
           />
+        </div>
+      </div>
+
+      <div
+        className={view === "sprout" ? "flex min-w-0 flex-1 flex-col overflow-hidden px-6 py-6" : "hidden"}
+        aria-hidden={view !== "sprout"}
+      >
+        <div className="mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col">
+          {sproutExtra ?? (
+            <section className="flex min-h-0 flex-1 flex-col rounded-2xl border border-emerald-500/25 bg-gradient-to-b from-emerald-500/15 to-[#0A0A0A] p-6">
+              <p className="m-0 text-[11px] font-extrabold uppercase tracking-[0.16em] text-emerald-300">
+                Sprout AI
+              </p>
+              <p className="mt-2 text-2xl font-extrabold text-white">Your educational money coach</p>
+              <p className="mt-2 text-[13px] font-semibold leading-relaxed text-slate-400">
+                Ask about budgeting, compound interest, debt reduction, or organizing expenses. Sprout teaches
+                general concepts — never stock picks or tax advice.
+              </p>
+              <button
+                type="button"
+                onClick={onConsultSocrates}
+                className="mt-5 inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-500 px-4 py-2.5 text-[13px] font-extrabold text-[#042F2E] transition hover:bg-emerald-400"
+              >
+                <Sparkles size={14} />
+                Open Sprout AI
+              </button>
+            </section>
+          )}
         </div>
       </div>
     </div>
@@ -749,8 +825,10 @@ function BalanceBreakdown({
             return (
               <li key={slice.key} className="flex items-center gap-2 text-[12px]">
                 <span className="h-2.5 w-2.5 flex-shrink-0 rounded-full" style={{ background: slice.color }} />
-                <span className="min-w-0 flex-1 truncate font-semibold text-slate-300">
-                  <span aria-hidden="true">{slice.emoji} </span>
+                <span className="inline-flex min-w-0 flex-1 items-center gap-1.5 truncate font-semibold text-slate-300">
+                  <span className="flex-shrink-0 text-slate-400" aria-hidden>
+                    {React.createElement(slice.Icon, { size: 13 })}
+                  </span>
                   {slice.label}
                 </span>
                 <span className="tabular-nums font-bold text-white">{privacyMoney(privacyMode, slice.value)}</span>
@@ -791,7 +869,14 @@ function RoadmapChecklist() {
             Financial Roadmap
           </h2>
           <p className="mt-1 text-[13px] font-extrabold text-white">
-            {roadmap ? `${roadmap.emoji} ${roadmap.title}` : "Build a money profile"}
+            {roadmap ? (
+              <span className="inline-flex items-center gap-1.5">
+                <RoadmapGlyph archetype={roadmap.archetype} size={15} color={roadmap.accent} />
+                {roadmap.title}
+              </span>
+            ) : (
+              "Build a money profile"
+            )}
           </p>
         </div>
         {roadmap ? (
@@ -805,7 +890,7 @@ function RoadmapChecklist() {
         <div className="mt-4 rounded-2xl border border-dashed border-neutral-800 bg-black/40 px-4 py-5 text-center">
           <Map size={20} className="mx-auto text-emerald-400" />
           <p className="mt-2 text-[12px] font-semibold text-slate-400">
-            Answer three quick questions and we’ll turn your numbers into a real checklist.
+            Connect a demo bank or pick a mock profile to unlock a live checklist.
           </p>
           <button
             type="button"

@@ -7,7 +7,9 @@ import {
   MessageCircle,
   Sparkles,
 } from "lucide-react";
+import { getApiBaseUrl } from "../lib/apiBase";
 import { getMarketStatusHeader } from "../lib/marketInsights";
+import { EDUCATIONAL_DISCLAIMER } from "../lib/sproutAi";
 
 type DailyReportScreenProps = {
   onBack: () => void;
@@ -22,10 +24,8 @@ type DailyReportResponse = {
   sentimentTakeaway: string;
   source: "ai" | "fallback";
   warning?: string;
+  disclaimer?: string;
 };
-
-const API_BASE_URL =
-  (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() || "http://localhost:5000";
 
 const BODY = "#F3F4F6";
 const CARD = "#111827";
@@ -52,7 +52,7 @@ export default function DailyReportScreen({
       setLoading(true);
       setError(null);
       try {
-        const res = await fetch(`${API_BASE_URL}/api/market/daily-report`, {
+        const res = await fetch(`${getApiBaseUrl()}/api/market/daily-report`, {
           signal: controller.signal,
         });
         if (!res.ok) {
@@ -231,6 +231,9 @@ export default function DailyReportScreen({
                   {report.source === "ai" ? "Live AI synthesis" : "Macro fallback"}
                 </span>
               </div>
+              <p className="mt-4 text-center text-[10px] font-semibold italic leading-relaxed text-[#6B7280]">
+                {report.disclaimer || EDUCATIONAL_DISCLAIMER}
+              </p>
             </div>
           ) : null}
         </section>

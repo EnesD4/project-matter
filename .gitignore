@@ -3,6 +3,10 @@ server/node_modules/
 server/prisma/dev.db
 server/prisma/dev.db-journal
 server/.env
+.env
+.env.*
+!.env.example
+.vercel
 dist/
 .DS_Store
 *.log

@@ -1,4 +1,5 @@
 import { RefreshCw, Sparkles } from "lucide-react";
+import RoadmapGlyph from "./RoadmapGlyph";
 import React from "react";
 import { useFinancialRoadmap } from "../hooks/useFinancialRoadmap";
 import { formatCurrencyValue } from "../lib/money";
@@ -51,8 +52,9 @@ export default function ProfileModal({ onRecalculate }: ProfileModalProps) {
 
       {roadmap ? (
         <div className="mt-3 space-y-2">
-          <p className="text-sm font-extrabold text-white">
-            {roadmap.emoji} {roadmap.title}
+          <p className="inline-flex items-center gap-1.5 text-sm font-extrabold text-white">
+            <RoadmapGlyph archetype={roadmap.archetype} size={15} color={roadmap.accent} />
+            {roadmap.title}
           </p>
           <dl className="space-y-1.5 text-xs text-slate-300">
             <div className="flex justify-between gap-3">

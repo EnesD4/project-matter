@@ -1,7 +1,8 @@
 import { getApiBaseUrl } from "./auth";
+import { setCachedSpark } from "./marketCache";
 import { ChartCandle, formatChartLabel, RangeOption, SeriesPoint } from "./priceSimulation";
 
-const API_BASE_URL = getApiBaseUrl();
+const apiBase = () => getApiBaseUrl();
 
 /** VOO tracks the S&P 500; ^GSPC is the index itself. */
 export const SP500_TICKERS = ["VOO", "^GSPC"] as const;
@@ -23,14 +24,21 @@ export type BenchmarkChartPoint = SeriesPoint & {
 
 export async function fetchChartCandles(symbol: string, range: RangeOption): Promise<ChartCandle[]> {
   const res = await fetch(
-    `${API_BASE_URL}/api/stocks/${encodeURIComponent(symbol)}/chart?range=${encodeURIComponent(range)}`
+    `${apiBase()}/api/stocks/${encodeURIComponent(symbol)}/chart?range=${encodeURIComponent(range)}`
   );
   if (!res.ok) return [];
   const data = (await res.json()) as { points?: ChartCandle[] };
   if (!Array.isArray(data.points)) return [];
-  return data.points.filter(
+  const points = data.points.filter(
     (p) => Number.isFinite(p.price) && p.price > 0 && Number.isFinite(p.timestamp)
   );
+  if (points.length > 1) {
+    setCachedSpark(
+      symbol,
+      points.map((point) => point.price)
+    );
+  }
+  return points;
 }
 
 export async function fetchSp500Candles(range: RangeOption): Promise<ChartCandle[]> {

@@ -1,7 +1,5 @@
 import { readLocalItem } from "./storage";
-
-const API_BASE_URL =
-  (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() || "http://localhost:5000";
+import { fetchStockQuote } from "./stockService";
 
 export const TROY_OZ_GRAMS = 31.1034768;
 export const SAFETY_NET_STARTER_MONTHS = 3;
@@ -26,6 +24,15 @@ export type SafetyNetBond = {
   shares: number;
 };
 
+export type SafetyNetReserveKind = "checking" | "hysa" | "money-market" | "cash";
+
+export type SafetyNetReserveLine = {
+  id: string;
+  label: string;
+  kind: SafetyNetReserveKind;
+  balance: number;
+};
+
 export type SafetyNetConfig = {
   /** 0–100 share of live brokerage stocks/ETFs counted as liquid reserves. */
   portfolioPct: number;
@@ -34,6 +41,8 @@ export type SafetyNetConfig = {
   bonds: SafetyNetBond[];
   /** FDIC-insured HYSA / T-bill / yield-account cash, separate from checking. */
   hysaCash: number;
+  /** Connected checking, HYSA, money market, and cash accounts. */
+  reserveLines: SafetyNetReserveLine[];
 };
 
 export type SafetyNetTotals = {
@@ -81,6 +90,14 @@ function asSymbol(value: unknown): string {
     .slice(0, MAX_SYMBOL_LEN);
 }
 
+const RESERVE_KINDS = new Set<SafetyNetReserveKind>(["checking", "hysa", "money-market", "cash"]);
+
+function parseReserveKind(value: unknown): SafetyNetReserveKind {
+  return typeof value === "string" && RESERVE_KINDS.has(value as SafetyNetReserveKind)
+    ? (value as SafetyNetReserveKind)
+    : "cash";
+}
+
 export function emptySafetyNet(): SafetyNetConfig {
   return {
     portfolioPct: 0,
@@ -88,6 +105,7 @@ export function emptySafetyNet(): SafetyNetConfig {
     goldUnit: "oz",
     bonds: [],
     hysaCash: 0,
+    reserveLines: [],
   };
 }
 
@@ -126,12 +144,29 @@ export function parseSafetyNet(raw: unknown): SafetyNetConfig {
     if (bonds.length >= MAX_BONDS) break;
   }
 
+  const reserveLines: SafetyNetReserveLine[] = [];
+  const rawLines = Array.isArray(rec.reserveLines) ? rec.reserveLines : [];
+  for (const row of rawLines) {
+    if (!row || typeof row !== "object") continue;
+    const item = row as Record<string, unknown>;
+    const id = asId(item.id);
+    if (!id) continue;
+    reserveLines.push({
+      id,
+      label: asLabel(item.label, "Cash account"),
+      kind: parseReserveKind(item.kind),
+      balance: asMoney(item.balance),
+    });
+    if (reserveLines.length >= MAX_BONDS) break;
+  }
+
   return {
     portfolioPct: asPct(rec.portfolioPct),
     goldAmount: asMoney(rec.goldAmount),
     goldUnit: rec.goldUnit === "g" ? "g" : "oz",
     bonds,
     hysaCash: asMoney(rec.hysaCash),
+    reserveLines,
   };
 }
 
@@ -211,15 +246,8 @@ export function writeCachedGoldPrice(price: number) {
 }
 
 export async function fetchQuotePrice(symbol: string, signal?: AbortSignal): Promise<number | null> {
-  const ticker = symbol.trim().toUpperCase();
-  if (!ticker) return null;
-  const res = await fetch(`${API_BASE_URL}/api/stocks/quote?symbol=${encodeURIComponent(ticker)}`, {
-    signal,
-  });
-  if (!res.ok) return null;
-  const data = (await res.json()) as { c?: unknown };
-  const price = typeof data?.c === "number" ? data.c : Number(data?.c);
-  return Number.isFinite(price) && price > 0 ? price : null;
+  const quote = await fetchStockQuote(symbol, signal);
+  return quote && quote.c > 0 ? quote.c : null;
 }
 
 export async function fetchGoldPricePerOz(signal?: AbortSignal): Promise<number | null> {

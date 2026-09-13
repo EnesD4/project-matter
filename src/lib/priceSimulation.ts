@@ -1,9 +1,9 @@
 /**
  * Chart helpers + a last-resort historical simulation.
  *
- * Live stock/ETF candles come from GET /api/stocks/:symbol/chart (Yahoo Finance).
+ * Live stock/ETF candles come from GET /api/stocks/:symbol/chart (Polygon aggregates).
  * `buildHistoricalSeries` is only used when that endpoint returns no points
- * (Yahoo throttle, network error, unknown ticker) so the UI never goes blank.
+ * (rate limit, network error, unknown ticker) so the UI never goes blank.
  */
 
 export type RangeOption = "1D" | "1W" | "1M" | "YTD" | "1Y" | "ALL";
@@ -233,6 +233,16 @@ export function buildHistoricalSeries(
   }
 
   return buildWalkSeries(seedKey, range, currentValue);
+}
+
+/** Instant mini-chart values for list rows — cache-free and local. */
+export function sparklineValues(
+  seedKey: string,
+  currentValue: number,
+  todayChangePct = 0,
+  range: RangeOption = "1M"
+): number[] {
+  return buildHistoricalSeries(seedKey, range, currentValue, todayChangePct).map((point) => point.value);
 }
 
 /** Percentage change from the first to the last point of a series. */

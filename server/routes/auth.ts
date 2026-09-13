@@ -18,6 +18,7 @@ function publicUser(user: UserWithSettings) {
     avatarUrl: user.avatarUrl,
     createdAt: user.createdAt,
     hasCompletedOnboarding: user.settings?.hasCompletedOnboarding ?? false,
+    authProvider: user.googleId ? 'google' : 'password',
   };
 }
 
@@ -35,10 +36,15 @@ router.post('/register', async (req, res: Response) => {
       .trim()
       .toLowerCase();
     const password = String(req.body?.password || '');
-    const name = String(req.body?.name || '').trim();
+    const name =
+      String(req.body?.name || '').trim() ||
+      email
+        .split('@')[0]
+        .replace(/[._-]+/g, ' ')
+        .replace(/\b\w/g, (c) => c.toUpperCase());
 
-    if (!email || !password || !name) {
-      return res.status(400).json({ error: 'Name, email, and password are required' });
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required' });
     }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return res.status(400).json({ error: 'Enter a valid email address' });
@@ -69,6 +75,61 @@ router.post('/register', async (req, res: Response) => {
   } catch (error) {
     console.error('Register error:', error);
     return res.status(500).json({ error: 'Failed to register' });
+  }
+});
+
+const DEMO_EMAIL = 'demo@sprout.local';
+const DEMO_NAME = 'Demo Investor';
+
+function allowDemoLogin(): boolean {
+  if (process.env.ALLOW_DEMO_LOGIN === 'true') return true;
+  return process.env.NODE_ENV !== 'production';
+}
+
+router.post('/demo', async (req, res: Response) => {
+  if (!allowDemoLogin()) {
+    return res.status(403).json({ error: 'Demo login is disabled' });
+  }
+
+  try {
+    const existing = await prisma.user.findUnique({
+      where: { email: DEMO_EMAIL },
+      include: { settings: true },
+    });
+
+    const user = existing
+      ? existing.settings
+        ? existing
+        : {
+            ...existing,
+            settings: await prisma.userSettings.create({
+              data: {
+                userId: existing.id,
+                hasCompletedOnboarding: true,
+                wantsCapitalGrowth: true,
+                wantsFinancialLiteracy: true,
+              },
+            }),
+          }
+      : await prisma.user.create({
+          data: {
+            email: DEMO_EMAIL,
+            name: DEMO_NAME,
+            settings: {
+              create: {
+                hasCompletedOnboarding: true,
+                wantsCapitalGrowth: true,
+                wantsFinancialLiteracy: true,
+              },
+            },
+          },
+          include: { settings: true },
+        });
+
+    return res.json(authResponse(user));
+  } catch (error) {
+    console.error('Demo login error:', error);
+    return res.status(500).json({ error: 'Failed to start demo session' });
   }
 });
 
@@ -152,6 +213,7 @@ router.post('/google', async (req, res: Response) => {
             settings: {
               create: {
                 hasCompletedOnboarding: false,
+                hasCompletedBankSetup: false,
               },
             },
           },
@@ -163,6 +225,7 @@ router.post('/google', async (req, res: Response) => {
         data: {
           userId: user.id,
           hasCompletedOnboarding: false,
+          hasCompletedBankSetup: false,
         },
       });
       return res.json(authResponse({ ...user, settings }));

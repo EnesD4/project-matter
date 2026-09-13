@@ -29,12 +29,20 @@ type SafetyNetBond = {
   shares: number;
 };
 
+type SafetyNetReserveLine = {
+  id: string;
+  label: string;
+  kind: 'checking' | 'hysa' | 'money-market' | 'cash';
+  balance: number;
+};
+
 type SafetyNetConfig = {
   portfolioPct: number;
   goldAmount: number;
   goldUnit: 'oz' | 'g';
   bonds: SafetyNetBond[];
   hysaCash: number;
+  reserveLines: SafetyNetReserveLine[];
 };
 
 const MAX_BONDS = 50;
@@ -137,12 +145,32 @@ function parseSafetyNetObject(raw: unknown): SafetyNetConfig {
     });
     if (bonds.length >= MAX_BONDS) break;
   }
+  const reserveLines: SafetyNetReserveLine[] = [];
+  const rawLines = rec && Array.isArray(rec.reserveLines) ? rec.reserveLines : [];
+  for (const row of rawLines) {
+    if (!row || typeof row !== 'object') continue;
+    const item = row as Record<string, unknown>;
+    const id = asId(item.id);
+    if (!id) continue;
+    const kind =
+      item.kind === 'hysa' || item.kind === 'money-market' || item.kind === 'checking' || item.kind === 'cash'
+        ? item.kind
+        : 'cash';
+    reserveLines.push({
+      id,
+      label: asLabel(item.label, 'Cash account'),
+      kind,
+      balance: asMoney(item.balance),
+    });
+    if (reserveLines.length >= MAX_BONDS) break;
+  }
   return {
     portfolioPct: Math.min(100, asMoney(rec?.portfolioPct)),
     goldAmount: asMoney(rec?.goldAmount),
     goldUnit: rec?.goldUnit === 'g' ? 'g' : 'oz',
     bonds,
     hysaCash: asMoney(rec?.hysaCash),
+    reserveLines,
   };
 }
 

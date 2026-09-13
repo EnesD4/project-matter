@@ -9,6 +9,7 @@ import {
   Landmark,
   Loader2,
   LogOut,
+  RotateCcw,
   Mail,
   MessageSquare,
   Moon,
@@ -29,12 +30,13 @@ import {
   ageFromBirthDate,
   applyAgeToBirthDate,
   clampAge,
+  maxBirthDateISO,
   minBirthDateISO,
-  todayISODate,
 } from "../lib/age";
+import { parseToIsoDate, toUsDateDisplay } from "../lib/usDate";
+import UsDateField from "./UsDateField";
 import { evaluateTrophies, type Trophy } from "../lib/achievements";
 import {
-  getLessonStreak,
   msUntilNextLocalMidnight,
   STREAK_UPDATED_EVENT,
 } from "../lib/streakService";
@@ -45,8 +47,8 @@ import {
 import type { Holding } from "./InvestmentPortfolioCard";
 import { holdingAccount } from "../lib/accountKind";
 import CertificatesSection from "./CertificatesSection";
+import DemoScenarioSwitcher from "./DemoScenarioSwitcher";
 import ProfileModal from "./ProfileModal";
-import StreakBadge from "./StreakBadge";
 import TrophyCabinet from "./TrophyCabinet";
 
 type ProfileScreenProps = {
@@ -54,6 +56,7 @@ type ProfileScreenProps = {
   settings: UserSettings | null;
   onSettingsChange: (settings: UserSettings) => void;
   onLogout: () => void;
+  onResetAppState?: () => void;
   holdings: Holding[];
   holdingsReady?: boolean;
   netWorth: number;
@@ -99,11 +102,14 @@ function formatJoinedDate(iso?: string) {
   if (!iso) return "—";
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "—";
-  return date.toLocaleDateString("en-US", {
-    month: "long",
-    day: "numeric",
-    year: "numeric",
-  });
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${month}/${day}/${date.getFullYear()}`;
+}
+
+function birthDraftFromSettings(birthDate?: string | null) {
+  if (!birthDate) return "";
+  return toUsDateDisplay(birthDate);
 }
 
 type SettingsRowProps = {
@@ -178,6 +184,7 @@ export default function ProfileScreen({
   settings,
   onSettingsChange,
   onLogout,
+  onResetAppState,
   holdings,
   holdingsReady = false,
   netWorth,
@@ -191,16 +198,15 @@ export default function ProfileScreen({
   const [savingPrefs, setSavingPrefs] = useState(false);
   const [prefError, setPrefError] = useState<string | null>(null);
   const [ageDraft, setAgeDraft] = useState(settings?.age != null ? String(settings.age) : "");
-  const [birthDraft, setBirthDraft] = useState(settings?.birthDate ?? "");
+  const [birthDraft, setBirthDraft] = useState(birthDraftFromSettings(settings?.birthDate));
   const [savingAge, setSavingAge] = useState(false);
   const [ageError, setAgeError] = useState<string | null>(null);
   const [trophies, setTrophies] = useState<Trophy[]>([]);
   const [soundEnabled, setSoundEnabled] = useSoundEnabled();
-  const [lessonStreak, setLessonStreak] = useState(() => getLessonStreak(user.id).current);
 
   useEffect(() => {
     setAgeDraft(settings?.age != null ? String(settings.age) : "");
-    setBirthDraft(settings?.birthDate ?? "");
+    setBirthDraft(birthDraftFromSettings(settings?.birthDate));
   }, [settings?.age, settings?.birthDate]);
 
   useEffect(() => {
@@ -218,7 +224,6 @@ export default function ProfileScreen({
           holdingsReady,
         })
       );
-      setLessonStreak(getLessonStreak(user.id).current);
       window.clearTimeout(midnightTimer);
       midnightTimer = window.setTimeout(refresh, msUntilNextLocalMidnight());
     };
@@ -272,6 +277,7 @@ export default function ProfileScreen({
         wantsCapitalGrowth: optimistic.wantsCapitalGrowth,
         wantsFinancialLiteracy: optimistic.wantsFinancialLiteracy,
         hasCompletedOnboarding: true,
+        hasCompletedBankSetup: optimistic.hasCompletedBankSetup,
         age: optimistic.age ?? null,
         birthDate: optimistic.birthDate ?? null,
       });
@@ -298,6 +304,7 @@ export default function ProfileScreen({
         wantsCapitalGrowth: optimistic.wantsCapitalGrowth,
         wantsFinancialLiteracy: optimistic.wantsFinancialLiteracy,
         hasCompletedOnboarding: true,
+        hasCompletedBankSetup: optimistic.hasCompletedBankSetup,
         age,
         birthDate,
       });
@@ -310,19 +317,23 @@ export default function ProfileScreen({
     }
   };
 
-  const commitBirthDate = (iso: string) => {
+  const commitBirthDate = (iso: string | null) => {
     if (!iso) {
-      setBirthDraft(settings?.birthDate ?? "");
+      setBirthDraft(birthDraftFromSettings(settings?.birthDate));
+      return;
+    }
+    if (iso === (parseToIsoDate(settings?.birthDate ?? "") || settings?.birthDate)) {
+      setBirthDraft(toUsDateDisplay(iso));
       return;
     }
     const nextAge = ageFromBirthDate(iso);
     if (nextAge == null) {
-      setAgeError("Enter a valid birth date.");
-      setBirthDraft(settings?.birthDate ?? "");
+      setAgeError("Enter a valid birth date as MM/DD/YYYY.");
+      setBirthDraft(birthDraftFromSettings(settings?.birthDate));
       return;
     }
     const clamped = clampAge(nextAge);
-    setBirthDraft(iso);
+    setBirthDraft(toUsDateDisplay(iso));
     setAgeDraft(String(clamped));
     void persistAge(clamped, iso);
   };
@@ -334,9 +345,10 @@ export default function ProfileScreen({
       return;
     }
     const clamped = clampAge(parsed);
-    const birthDate = applyAgeToBirthDate(clamped, birthDraft || settings?.birthDate);
+    const existingIso = parseToIsoDate(birthDraft) || settings?.birthDate || null;
+    const birthDate = applyAgeToBirthDate(clamped, existingIso);
     setAgeDraft(String(clamped));
-    setBirthDraft(birthDate);
+    setBirthDraft(toUsDateDisplay(birthDate));
     void persistAge(clamped, birthDate);
   };
 
@@ -412,23 +424,27 @@ export default function ProfileScreen({
                   />
                 </label>
                 <label style={styles.ageField}>
-                  <span style={styles.ageFieldLabel}>Birth date</span>
-                  <input
-                    type="date"
-                    aria-label="Birth date"
+                  <span style={styles.ageFieldLabel} id="profile-dob-label">
+                    Birth date
+                  </span>
+                  <UsDateField
+                    id="profile-dob"
+                    labelledBy="profile-dob-label"
                     value={birthDraft}
                     min={minBirthDateISO()}
-                    max={todayISODate()}
+                    max={maxBirthDateISO()}
                     disabled={savingAge || !settings}
-                    onChange={(e) => commitBirthDate(e.target.value)}
-                    style={styles.dateInput}
+                    onChange={setBirthDraft}
+                    onCommit={commitBirthDate}
+                    wrapStyle={styles.dateWrap}
+                    inputStyle={styles.dateInput}
                   />
                 </label>
               </span>
               <span style={styles.ageHint}>
                 {savingAge
                   ? "Saving…"
-                  : "Used for retirement projections. Edit anytime."}
+                  : "Enter MM/DD/YYYY. Used for Sprout AI advice and compound growth projections. Edit anytime."}
               </span>
               {ageError ? <span style={styles.prefError}>{ageError}</span> : null}
             </span>
@@ -496,10 +512,10 @@ export default function ProfileScreen({
           <p style={styles.userEmail}>{user.email}</p>
           <span style={styles.planBadge}>Free Plan</span>
         </div>
-        <StreakBadge streak={lessonStreak} size="lg" />
       </section>
 
       <ProfileModal onRecalculate={onEditFinancialProfile} />
+      <DemoScenarioSwitcher />
 
       <CertificatesSection userId={user.id} />
       <TrophyCabinet trophies={trophies} />
@@ -614,6 +630,12 @@ export default function ProfileScreen({
         <LogOut size={16} />
         Log Out
       </button>
+      {onResetAppState ? (
+        <button type="button" onClick={onResetAppState} style={styles.resetBtn}>
+          <RotateCcw size={16} />
+          Reset App State (Dev)
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -623,11 +645,11 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     flexDirection: "column",
     gap: 14,
+    paddingBottom: 88,
   },
   userCard: {
     display: "flex",
     alignItems: "center",
-    flexWrap: "wrap",
     gap: 14,
     background: "#0A0A0A",
     border: "1px solid #1F1F1F",
@@ -851,6 +873,22 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 750,
     cursor: "pointer",
   },
+  resetBtn: {
+    width: "100%",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    marginTop: 8,
+    background: "transparent",
+    border: "1px dashed #4B5563",
+    color: "#9CA3AF",
+    borderRadius: 12,
+    padding: "12px 14px",
+    fontSize: 13,
+    fontWeight: 750,
+    cursor: "pointer",
+  },
   backBtn: {
     alignSelf: "flex-start",
     display: "inline-flex",
@@ -955,17 +993,22 @@ const styles: Record<string, React.CSSProperties> = {
     padding: "8px 10px",
     outline: "none",
   },
-  dateInput: {
-    width: "100%",
-    background: "#000000",
+  dateWrap: {
     border: "1px solid #1F1F1F",
     borderRadius: 10,
+    background: "#000000",
+    padding: "0 10px",
+    minHeight: 38,
+  },
+  dateInput: {
+    width: "100%",
+    background: "transparent",
+    border: "none",
     color: "#FFFFFF",
     fontSize: 13,
     fontWeight: 700,
-    padding: "8px 10px",
+    padding: "8px 0",
     outline: "none",
-    colorScheme: "dark",
   },
   ageHint: {
     marginTop: 6,

@@ -611,7 +611,14 @@ export default function DebtSnowballManager({ onOpenLessons, onDebtsChange }: De
                       />
                     </div>
                     <p className="mt-1 text-[11px] font-semibold text-emerald-400">
-                      {isPaid ? "🎉 Paid off!" : `${percentPaid}% paid off`}
+                      {isPaid ? (
+                        <span className="inline-flex items-center gap-1">
+                          <PartyPopper size={12} aria-hidden />
+                          Paid off
+                        </span>
+                      ) : (
+                        `${percentPaid}% paid off`
+                      )}
                     </p>
 
                     <div className="mt-3 flex items-center justify-between text-[11px] text-slate-400">
@@ -655,7 +662,7 @@ export default function DebtSnowballManager({ onOpenLessons, onDebtsChange }: De
 
       {infoOpen && (
         <div
-          className="fixed inset-0 z-[60] flex items-end justify-center bg-slate-950/75 p-4 sm:items-center"
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm"
           onClick={() => !courseStarted && setInfoOpen(false)}
           role="presentation"
         >
@@ -712,7 +719,7 @@ export default function DebtSnowballManager({ onOpenLessons, onDebtsChange }: De
                 <div className="mx-auto grid h-12 w-12 place-items-center rounded-full bg-emerald-500/20 text-emerald-300">
                   <PartyPopper size={24} />
                 </div>
-                <p className="mt-3 text-sm font-bold text-white">You're in! 🎓</p>
+                <p className="mt-3 text-sm font-bold text-white">You're in</p>
                 <p className="mt-1 text-xs text-slate-400">Taking you to the course now…</p>
               </div>
             )}

@@ -1,7 +1,9 @@
 import type { UserSettings } from '@prisma/client';
+import { parseFlexibleDate } from './dates';
 
 export type PublicSettings = {
   hasCompletedOnboarding: boolean;
+  hasCompletedBankSetup: boolean;
   hasActiveInvestments: boolean;
   hasActiveDebts: boolean;
   wantsCapitalGrowth: boolean;
@@ -14,8 +16,11 @@ export type PublicSettings = {
 };
 
 export function publicSettings(settings: UserSettings): PublicSettings {
+  const hasCompletedOnboarding = settings.hasCompletedOnboarding;
+  const rawBank = (settings as UserSettings & { hasCompletedBankSetup?: boolean }).hasCompletedBankSetup;
   return {
-    hasCompletedOnboarding: settings.hasCompletedOnboarding,
+    hasCompletedOnboarding,
+    hasCompletedBankSetup: rawBank === true || (rawBank == null && hasCompletedOnboarding),
     hasActiveInvestments: settings.hasActiveInvestments,
     hasActiveDebts: settings.hasActiveDebts,
     wantsCapitalGrowth: settings.wantsCapitalGrowth,
@@ -40,9 +45,7 @@ export function parseBirthDate(value: unknown): string | null | undefined {
   if (value === undefined) return undefined;
   if (value === null || value === "") return null;
   if (typeof value !== "string") return undefined;
-  const iso = value.trim();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return undefined;
-  return iso;
+  return parseFlexibleDate(value) ?? undefined;
 }
 
 export function parseBool(value: unknown): boolean | undefined {

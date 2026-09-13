@@ -10,6 +10,12 @@ export function todayUsDate(now = new Date()): string {
   return `${pad(now.getMonth() + 1)}/${pad(now.getDate())}/${now.getFullYear()}`;
 }
 
+/** Display any accepted date as MM/DD/YYYY. */
+export function toUsDateDisplay(raw: string): string {
+  const iso = parseToIsoDate(raw);
+  return iso ? isoToUsDate(iso) : raw;
+}
+
 /** Keep YYYY-MM-DD internally; show and accept MM/DD/YYYY in the UI. */
 export function parseToIsoDate(raw: string): string | null {
   const text = raw.trim();

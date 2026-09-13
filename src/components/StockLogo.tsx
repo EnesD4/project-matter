@@ -1,84 +1,14 @@
 import React, { useEffect, useMemo, useState } from "react";
+import {
+  getCryptoAsset,
+  logoSources,
+  tickerInitials,
+} from "../lib/assetLogos";
 import { getEtfIcon } from "../lib/etfIcons";
 
 const EMERALD = "#10B981";
-const FALLBACK_BG = "#1F2937";
-
-/** Well-known ticker → company domain, used for Clearbit when Finnhub profile isn't loaded yet. */
-const TICKER_DOMAINS: Record<string, string> = {
-  AAPL: "apple.com",
-  MSFT: "microsoft.com",
-  NVDA: "nvidia.com",
-  TSLA: "tesla.com",
-  AMZN: "amazon.com",
-  GOOGL: "google.com",
-  GOOG: "google.com",
-  META: "meta.com",
-  AMD: "amd.com",
-  NFLX: "netflix.com",
-  JPM: "jpmorganchase.com",
-  V: "visa.com",
-  MA: "mastercard.com",
-  COST: "costco.com",
-  AVGO: "broadcom.com",
-  "BRK.B": "berkshirehathaway.com",
-  "BRK.A": "berkshirehathaway.com",
-  DIS: "disney.com",
-  INTC: "intel.com",
-  PYPL: "paypal.com",
-  ADBE: "adobe.com",
-  CRM: "salesforce.com",
-  ORCL: "oracle.com",
-  CSCO: "cisco.com",
-  PEP: "pepsico.com",
-  KO: "coca-cola.com",
-  NKE: "nike.com",
-  MCD: "mcdonalds.com",
-  WMT: "walmart.com",
-  HD: "homedepot.com",
-  BA: "boeing.com",
-  UNH: "unitedhealthgroup.com",
-  JNJ: "jnj.com",
-  PFE: "pfizer.com",
-  LLY: "lilly.com",
-  XOM: "exxonmobil.com",
-  CVX: "chevron.com",
-  BAC: "bankofamerica.com",
-  GS: "goldmansachs.com",
-  WFC: "wellsfargo.com",
-  AXP: "americanexpress.com",
-  UBER: "uber.com",
-  ABNB: "airbnb.com",
-  SBUX: "starbucks.com",
-  QCOM: "qualcomm.com",
-  INTU: "intuit.com",
-  NOW: "servicenow.com",
-  SHOP: "shopify.com",
-  COIN: "coinbase.com",
-  PLTR: "palantir.com",
-  CRWD: "crowdstrike.com",
-  PANW: "paloaltonetworks.com",
-  F: "ford.com",
-  GM: "gm.com",
-  RIVN: "rivian.com",
-  BABA: "alibaba.com",
-  TSM: "tsmc.com",
-  ASML: "asml.com",
-  IBM: "ibm.com",
-  GE: "ge.com",
-  SNOW: "snowflake.com",
-  MU: "micron.com",
-  AMAT: "appliedmaterials.com",
-  TXN: "ti.com",
-  VOO: "vanguard.com",
-  VTI: "vanguard.com",
-  VUG: "vanguard.com",
-  SPY: "ssga.com",
-  QQQ: "invesco.com",
-  QQQM: "invesco.com",
-  SCHD: "schwab.com",
-  IVV: "ishares.com",
-};
+const CONTAINER_BG = "linear-gradient(180deg, #0C241C 0%, #061612 100%)";
+const CONTAINER_RING = "inset 0 0 0 1px rgba(16, 185, 129, 0.16)";
 
 type StockLogoProps = {
   symbol: string;
@@ -88,90 +18,128 @@ type StockLogoProps = {
   domain?: string | null;
   size?: number;
   className?: string;
+  /** Circle matches Midas watchlist chips; rounded is available for denser rows. */
+  shape?: "circle" | "rounded";
 };
 
-function tickerInitials(symbol: string) {
-  const letters = symbol.replace(/[^A-Z0-9]/gi, "").toUpperCase();
-  if (!letters) return symbol.slice(0, 2).toUpperCase();
-  if (letters.length <= 4) return letters;
-  return letters.slice(0, 2);
-}
-
-function InitialsBadge({
+function TickerGlyph({
   symbol,
   size,
-  className,
-  label,
 }: {
   symbol: string;
   size: number;
-  className: string;
-  label?: string;
 }) {
-  const text = label ?? tickerInitials(symbol);
-  const fontSize = text.length >= 4 ? size * 0.28 : text.length === 3 ? size * 0.32 : size * 0.38;
+  const etf = getEtfIcon(symbol);
+  const crypto = getCryptoAsset(symbol);
+  const text = etf?.label ?? tickerInitials(symbol);
+  const fontSize = text.length >= 4 ? 17 : text.length === 3 ? 20 : 24;
+  const fill = etf?.bg ?? crypto?.color ?? "transparent";
+  const fg = etf?.fg ?? (crypto ? "#FFFFFF" : EMERALD);
 
   return (
-    <span
-      className={`inline-flex flex-shrink-0 items-center justify-center overflow-hidden rounded-full font-extrabold tracking-tight ${className}`}
-      style={{ width: size, height: size, color: EMERALD, background: FALLBACK_BG, fontSize }}
-      title={symbol}
-      aria-label={`${symbol} icon`}
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 64 64"
+      className="absolute inset-0 h-full w-full"
+      aria-hidden
     >
-      {text}
-    </span>
+      {fill !== "transparent" ? <rect width="64" height="64" fill={fill} /> : null}
+      <text
+        x="32"
+        y="34"
+        textAnchor="middle"
+        dominantBaseline="middle"
+        fill={fg}
+        fontSize={fontSize}
+        fontWeight={800}
+        fontFamily="ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif"
+        letterSpacing={text.length >= 4 ? -0.6 : 0}
+      >
+        {text}
+      </text>
+    </svg>
   );
 }
 
-function logoSources(symbol: string, finnhubLogo?: string | null, domain?: string | null): string[] {
-  const ticker = symbol.trim().toUpperCase();
-  const yahooTicker = ticker.replace(/\./g, "-");
-  const resolvedDomain = (domain || TICKER_DOMAINS[ticker] || "").replace(/^www\./, "");
-  const urls = [
-    finnhubLogo,
-    resolvedDomain ? `https://logo.clearbit.com/${resolvedDomain}` : null,
-    `https://financialmodelingprep.com/image-stock/${encodeURIComponent(ticker)}.png`,
-    `https://images.financialmodelingprep.com/symbol/${encodeURIComponent(ticker)}.png`,
-    `https://storage.googleapis.com/iex/api/logos/${encodeURIComponent(yahooTicker)}.png`,
-    `https://assets.parqet.com/logos/symbol/${encodeURIComponent(ticker)}`,
-  ];
-  return [...new Set(urls.filter(Boolean) as string[])];
-}
-
 /**
- * Renders a company / ETF logo as a plain circular image.
- * Source chain: Finnhub CDN → Clearbit → FMP → IEX → Parqet → emerald initials.
+ * Midas-style asset mark: dark-emerald rounded container, instant SVG glyph,
+ * then a high-res PNG (Clearbit / coin icons / issuer CDNs) faded in on load.
  */
-export default function StockLogo({ symbol, finnhubLogo, domain, size = 40, className = "" }: StockLogoProps) {
-  const etf = useMemo(() => getEtfIcon(symbol), [symbol]);
-  const sources = useMemo(() => logoSources(symbol, finnhubLogo, domain), [symbol, finnhubLogo, domain]);
+export default function StockLogo({
+  symbol,
+  finnhubLogo,
+  domain,
+  size = 40,
+  className = "",
+  shape = "circle",
+}: StockLogoProps) {
+  const sources = useMemo(
+    () => logoSources(symbol, finnhubLogo, domain),
+    [symbol, finnhubLogo, domain]
+  );
   const [attempt, setAttempt] = useState(0);
+  const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     setAttempt(0);
+    setLoaded(false);
   }, [symbol, finnhubLogo, domain]);
 
   const src = sources[attempt];
+  const radius = shape === "rounded" ? "rounded-xl" : "rounded-full";
+  const pad = Math.max(4, Math.round(size * 0.16));
 
-  if (src) {
-    return (
+  return (
+    <span
+      className={`matter-asset-logo relative inline-flex flex-shrink-0 items-center justify-center overflow-hidden ${radius} ${className}`}
+      style={{
+        width: size,
+        height: size,
+        background: CONTAINER_BG,
+        boxShadow: CONTAINER_RING,
+        WebkitTouchCallout: "none",
+        WebkitUserDrag: "none",
+      } as React.CSSProperties}
+      title={symbol}
+      aria-label={`${symbol} logo`}
+      onContextMenu={(event) => event.preventDefault()}
+      onDragStart={(event) => event.preventDefault()}
+    >
       <span
-        className={`inline-block flex-shrink-0 overflow-hidden rounded-full ${className}`}
-        style={{ width: size, height: size }}
+        className={`pointer-events-none absolute inset-0 transition-opacity duration-200 ${
+          loaded ? "opacity-0" : "opacity-100"
+        }`}
       >
+        <TickerGlyph symbol={symbol} size={size} />
+      </span>
+      {src ? (
         <img
           src={src}
-          alt={`${symbol} logo`}
+          alt=""
           width={size}
           height={size}
-          loading="lazy"
+          loading={size >= 36 ? "eager" : "lazy"}
+          decoding="async"
+          draggable={false}
           referrerPolicy="no-referrer"
-          onError={() => setAttempt((a) => a + 1)}
-          className="h-full w-full rounded-full object-cover"
+          onContextMenu={(event) => event.preventDefault()}
+          onDragStart={(event) => event.preventDefault()}
+          onLoad={() => setLoaded(true)}
+          onError={() => {
+            setLoaded(false);
+            setAttempt((current) => current + 1);
+          }}
+          className={`pointer-events-none absolute select-none object-contain drag-none transition-opacity duration-200 ${
+            loaded ? "opacity-100" : "opacity-0"
+          } ${radius}`}
+          style={{
+            inset: pad,
+            width: size - pad * 2,
+            height: size - pad * 2,
+          }}
         />
-      </span>
-    );
-  }
-
-  return <InitialsBadge symbol={symbol} size={size} className={className} label={etf?.label} />;
+      ) : null}
+    </span>
+  );
 }

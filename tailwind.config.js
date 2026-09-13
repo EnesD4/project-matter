@@ -18,5 +18,14 @@ export default {
       },
     },
   },
-  plugins: [],
+  plugins: [
+    function dragNonePlugin({ addUtilities }) {
+      addUtilities({
+        ".drag-none": {
+          "-webkit-user-drag": "none",
+          "user-drag": "none",
+        },
+      });
+    },
+  ],
 };

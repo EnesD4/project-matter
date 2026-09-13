@@ -15,7 +15,6 @@ import {
   Pencil,
   Plus,
   RefreshCw,
-  SlidersHorizontal,
   Sparkles,
   Target,
   Undo2,
@@ -32,7 +31,7 @@ import {
 } from "recharts";
 import { formatCurrencyInput, parseCurrency } from "../lib/money";
 import { readLocalItem } from "../lib/storage";
-import { ageFromBirthDate, applyAgeToBirthDate, clampAge, parseISODate, todayISODate } from "../lib/age";
+import { clampAge, parseISODate, resolveUserAge, todayISODate } from "../lib/age";
 import {
   computeRetirementTargets,
   K401_MATCH_RATE,
@@ -46,13 +45,13 @@ const FREEDOM_NUMBER = 1_000_000;
 const RETIRE_AGE = 65;
 const LOOKAHEAD_AGE = 80;
 const DEFAULT_RETURN = 8;
-const AGE_PRESETS = [18, 21, 25, 30, 35, 40, 50];
 const ON_TRACK_TOLERANCE = 0.05;
 
 export const RETIREMENT_UPDATED_EVENT = "matterpro:retirement-updated";
+export const RETIREMENT_SEEDED_EVENT = "matterpro:retirement-seeded";
 
 type AccountType = "roth" | "traditional" | "401k" | "hsa";
-type SetupStep = 1 | 2 | 3 | 4;
+type SetupStep = 1 | 2 | 3;
 
 const ACCOUNTS: Array<{
   id: AccountType;
@@ -148,7 +147,7 @@ export type RetirementPlannerProps = {
   userId: string;
   age: number | null;
   birthDate?: string | null;
-  onAgeChange: (age: number, birthDate: string) => void;
+  onAgeChange?: (age: number, birthDate: string) => void;
   /** Live retirement balance so the parent can include it in Net Worth. */
   onBalanceChange?: (balance: number) => void;
 };
@@ -476,144 +475,9 @@ function buildInsight(opts: {
 function resolveCurrentAge(
   age: number | null,
   birthDate?: string | null,
-  planAge?: number,
-  draftAge?: number
+  planAge?: number
 ) {
-  const fromBirth = birthDate ? ageFromBirthDate(birthDate) : null;
-  const candidates = [age, fromBirth, planAge, draftAge];
-  for (const value of candidates) {
-    if (value != null && Number.isFinite(value) && value > 0) {
-      return clampAge(value, 13, 80);
-    }
-  }
-  return null;
-}
-
-function targetFreedomAgeFrom(currentAge: number, retireAge = RETIRE_AGE) {
-  const yearsRemaining = Math.max(0, retireAge - currentAge);
-  return currentAge + yearsRemaining;
-}
-
-function WhatIfSimulator({
-  currentAge,
-  currentSavings,
-  baseMonthly,
-  baseReturn,
-}: {
-  currentAge: number;
-  currentSavings: number;
-  baseMonthly: number;
-  baseReturn: number;
-}) {
-  const [extraMonthly, setExtraMonthly] = useState(0);
-  const [annualReturn, setAnnualReturn] = useState(baseReturn);
-  const [targetAge, setTargetAge] = useState(() => targetFreedomAgeFrom(currentAge));
-
-  useEffect(() => {
-    setAnnualReturn(baseReturn);
-  }, [baseReturn]);
-
-  useEffect(() => {
-    setTargetAge((prev) => Math.max(currentAge, Math.min(LOOKAHEAD_AGE, prev)));
-  }, [currentAge]);
-
-  const freedomAge = targetFreedomAgeFrom(currentAge);
-  const clampedTarget = Math.max(currentAge, Math.min(LOOKAHEAD_AGE, targetAge));
-  const years = Math.max(0, clampedTarget - currentAge);
-  const months = years * 12;
-  const monthly = Math.max(0, baseMonthly + extraMonthly);
-  const projected = futureValue(currentSavings, monthly, annualReturn, months);
-  const baseline = futureValue(currentSavings, baseMonthly, baseReturn, months);
-  const delta = projected - baseline;
-  const millionMonths = monthsToTarget(FREEDOM_NUMBER, currentSavings, monthly, annualReturn);
-  const millionAge = Number.isFinite(millionMonths)
-    ? currentAge + Math.ceil(millionMonths / 12)
-    : null;
-
-  return (
-    <div className="mt-4 rounded-2xl border border-emerald-500/25 bg-[#0A0A0A] px-4 py-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="m-0 flex items-center gap-1.5 text-[10px] font-extrabold uppercase tracking-[0.14em] text-emerald-300/80">
-            <SlidersHorizontal size={12} />
-            What-If Wealth Simulator
-          </p>
-          <p className="mt-1 mb-0 text-[12px] font-medium leading-snug text-[#9CA3AF]">
-            Play with extra savings and return — your real plan stays unchanged.
-          </p>
-        </div>
-      </div>
-
-      <p className="mt-3 mb-0 text-[11px] font-semibold text-[#94A3B8]">
-        Target freedom age {freedomAge}
-        {clampedTarget !== freedomAge ? ` · simulating age ${clampedTarget}` : ""}
-      </p>
-      <p className="mt-1 mb-0 text-3xl font-extrabold tabular-nums tracking-tight text-white">
-        {formatWealth(projected)}
-      </p>
-      <p className="mt-1 mb-0 text-[12px] font-semibold text-emerald-300/90">
-        {delta === 0
-          ? `Matches your current plan at age ${clampedTarget}`
-          : `${delta > 0 ? "+" : ""}${formatWealth(delta)} vs current plan at age ${clampedTarget}`}
-      </p>
-      {millionAge != null ? (
-        <p className="mt-1 mb-0 text-[11px] font-medium text-[#9CA3AF]">
-          Hits $1M around age {millionAge}
-        </p>
-      ) : null}
-
-      <label className="mt-4 block">
-        <span className="flex items-center justify-between gap-2 text-[11px] font-bold text-[#94A3B8]">
-          Extra monthly
-          <span className="tabular-nums text-white">+{formatDollars(extraMonthly)}</span>
-        </span>
-        <input
-          type="range"
-          min={0}
-          max={1000}
-          step={25}
-          value={extraMonthly}
-          onChange={(e) => setExtraMonthly(Number(e.target.value))}
-          className="mt-1.5 w-full accent-emerald-500"
-          aria-label="Extra monthly contribution"
-        />
-      </label>
-
-      <label className="mt-3 block">
-        <span className="flex items-center justify-between gap-2 text-[11px] font-bold text-[#94A3B8]">
-          Expected return
-          <span className="tabular-nums text-white">{annualReturn}%</span>
-        </span>
-        <input
-          type="range"
-          min={4}
-          max={12}
-          step={0.5}
-          value={annualReturn}
-          onChange={(e) => setAnnualReturn(Number(e.target.value))}
-          className="mt-1.5 w-full accent-emerald-500"
-          aria-label="Expected annual return"
-        />
-      </label>
-
-      <label className="mt-3 block">
-        <span className="flex items-center justify-between gap-2 text-[11px] font-bold text-[#94A3B8]">
-          Simulate to age
-          <span className="tabular-nums text-white">{clampedTarget}</span>
-        </span>
-        <input
-          type="range"
-          min={currentAge}
-          max={LOOKAHEAD_AGE}
-          step={1}
-          value={clampedTarget}
-          onChange={(e) => setTargetAge(Number(e.target.value))}
-          className="mt-1.5 w-full accent-emerald-500"
-          aria-label="Simulate to age"
-        />
-      </label>
-    </div>
-  );
+  return resolveUserAge(age, birthDate) ?? (planAge != null && planAge > 0 ? clampAge(planAge, 13, 80) : null);
 }
 
 function ChartTooltip({
@@ -682,7 +546,7 @@ function loadPlan(userId: string): StoredPlan {
     return {
       configured: Boolean(parsed.configured),
       editing: Boolean(parsed.editing),
-      step: parsed.step === 2 || parsed.step === 3 || parsed.step === 4 ? parsed.step : 1,
+      step: parsed.step === 2 || parsed.step === 3 ? parsed.step : Number(parsed.step) === 4 ? 3 : 1,
       savings: Number.isFinite(parsed.savings) ? Math.max(0, Number(parsed.savings)) : 0,
       monthly: Number.isFinite(parsed.monthly) ? Math.max(0, Number(parsed.monthly)) : 0,
       accountType,
@@ -711,6 +575,38 @@ function writePlan(userId: string, plan: StoredPlan) {
 export function getRetirementDepositCount(userId: string): number {
   if (!userId) return 0;
   return loadPlan(userId).contributions?.length ?? 0;
+}
+
+export function seedRetirementFromAssets(
+  userId: string,
+  input: {
+    savings: number;
+    accountType?: AccountType;
+    monthly?: number;
+    age?: number | null;
+  }
+): StoredPlan {
+  const existing = loadPlan(userId);
+  const profile = loadFinancialProfile(userId);
+  const targets = profile
+    ? computeRetirementTargets(profile.monthlyIncome, profile.monthlyEssentialExpenses)
+    : null;
+  const next: StoredPlan = {
+    configured: true,
+    editing: false,
+    savings: Math.max(0, input.savings),
+    monthly: Math.max(0, input.monthly ?? targets?.totalMonthly ?? existing.monthly ?? 0),
+    accountType: input.accountType && isAccountType(input.accountType) ? input.accountType : existing.accountType || "401k",
+    annualReturn: existing.annualReturn || DEFAULT_RETURN,
+    age: input.age ?? existing.age,
+    contributions: existing.contributions ?? [],
+    startedAt: existing.startedAt ?? todayISODate(),
+  };
+  writePlan(userId, next);
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent(RETIREMENT_SEEDED_EVENT, { detail: { userId } }));
+  }
+  return next;
 }
 
 function MoneyField({
@@ -872,7 +768,7 @@ function AccountGuideModal({
   const young = age < 45;
 
   return (
-    <div className="fixed inset-0 z-[80] flex items-end justify-center bg-black/70 p-4 sm:items-center" role="dialog" aria-modal="true" aria-labelledby="account-guide-title">
+    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="account-guide-title">
       <div className="w-full max-w-md rounded-2xl border border-[#1F2937] bg-[#0A0A0A] p-4 shadow-[0_24px_60px_rgba(0,0,0,0.55)]">
         <div className="flex items-start justify-between gap-3">
           <SproutBadge />
@@ -951,7 +847,7 @@ function ContributionModal({
 
   return (
     <div
-      className="fixed inset-0 z-[80] flex items-end justify-center bg-black/70 p-4 sm:items-center"
+      className="fixed inset-0 z-[80] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
       role="dialog"
       aria-modal="true"
       aria-labelledby="add-contribution-title"
@@ -1039,7 +935,7 @@ function MonthlyPaymentModal({
 
   return (
     <div
-      className="fixed inset-0 z-[80] flex items-end justify-center bg-black/70 p-4 sm:items-center"
+      className="fixed inset-0 z-[80] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
       role="dialog"
       aria-modal="true"
       aria-labelledby="monthly-payment-title"
@@ -1113,7 +1009,7 @@ function ProviderLogo({ domain, color, name }: { domain: string; color: string; 
         <span className="text-[10px] font-extrabold">{name.slice(0, 1)}</span>
       ) : (
         <img
-          src={`https://www.google.com/s2/favicons?sz=64&domain=${domain}`}
+          src={`https://logo.clearbit.com/${domain}`}
           alt=""
           width={18}
           height={18}
@@ -1329,7 +1225,6 @@ export default function RetirementPlanner({
   userId,
   age,
   birthDate,
-  onAgeChange,
   onBalanceChange,
 }: RetirementPlannerProps) {
   const [plan, setPlan] = useState<StoredPlan>(() => loadPlan(userId));
@@ -1337,9 +1232,10 @@ export default function RetirementPlanner({
     const stored = loadPlan(userId);
     return stored.editing || !stored.configured;
   });
-  const [step, setStep] = useState<SetupStep>(() => loadPlan(userId).step ?? 1);
-  const [draftAge, setDraftAge] = useState(() => (age != null ? clampAge(age) : 0));
-  const [ageText, setAgeText] = useState(() => (age != null ? String(clampAge(age)) : ""));
+  const [step, setStep] = useState<SetupStep>(() => {
+    const stored = loadPlan(userId).step ?? 1;
+    return stored === 2 || stored === 3 ? stored : 1;
+  });
   const [savings, setSavings] = useState(() => loadPlan(userId).savings);
   const [monthly, setMonthly] = useState(() => loadPlan(userId).monthly);
   const [accountType, setAccountType] = useState<AccountType>(() => loadPlan(userId).accountType);
@@ -1359,11 +1255,18 @@ export default function RetirementPlanner({
   useEffect(() => subscribeFinancialProfile(() => setBudgetTick((tick) => tick + 1)), []);
 
   useEffect(() => {
-    if (age == null) return;
-    const next = clampAge(age);
-    setDraftAge(next);
-    setAgeText(String(next));
-  }, [age]);
+    const sync = () => {
+      const next = loadPlan(userId);
+      setPlan(next);
+      setEditing(next.editing || !next.configured);
+      setStep(next.step ?? 1);
+      setSavings(next.savings);
+      setMonthly(next.monthly);
+      setAccountType(next.accountType);
+    };
+    window.addEventListener(RETIREMENT_SEEDED_EVENT, sync);
+    return () => window.removeEventListener(RETIREMENT_SEEDED_EVENT, sync);
+  }, [userId]);
 
   useEffect(() => {
     if (!plan.configured || plan.startedAt) return;
@@ -1379,7 +1282,7 @@ export default function RetirementPlanner({
       monthly: editing ? monthly : plan.monthly,
       accountType: editing ? accountType : plan.accountType,
       annualReturn: plan.annualReturn || DEFAULT_RETURN,
-      age: (age ?? draftAge) || undefined,
+      age: resolveCurrentAge(age, birthDate, plan.age) ?? undefined,
       contributions: plan.contributions ?? [],
       startedAt: plan.startedAt,
     });
@@ -1398,10 +1301,10 @@ export default function RetirementPlanner({
     monthly,
     accountType,
     age,
-    draftAge,
+    birthDate,
   ]);
 
-  const userCurrentAge = resolveCurrentAge(age, birthDate, plan.age, draftAge) ?? clampAge(draftAge || 0, 13, 80);
+  const userCurrentAge = resolveCurrentAge(age, birthDate, plan.age) ?? 30;
   const userRetirementAge = RETIRE_AGE;
   const yearsLeft = userRetirementAge - userCurrentAge;
   const yearsToFreedom = Math.max(0, yearsLeft);
@@ -1530,36 +1433,19 @@ export default function RetirementPlanner({
     return `${track.message} ${insight}`;
   }, [track, insight, plan.monthly, plan.accountType]);
 
-  const commitAgeToProfile = (nextAge: number) => {
-    const clamped = clampAge(nextAge);
-    setDraftAge(clamped);
-    setAgeText(String(clamped));
-    onAgeChange(clamped, applyAgeToBirthDate(clamped, birthDate));
-  };
-
   const goNext = () => {
     setStepError(null);
     if (step === 1) {
-      const parsed = Number(ageText);
-      if (!Number.isFinite(parsed) || ageText.trim() === "") {
-        setStepError("Enter your age to continue.");
-        return;
-      }
-      commitAgeToProfile(parsed);
-      setStep(2);
-      return;
-    }
-    if (step === 2) {
       if (!seededFromBudget && monthly <= 0 && budgetTargets && budgetTargets.totalMonthly > 0) {
         setMonthly(budgetTargets.totalMonthly);
         setAccountType(budgetTargets.k401Monthly >= budgetTargets.rothMonthly ? "401k" : "roth");
         setSeededFromBudget(true);
       }
-      setStep(3);
+      setStep(2);
       return;
     }
-    if (step === 3) {
-      setStep(4);
+    if (step === 2) {
+      setStep(3);
       return;
     }
     const nextPlan: StoredPlan = {
@@ -1568,7 +1454,7 @@ export default function RetirementPlanner({
       monthly: Math.max(0, monthly),
       accountType,
       annualReturn: DEFAULT_RETURN,
-      age: clampAge(Number(ageText) || draftAge || age || 0),
+      age: userCurrentAge,
       contributions: plan.contributions ?? [],
       startedAt: plan.startedAt ?? todayISODate(),
     };
@@ -1639,7 +1525,7 @@ export default function RetirementPlanner({
           </h2>
           <p className="mt-1 text-[12px] font-medium italic leading-snug text-[#9CA3AF]">
             {showSetup
-              ? "Sprout AI will set this up with you in four quick questions"
+              ? "Sprout AI will set this up with you in three quick questions"
               : "Live pacing toward your freedom number"}
           </p>
         </div>
@@ -1653,63 +1539,23 @@ export default function RetirementPlanner({
           <div className="flex items-center justify-between gap-3">
             <SproutBadge />
             <span className="text-[11px] font-extrabold tabular-nums text-[#64748B]">
-              {step}/4
+              {step}/3
             </span>
           </div>
           <div className="mt-3 h-1 overflow-hidden rounded-full bg-[#121212]" aria-hidden="true">
             <div
               className="h-full rounded-full bg-[#10B981] transition-[width] duration-300"
-              style={{ width: `${(step / 4) * 100}%` }}
+              style={{ width: `${(step / 3) * 100}%` }}
             />
           </div>
+          <p className="mt-3 text-[12px] font-medium text-[#9CA3AF]">
+            Using your profile age of {userCurrentAge} · retirement locked at {RETIRE_AGE}.
+          </p>
 
           {step === 1 ? (
             <div className="mt-4">
               <p className="text-[11px] font-extrabold uppercase tracking-[0.14em] text-emerald-300/80">
                 Step 1
-              </p>
-              <h3 className="mt-1 text-[18px] font-extrabold tracking-tight text-white">How old are you?</h3>
-              <p className="mt-1 text-[12px] font-medium text-[#9CA3AF]">
-                We'll lock retirement age at 65 and save this to your profile.
-              </p>
-              <div className="mt-4 flex items-center gap-2 rounded-xl border border-[#1F1F1F] bg-black px-3.5 py-3 focus-within:border-emerald-500/50">
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  aria-label="Your age"
-                  value={ageText}
-                  placeholder="Age"
-                  onChange={(e) => setAgeText(e.target.value.replace(/[^0-9]/g, "").slice(0, 3))}
-                  className="w-full bg-transparent text-xl font-extrabold tabular-nums text-white outline-none placeholder:text-[#334155]"
-                />
-                <span className="text-[12px] font-bold text-[#64748B]">years</span>
-              </div>
-              <div className="mt-3 flex flex-wrap gap-1.5">
-                {AGE_PRESETS.map((preset) => {
-                  const active = ageText === String(preset);
-                  return (
-                    <button
-                      key={preset}
-                      type="button"
-                      onClick={() => setAgeText(String(preset))}
-                      className={`rounded-full px-3 py-1.5 text-[12px] font-extrabold transition ${
-                        active
-                          ? "bg-[#10B981] text-[#042F2E]"
-                          : "border border-[#1F1F1F] bg-black text-[#9CA3AF] hover:text-white"
-                      }`}
-                    >
-                      {preset}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ) : null}
-
-          {step === 2 ? (
-            <div className="mt-4">
-              <p className="text-[11px] font-extrabold uppercase tracking-[0.14em] text-emerald-300/80">
-                Step 2
               </p>
               <h3 className="mt-1 text-[18px] font-extrabold tracking-tight text-white">
                 How much savings do you have right now for retirement?
@@ -1726,10 +1572,10 @@ export default function RetirementPlanner({
             </div>
           ) : null}
 
-          {step === 3 ? (
+          {step === 2 ? (
             <div className="mt-4">
               <p className="text-[11px] font-extrabold uppercase tracking-[0.14em] text-emerald-300/80">
-                Step 3
+                Step 2
               </p>
               <h3 className="mt-1 text-[18px] font-extrabold tracking-tight text-white">
                 How much can you comfortably contribute monthly?
@@ -1751,10 +1597,10 @@ export default function RetirementPlanner({
             </div>
           ) : null}
 
-          {step === 4 ? (
+          {step === 3 ? (
             <div className="mt-4">
               <p className="text-[11px] font-extrabold uppercase tracking-[0.14em] text-emerald-300/80">
-                Step 4
+                Step 3
               </p>
               <h3 className="mt-1 text-[18px] font-extrabold tracking-tight text-white">
                 Which account type fits your strategy?
@@ -1843,7 +1689,7 @@ export default function RetirementPlanner({
               onClick={goNext}
               className="flex h-11 min-w-0 flex-1 items-center justify-center gap-2 rounded-xl bg-[#10B981] px-4 text-sm font-extrabold text-[#042F2E]"
             >
-              {step === 4 ? (
+              {step === 3 ? (
                 <>
                   <Sparkles size={16} />
                   See my tracker
@@ -2140,13 +1986,6 @@ export default function RetirementPlanner({
             </div>
           </div>
 
-          <WhatIfSimulator
-            currentAge={currentAge}
-            currentSavings={actualNow}
-            baseMonthly={plan.monthly}
-            baseReturn={annualReturn}
-          />
-
           <div className="mt-4 rounded-2xl border border-[#10B981]/35 bg-[#0A0A0A] p-3.5">
             <div className="mb-2">
               <SproutBadge />
@@ -2169,7 +2008,7 @@ export default function RetirementPlanner({
 
       {guideOpen ? (
         <AccountGuideModal
-          age={currentAge || draftAge || 22}
+          age={currentAge}
           onClose={() => setGuideOpen(false)}
           onChoose={(next) => {
             setAccountType(next);

@@ -1,4 +1,5 @@
 import { Check, ChevronLeft, Map, Sparkles, Trophy } from "lucide-react";
+import RoadmapGlyph from "./RoadmapGlyph";
 import React, { useEffect, useMemo, useState } from "react";
 import { useFinancialRoadmap, useRoadmapTodoProgress } from "../hooks/useFinancialRoadmap";
 import { playAchievementFanfare, playSuccessChime } from "../lib/audioService";
@@ -120,7 +121,7 @@ export default function FinancialRoadmapPanel({ open, onClose }: FinancialRoadma
 
   return (
     <div
-      className="fixed inset-0 z-[70] flex items-end justify-center bg-slate-950/80 p-4 sm:items-center"
+      className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm"
       onClick={onClose}
       role="presentation"
     >
@@ -146,7 +147,14 @@ export default function FinancialRoadmapPanel({ open, onClose }: FinancialRoadma
                 Financial Roadmap
               </h3>
               <p className="mt-0.5 text-[11px] font-semibold text-neutral-500">
-                {roadmap ? `${roadmap.emoji} ${roadmap.modeLabel}` : "Build a money profile to unlock tasks"}
+                {roadmap ? (
+                  <span className="inline-flex items-center gap-1">
+                    <RoadmapGlyph archetype={roadmap.archetype} size={12} color={roadmap.accent} />
+                    {roadmap.modeLabel}
+                  </span>
+                ) : (
+                  "Build a money profile to unlock tasks"
+                )}
               </p>
             </div>
           </div>
@@ -166,7 +174,7 @@ export default function FinancialRoadmapPanel({ open, onClose }: FinancialRoadma
               <Map size={22} className="mx-auto text-emerald-400" />
               <p className="mt-2 text-sm font-extrabold text-white">No roadmap yet</p>
               <p className="mt-1 text-[12px] font-semibold leading-snug text-neutral-500">
-                Answer three quick questions and we will build a real-life to-do list from your numbers.
+                Connect a demo bank or pick a mock profile to unlock a live to-do list.
               </p>
               <button
                 type="button"
@@ -189,8 +197,9 @@ export default function FinancialRoadmapPanel({ open, onClose }: FinancialRoadma
                 <p className="text-[10px] font-extrabold uppercase tracking-[0.14em]" style={{ color: roadmap.accent }}>
                   Your archetype
                 </p>
-                <p className="mt-1 text-base font-extrabold text-white">
-                  {roadmap.emoji} {roadmap.title}
+                <p className="mt-1 inline-flex items-center gap-1.5 text-base font-extrabold text-white">
+                  <RoadmapGlyph archetype={roadmap.archetype} size={16} color={roadmap.accent} />
+                  {roadmap.title}
                 </p>
                 <p className="mt-1.5 text-[12px] leading-relaxed text-slate-200">{roadmap.summary}</p>
                 <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-black/40">

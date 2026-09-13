@@ -67,6 +67,7 @@ model UserSettings {
   investmentGoal          String  @default("growth")
   experienceLevel         String  @default("beginner")
   hasCompletedOnboarding  Boolean @default(false)
+  hasCompletedBankSetup   Boolean @default(true)
   hasActiveInvestments    Boolean @default(false)
   hasActiveDebts          Boolean @default(false)
   wantsCapitalGrowth      Boolean @default(false)

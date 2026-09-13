@@ -1,5 +1,5 @@
 import React, { useEffect, useId, useMemo, useState } from "react";
-import { ChevronRight, X } from "lucide-react";
+import { ChevronRight, Shield, Target, X, Zap, type LucideIcon } from "lucide-react";
 import { analyzePortfolioHealth, type HealthTone, type PortfolioHealthReport } from "../lib/portfolioHealth";
 import type { Holding } from "./InvestmentPortfolioCard";
 
@@ -69,7 +69,7 @@ function HealthGauge({
 }
 
 function StatusMeter({
-  emoji,
+  icon: Icon,
   title,
   label,
   detail,
@@ -77,7 +77,7 @@ function StatusMeter({
   color,
   invertRisk,
 }: {
-  emoji: string;
+  icon: LucideIcon;
   title: string;
   label: string;
   detail: string;
@@ -98,8 +98,9 @@ function StatusMeter({
   return (
     <div className="min-w-0">
       <div className="flex items-baseline justify-between gap-2">
-        <p className="text-[11px] font-bold text-white">
-          <span aria-hidden="true">{emoji}</span> {title}
+        <p className="inline-flex items-center gap-1.5 text-[11px] font-bold text-white">
+          <Icon size={12} className="text-slate-400" aria-hidden />
+          {title}
         </p>
         <p className="truncate text-[11px] font-extrabold tabular-nums" style={{ color: fill }}>
           {label}
@@ -136,7 +137,7 @@ function HealthBreakdownModal({
 
   return (
     <div
-      className="fixed inset-0 z-[65] flex items-end justify-center bg-slate-950/75 p-4 sm:items-center"
+      className="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm"
       onClick={onClose}
       role="presentation"
     >
@@ -188,7 +189,7 @@ function HealthBreakdownModal({
 
           <div className="mt-5 grid gap-3.5">
             <StatusMeter
-              emoji="🎯"
+              icon={Target}
               title="Diversification Metric"
               label={report.diversification.label}
               detail={report.diversification.detail}
@@ -196,7 +197,7 @@ function HealthBreakdownModal({
               color="#10B981"
             />
             <StatusMeter
-              emoji="⚡"
+              icon={Zap}
               title="Volatility / Beta Exposure"
               label={report.volatility.label}
               detail={report.volatility.detail}
@@ -205,7 +206,7 @@ function HealthBreakdownModal({
               invertRisk
             />
             <StatusMeter
-              emoji="🛡️"
+              icon={Shield}
               title="Defensive Cushion"
               label={
                 report.empty
