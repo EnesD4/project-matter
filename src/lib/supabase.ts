@@ -1,24 +1,7 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
-function readProcessEnv(name: string): string {
-  try {
-    const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
-    const value = env?.[name];
-    return typeof value === "string" ? value.trim() : "";
-  } catch {
-    return "";
-  }
-}
-
-const supabaseUrl =
-  String(import.meta.env.VITE_SUPABASE_URL || "").trim() ||
-  readProcessEnv("SUPABASE_URL") ||
-  "https://rsapdgkmvihaboouwvwv.supabase.co";
-const supabaseAnonKey =
-  String(import.meta.env.VITE_SUPABASE_ANON_KEY || "").trim() ||
-  readProcessEnv("SUPABASE_CONFIG_ANON_KEY") ||
-  readProcessEnv("SUPABASE_ANON_KEY") ||
-  "sb_publishable_x-anlnaVXC68jRD_DuYNZg_l4dSWRyW";
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || "https://rsapdgkmvihaboouwvwv.supabase.co";
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || "sb_publishable_x-anlnaVXC68jRD_DuYNZg_l4dSWRyW";
 
 const SUPABASE_URL = supabaseUrl;
 const SUPABASE_ANON_KEY = supabaseAnonKey;
