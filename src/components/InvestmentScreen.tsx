@@ -31,9 +31,9 @@ export default function InvestmentScreen({
       cashBalance={cashBalance}
       privacyMode={privacyMode}
       onTogglePrivacy={onTogglePrivacy}
-      belowAllocation={
-        <PortfolioHealthScoreCard holdings={holdings} cashBalance={cashBalance} />
-      }
+      belowAllocation={({ holdings: liveHoldings, cashBalance: liveCash }) => (
+        <PortfolioHealthScoreCard holdings={liveHoldings} cashBalance={liveCash} />
+      )}
       belowHoldings={({ onAddHolding, onSellHolding }) => (
         <WatchlistScreen
           holdings={holdings}

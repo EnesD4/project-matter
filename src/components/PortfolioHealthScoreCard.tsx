@@ -54,15 +54,17 @@ function HealthGauge({
           className={`${large ? "text-4xl" : "text-2xl"} font-extrabold tabular-nums leading-none`}
           style={{ color }}
         >
-          {empty ? "—" : score}
+          {empty ? "N/A" : score}
         </span>
-        <span
-          className={`mt-0.5 font-bold uppercase tracking-wide text-[#6B7280] ${
-            large ? "text-[10px]" : "text-[9px]"
-          }`}
-        >
-          / 100
-        </span>
+        {empty ? null : (
+          <span
+            className={`mt-0.5 font-bold uppercase tracking-wide text-[#6B7280] ${
+              large ? "text-[10px]" : "text-[9px]"
+            }`}
+          >
+            / 100
+          </span>
+        )}
       </div>
     </div>
   );
@@ -264,7 +266,7 @@ export default function PortfolioHealthScoreCard({
     };
   }, [open]);
 
-  const scoreLabel = report.empty ? "— / 100" : `${report.score} / 100`;
+  const scoreLabel = report.empty ? "N/A" : `${report.score} / 100`;
   const badgeClass = report.empty
     ? "border-[#1F2937] bg-[#0A0A0A] text-[#9CA3AF] hover:border-[#374151] hover:text-white"
     : `${TONE_BADGE[report.tone]} hover:brightness-125`;

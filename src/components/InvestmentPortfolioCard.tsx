@@ -60,6 +60,8 @@ import {
   fetchStockQuote,
   fetchStockQuotes,
   fetchStockSearch,
+  localTickerMatches,
+  mockQuoteForSymbol,
   type StockProfile,
   type StockQuote,
   type StockSearchResult,
@@ -405,7 +407,9 @@ type InvestmentPortfolioCardProps = {
         ) => Promise<{ remainingShares: number }>;
       }) => React.ReactNode);
   /** Rendered directly below the Asset Allocation ring. */
-  belowAllocation?: React.ReactNode;
+  belowAllocation?:
+    | React.ReactNode
+    | ((ctx: { holdings: Holding[]; cashBalance: number }) => React.ReactNode);
 };
 
 function PortfolioActionButtons({
@@ -839,7 +843,7 @@ export default function InvestmentPortfolioCard({
     setChartAnimate(true);
   }, [range, benchmarkOn]);
 
-  // Live stock search — debounced fetch against our Express backend as the user types.
+  // Live stock search — remote first, catalog/typed-ticker fallback so add never dead-ends.
   useEffect(() => {
     if (selectedTicker) {
       return;
@@ -853,8 +857,10 @@ export default function InvestmentPortfolioCard({
       return;
     }
 
-    setSearchLoading(true);
+    const local = localTickerMatches(query);
+    setSearchResults(local);
     setSearchError(null);
+    setSearchLoading(true);
 
     const controller = new AbortController();
     const timeoutId = window.setTimeout(async () => {
@@ -863,11 +869,11 @@ export default function InvestmentPortfolioCard({
 
         // Prefer primary US listings (no exchange suffix like ".TO"/".SW") when available.
         const primary = data.filter((r) => !r.symbol.includes("."));
-        setSearchResults((primary.length > 0 ? primary : data).slice(0, 6));
+        const remote = (primary.length > 0 ? primary : data).slice(0, 8);
+        setSearchResults(remote.length > 0 ? remote : local);
       } catch (err) {
         if ((err as Error).name !== "AbortError") {
-          setSearchResults([]);
-          setSearchError("Couldn't reach the server. Is the backend running on :5000?");
+          setSearchResults(local);
         }
       } finally {
         setSearchLoading(false);
@@ -880,6 +886,10 @@ export default function InvestmentPortfolioCard({
     };
   }, [searchQuery, selectedTicker]);
 
+  const allocationExtra =
+    typeof belowAllocation === "function"
+      ? belowAllocation({ holdings, cashBalance })
+      : belowAllocation;
   const hasHoldings = holdings.length > 0;
   const investmentValue = useMemo(
     () => holdings.filter((h) => h.kind === "stock").reduce((sum, h) => sum + holdingValue(h), 0),
@@ -1203,9 +1213,21 @@ export default function InvestmentPortfolioCard({
     }
   };
 
+  const resolveSearchPick = (raw?: string | null): StockSearchResult | null => {
+    const query = (raw ?? searchQuery).trim();
+    if (!query) return searchResults[0] ?? null;
+    return (
+      searchResults.find((row) => (row.displaySymbol || row.symbol).toUpperCase() === query.toUpperCase()) ||
+      searchResults[0] ||
+      localTickerMatches(query)[0] ||
+      null
+    );
+  };
+
   const selectTicker = async (result: StockSearchResult, costDate = parseToIsoDate(purchaseDate) ?? todayISODate()) => {
-    const symbol = result.displaySymbol || result.symbol;
-    setSelectedTicker({ symbol, description: result.description, type: result.type });
+    const symbol = (result.displaySymbol || result.symbol || "").trim().toUpperCase();
+    if (!symbol) return;
+    setSelectedTicker({ symbol, description: result.description || symbol, type: result.type });
     setSearchQuery("");
     setSearchResults([]);
     setPurchasePrice("");
@@ -1216,12 +1238,20 @@ export default function InvestmentPortfolioCard({
     setQuoteLoading(true);
 
     const [quoteResult, profileResult] = await Promise.allSettled([
-      fetchStockQuote(result.symbol),
-      fetchStockProfile(result.symbol),
+      fetchStockQuote(symbol),
+      fetchStockProfile(symbol),
     ]);
 
-    if (quoteResult.status === "fulfilled" && quoteResult.value && quoteResult.value.c > 0) {
-      setSelectedQuote(quoteResult.value);
+    const liveQuote =
+      quoteResult.status === "fulfilled" && quoteResult.value && quoteResult.value.c > 0
+        ? quoteResult.value
+        : null;
+    const quote = liveQuote ?? mockQuoteForSymbol(symbol);
+    if (quote) {
+      setSelectedQuote(quote);
+      if (!liveQuote) {
+        setQuoteError("Using an estimated price. Enter your fill if this isn't right.");
+      }
     } else {
       setQuoteError("Couldn't fetch the live price. You can enter it manually.");
     }
@@ -1231,11 +1261,7 @@ export default function InvestmentPortfolioCard({
     }
 
     setQuoteLoading(false);
-    await fillCostForDate(
-      symbol,
-      costDate,
-      quoteResult.status === "fulfilled" ? quoteResult.value : null
-    );
+    await fillCostForDate(symbol, costDate, quote);
   };
 
   const openAddForHolding = (holding: StockHolding) => {
@@ -1295,7 +1321,17 @@ export default function InvestmentPortfolioCard({
 
   const submitManualAsset = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!canSubmitManual || !selectedTicker || savingAsset) return;
+    if (savingAsset) return;
+    if (!selectedTicker) {
+      const pick = resolveSearchPick();
+      if (pick) {
+        void selectTicker(pick);
+      } else {
+        setSearchError("Search a ticker or company name, then pick a result.");
+      }
+      return;
+    }
+    if (!canSubmitManual) return;
 
     const purchaseIso = parseToIsoDate(purchaseDate) || (purchaseDate.trim() ? null : todayISODate());
     if (purchaseDate.trim() && !purchaseIso) {
@@ -1636,7 +1672,7 @@ export default function InvestmentPortfolioCard({
             </div>
           </div>
           <AllocationRing slices={allocationSlices} privacyMode={privacyMode} />
-          {belowAllocation}
+          {allocationExtra}
         </>
       ) : (
         <>
@@ -1806,7 +1842,7 @@ export default function InvestmentPortfolioCard({
           </div>
 
           <AllocationRing slices={allocationSlices} privacyMode={privacyMode} />
-          {belowAllocation}
+          {allocationExtra}
 
           {/* Asset list — Midas style */}
           <div className="mt-5">
@@ -2165,7 +2201,16 @@ export default function InvestmentPortfolioCard({
                         <input
                           type="text"
                           value={searchQuery}
-                          onChange={(e) => setSearchQuery(e.target.value)}
+                          onChange={(e) => {
+                            setSearchQuery(e.target.value);
+                            setSearchError(null);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key !== "Enter") return;
+                            e.preventDefault();
+                            const pick = resolveSearchPick(searchQuery);
+                            if (pick) void selectTicker(pick);
+                          }}
                           placeholder="Search by ticker or company (e.g. AAPL, Tesla)"
                           autoComplete="off"
                           className="w-full bg-transparent text-xs font-semibold text-white outline-none placeholder:text-slate-600"

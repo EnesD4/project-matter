@@ -109,7 +109,7 @@ function formatJoinedDate(iso?: string) {
 
 function birthDraftFromSettings(birthDate?: string | null) {
   if (!birthDate) return "";
-  return toDisplayDate(birthDate, "DMY");
+  return toDisplayDate(birthDate, "MDY");
 }
 
 type SettingsRowProps = {
@@ -322,18 +322,18 @@ export default function ProfileScreen({
       setBirthDraft(birthDraftFromSettings(settings?.birthDate));
       return;
     }
-    if (iso === (parseToIsoDate(settings?.birthDate ?? "", "DMY") || settings?.birthDate)) {
-      setBirthDraft(toDisplayDate(iso, "DMY"));
+    if (iso === (parseToIsoDate(settings?.birthDate ?? "", "MDY") || settings?.birthDate)) {
+      setBirthDraft(toDisplayDate(iso, "MDY"));
       return;
     }
     const nextAge = ageFromBirthDate(iso);
     if (nextAge == null) {
-      setAgeError("Enter a valid birth date as DD/MM/YYYY.");
+      setAgeError("Enter a valid birth date as MM/DD/YYYY.");
       setBirthDraft(birthDraftFromSettings(settings?.birthDate));
       return;
     }
     const clamped = clampAge(nextAge);
-    setBirthDraft(toDisplayDate(iso, "DMY"));
+    setBirthDraft(toDisplayDate(iso, "MDY"));
     setAgeDraft(String(clamped));
     void persistAge(clamped, iso);
   };
@@ -345,10 +345,10 @@ export default function ProfileScreen({
       return;
     }
     const clamped = clampAge(parsed);
-    const existingIso = parseToIsoDate(birthDraft, "DMY") || settings?.birthDate || null;
+    const existingIso = parseToIsoDate(birthDraft, "MDY") || settings?.birthDate || null;
     const birthDate = applyAgeToBirthDate(clamped, existingIso);
     setAgeDraft(String(clamped));
-    setBirthDraft(toDisplayDate(birthDate, "DMY"));
+    setBirthDraft(toDisplayDate(birthDate, "MDY"));
     void persistAge(clamped, birthDate);
   };
 
@@ -434,7 +434,7 @@ export default function ProfileScreen({
                     min={minBirthDateISO()}
                     max={maxBirthDateISO()}
                     disabled={savingAge || !settings}
-                    order="DMY"
+                    order="MDY"
                     onChange={setBirthDraft}
                     onCommit={commitBirthDate}
                     wrapStyle={styles.dateWrap}
@@ -445,7 +445,7 @@ export default function ProfileScreen({
               <span style={styles.ageHint}>
                 {savingAge
                   ? "Saving…"
-                  : "Enter DD/MM/YYYY. Used for Sprout AI advice and compound growth projections. Edit anytime."}
+                  : "Enter MM/DD/YYYY. Used for Sprout AI advice and compound growth projections. Edit anytime."}
               </span>
               {ageError ? <span style={styles.prefError}>{ageError}</span> : null}
             </span>

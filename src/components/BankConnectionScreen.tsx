@@ -1,9 +1,8 @@
 import { Landmark, Sparkles } from "lucide-react";
 import React, { useState } from "react";
 import { getStoredUser, saveUserSettings, type UserSettings } from "../lib/auth";
-import { inferProfileFromBalances, type DemoScenarioId } from "../lib/demoScenarios";
-import { loadFinancialRoadmap, saveFinancialProfile } from "../lib/roadmapService";
-import DemoScenarioSwitcher from "./DemoScenarioSwitcher";
+import { inferProfileFromBalances } from "../lib/demoScenarios";
+import { saveFinancialProfile } from "../lib/roadmapService";
 import PlaidConnectButton from "./PlaidConnectButton";
 
 type BankConnectionScreenProps = {
@@ -53,7 +52,7 @@ export default function BankConnectionScreen({
         <div style={styles.iconBadge}>
           <Landmark size={22} color="#10B981" />
         </div>
-        <p style={styles.eyebrow}>Connect Bank / Demo Account</p>
+        <p style={styles.eyebrow}>Connect Bank</p>
         <h1 style={styles.headline}>Link your money</h1>
         <p style={styles.subhead}>
           Connect a US bank with Plaid. Checking, savings, and credit balances sync into your
@@ -89,14 +88,6 @@ export default function BankConnectionScreen({
             <span style={{ color: "#D1D5DB" }}>pass_good</span>. Pick any test bank.
           </p>
         </div>
-
-        <DemoScenarioSwitcher
-          compact
-          onApplied={(_id: DemoScenarioId) => {
-            loadFinancialRoadmap(getStoredUser()?.id);
-            void finish(true);
-          }}
-        />
 
         {error ? <p style={styles.error}>{error}</p> : null}
 

@@ -27,7 +27,7 @@ export default function OnboardingScreen({
 }: OnboardingScreenProps) {
   const oauthName = initialName.trim();
   const [fullName, setFullName] = useState(oauthName);
-  const [birthdate, setBirthdate] = useState(initialBirthDate ? toDisplayDate(initialBirthDate, "DMY") : "");
+  const [birthdate, setBirthdate] = useState(initialBirthDate ? toDisplayDate(initialBirthDate, "MDY") : "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -42,23 +42,23 @@ export default function OnboardingScreen({
     };
   }, [skipNameStep, fullName]);
 
-  const birthIso = parseToIsoDate(birthdate, "DMY");
+  const birthIso = parseToIsoDate(birthdate, "MDY");
   const age = birthIso ? ageFromBirthDate(birthIso) : null;
 
   const finish = async (event: React.FormEvent) => {
     event.preventDefault();
     const nextName = fullName.trim() || oauthName;
     if (!nextName) {
-      setError("Enter your full name (Ad Soyad) to continue.");
+      setError("Enter your name to continue.");
       return;
     }
     if (!birthIso) {
-      setError("Add your date of birth as DD/MM/YYYY to continue.");
+      setError("Add your date of birth as MM/DD/YYYY to continue.");
       return;
     }
     const nextAge = ageFromBirthDate(birthIso);
     if (nextAge == null) {
-      setError("Enter a valid date of birth as DD/MM/YYYY.");
+      setError("Enter a valid date of birth as MM/DD/YYYY.");
       return;
     }
     if (nextAge < 13) {
@@ -163,7 +163,7 @@ export default function OnboardingScreen({
         <p style={styles.eyebrow}>Welcome</p>
         <h1 style={styles.headline}>Let’s get you set up</h1>
         <p style={styles.subhead}>
-          Add your full name and date of birth as DD/MM/YYYY. Age personalizes Sprout AI and retirement
+          Add your name and date of birth as MM/DD/YYYY. Age personalizes Sprout AI and retirement
           projections — then you’ll connect a bank.
         </p>
 
@@ -172,7 +172,7 @@ export default function OnboardingScreen({
         ) : null}
 
         <label style={styles.field}>
-          <span style={styles.label}>Full Name (Ad Soyad)</span>
+          <span style={styles.label}>Name</span>
           <input
             style={styles.input}
             type="text"
@@ -190,18 +190,18 @@ export default function OnboardingScreen({
 
         <label style={styles.field}>
           <span style={styles.label} id="onboard-dob-label">
-            When were you born?
+            Date of Birth
           </span>
           <UsDateField
             id="onboard-dob"
             labelledBy="onboard-dob-label"
             autoFocus={Boolean(skipNameStep && fullName.trim())}
-            order="DMY"
+            order="MDY"
             value={birthdate}
             min={minBirthDateISO()}
             max={maxBirthDateISO()}
             onChange={(next) => {
-              setBirthdate(maskDateInput(next, "DMY", birthdate));
+              setBirthdate(maskDateInput(next, "MDY", birthdate));
               setError(null);
             }}
             wrapStyle={styles.dateWrap}
@@ -210,7 +210,7 @@ export default function OnboardingScreen({
           <span style={styles.hint}>
             {age != null
               ? `Used for Sprout AI advice and compound growth projections · ${age} years old`
-              : "Enter DD/MM/YYYY. Used for customizing Sprout AI advice and compound growth projections."}
+              : "Enter MM/DD/YYYY. Used for customizing Sprout AI advice and compound growth projections."}
           </span>
         </label>
 

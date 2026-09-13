@@ -1,14 +1,12 @@
 import { Landmark, Sparkles, X } from "lucide-react";
 import React, { useEffect, useState } from "react";
 import { getStoredUser } from "../lib/auth";
-import { inferProfileFromBalances, type DemoScenarioId } from "../lib/demoScenarios";
+import { inferProfileFromBalances } from "../lib/demoScenarios";
 import {
   hasFinancialProfile,
-  loadFinancialRoadmap,
   saveFinancialProfile,
   type FinancialRoadmap,
 } from "../lib/roadmapService";
-import DemoScenarioSwitcher from "./DemoScenarioSwitcher";
 import PlaidConnectButton from "./PlaidConnectButton";
 
 type FinancialOnboardingModalProps = {
@@ -53,12 +51,6 @@ export default function FinancialOnboardingModal({
       );
       onComplete?.(roadmap);
     }
-    onClose?.();
-  };
-
-  const handleDemoApplied = (_id: DemoScenarioId) => {
-    const roadmap = loadFinancialRoadmap(getStoredUser()?.id);
-    if (roadmap) finish(roadmap);
     onClose?.();
   };
 
@@ -132,7 +124,6 @@ export default function FinancialOnboardingModal({
             </p>
           </div>
 
-          <DemoScenarioSwitcher compact onApplied={handleDemoApplied} />
         </div>
 
         <div className="border-t border-[#1F1F1F] px-5 py-4">

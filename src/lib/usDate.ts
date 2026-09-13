@@ -62,7 +62,7 @@ export function parseToIsoDate(raw: string, order: DateDisplayOrder = "MDY"): st
 }
 
 /**
- * Insert '/' immediately after day and month digits (DD/MM/YYYY or MM/DD/YYYY).
+ * Insert '/' immediately after month and day digits (MM/DD/YYYY by default).
  * Pass the previous field value so backspace can remove a trailing slash.
  */
 export function maskDateInput(raw: string, order: DateDisplayOrder = "MDY", previous = ""): string {

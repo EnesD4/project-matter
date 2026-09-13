@@ -1,5 +1,6 @@
 import { apiUrl } from "./apiBase";
 import { clearbitLogoUrl, extractWebsiteDomain } from "./assetLogos";
+import { DEMO_TICKER_CATALOG, resolveDemoTicker } from "./demoScenarios";
 import { setCachedChart, setCachedQuote, setCachedSpark } from "./marketCache";
 import {
   ChartCandle,
@@ -167,20 +168,101 @@ export async function fetchStockProfile(
   }
 }
 
+const TICKER_QUERY = /^[A-Z][A-Z0-9.\-]{0,9}$/;
+
+function asSearchResult(row: Partial<StockSearchResult> | null | undefined): StockSearchResult | null {
+  const symbol = String(row?.displaySymbol || row?.symbol || "")
+    .trim()
+    .toUpperCase();
+  if (!symbol) return null;
+  return {
+    symbol,
+    displaySymbol: symbol,
+    description: String(row?.description || symbol).trim() || symbol,
+    type: String(row?.type || "").trim(),
+  };
+}
+
+function parseSearchPayload(data: unknown): StockSearchResult[] {
+  if (!data) return [];
+  const rows = Array.isArray(data)
+    ? data
+    : Array.isArray((data as { result?: unknown }).result)
+      ? (data as { result: unknown[] }).result
+      : Array.isArray((data as { items?: unknown }).items)
+        ? (data as { items: unknown[] }).items
+        : [];
+  const seen = new Set<string>();
+  const out: StockSearchResult[] = [];
+  for (const row of rows) {
+    const next = asSearchResult(row as Partial<StockSearchResult>);
+    if (!next || seen.has(next.symbol)) continue;
+    seen.add(next.symbol);
+    out.push(next);
+  }
+  return out;
+}
+
+/** Local catalog + typed-ticker fallback so paper search still works when APIs are down. */
+export function localTickerMatches(query: string): StockSearchResult[] {
+  const q = query.trim().toUpperCase();
+  if (!q) return [];
+  const rows = Object.entries(DEMO_TICKER_CATALOG)
+    .filter(([symbol, meta]) => symbol.includes(q) || meta.name.toUpperCase().includes(q))
+    .map(([symbol, meta]) => ({
+      symbol,
+      displaySymbol: symbol,
+      description: meta.name,
+      type: "Common Stock",
+    }));
+  if (TICKER_QUERY.test(q) && !rows.some((row) => row.symbol === q)) {
+    const resolved = resolveDemoTicker(q);
+    rows.unshift({
+      symbol: resolved.symbol,
+      displaySymbol: resolved.symbol,
+      description: resolved.name,
+      type: "Common Stock",
+    });
+  }
+  return rows.slice(0, 8);
+}
+
+export function mockQuoteForSymbol(symbol: string): StockQuote | null {
+  const ticker = symbol.trim().toUpperCase();
+  if (!ticker) return null;
+  const known = DEMO_TICKER_CATALOG[ticker];
+  const price = known?.buyPrice ?? (TICKER_QUERY.test(ticker) ? 100 : 0);
+  if (!(price > 0)) return null;
+  return {
+    c: price,
+    d: 0,
+    dp: 0,
+    h: price,
+    l: price,
+    o: price,
+    pc: price,
+    t: Math.floor(Date.now() / 1000),
+    source: "mock",
+  };
+}
+
 export async function fetchStockSearch(
   query: string,
   signal?: AbortSignal
 ): Promise<StockSearchResult[]> {
-  const q = query.trim();
+  const q = query.trim().slice(0, 40);
   if (!q) return [];
+  const local = localTickerMatches(q);
   try {
-    const data = await safeApiGet<StockSearchResult[]>(
+    const data = await safeApiGet<unknown>(
       `${apiUrl("/api/stocks/search")}?q=${encodeURIComponent(q)}`,
       signal
     );
-    return Array.isArray(data) ? data : [];
-  } catch {
-    return [];
+    const remote = parseSearchPayload(data);
+    return remote.length > 0 ? remote.slice(0, 8) : local;
+  } catch (err) {
+    if ((err as Error).name === "AbortError") throw err;
+    return local;
   }
 }
 

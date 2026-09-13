@@ -241,9 +241,11 @@ function emptyReport(): PortfolioHealthReport {
 
 export function analyzePortfolioHealth(holdings: Holding[], cashBalance = 0): PortfolioHealthReport {
   const cash = Math.max(0, cashBalance);
-  const positions = holdings.filter((h) => holdingValue(h) > 0);
+  const assets = (holdings ?? []).filter((h) => h.kind === "stock" && holdingValue(h) > 0);
+  const positions = (holdings ?? []).filter((h) => holdingValue(h) > 0);
   const invested = positions.reduce((sum, h) => sum + holdingValue(h), 0) + cash;
-  if (invested <= 0) return emptyReport();
+  // Cash alone scores ~81; wait for stocks/assets before showing a number.
+  if (!holdings?.length || assets.length === 0 || invested <= 0) return emptyReport();
 
   const stocks = positions.filter(isStock);
   const sectorWeights = new Map<string, number>();

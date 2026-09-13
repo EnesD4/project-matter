@@ -297,10 +297,10 @@ async function resolveStockQuote(symbol: string): Promise<(QuoteSnapshot & { sou
   };
 }
 
-// Stock Search Endpoint — Polygon first, Finnhub fallback
+// Stock Search Endpoint — Polygon first, Finnhub fallback, never 500
 app.get('/api/stocks/search', async (req, res) => {
   try {
-    const query = String(req.query.q || '').trim();
+    const query = String(req.query.q || req.query.query || '').trim().slice(0, 40);
     if (!query) {
       return res.json([]);
     }
@@ -308,14 +308,17 @@ app.get('/api/stocks/search', async (req, res) => {
     if (polygonResults.length > 0) {
       return res.json(polygonResults);
     }
-    if (!FINNHUB_API_KEY) return res.json([]);
-    const response = await axios.get(
-      `https://finnhub.io/api/v1/search?q=${encodeURIComponent(query)}&token=${FINNHUB_API_KEY}`
-    );
-    res.json(response.data.result || []);
+    if (FINNHUB_API_KEY) {
+      const response = await axios.get(
+        `https://finnhub.io/api/v1/search?q=${encodeURIComponent(query)}&token=${FINNHUB_API_KEY}`
+      );
+      const rows = Array.isArray(response.data?.result) ? response.data.result : [];
+      if (rows.length > 0) return res.json(rows);
+    }
+    return res.json([]);
   } catch (error) {
     console.error('Error fetching search results:', error);
-    res.status(500).json({ error: 'Failed to fetch search results' });
+    res.json([]);
   }
 });
 
