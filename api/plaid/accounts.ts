@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "http";
-import { handleGetAccounts } from "../_lib/plaidHandlers";
+import { handleGetAccounts } from "../_lib/plaidHandlers.js";
 
 export const config = {
   runtime: "nodejs",

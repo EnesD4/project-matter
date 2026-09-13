@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "http";
-import { guardApiRequest, sendJson } from "./security";
+import { guardApiRequest, sendJson } from "./security.js";
 
 /** Deprecated: the mock auto-sync path was removed. Use Plaid Link + /api/plaid/* instead. */
 export async function handlePlaidSync(req: IncomingMessage, res: ServerResponse): Promise<void> {

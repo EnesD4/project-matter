@@ -1,6 +1,6 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { getSupabaseAnonKey, getSupabaseServiceRoleKey, getSupabaseUrl } from "./env";
-import type { PlaidAccount } from "./plaidClient";
+import { getSupabaseAnonKey, getSupabaseServiceRoleKey, getSupabaseUrl } from "./env.js";
+import type { PlaidAccount } from "./plaidClient.js";
 
 export type StoredPlaidItem = {
   userId: string;

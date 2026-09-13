@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "http";
-import { handleExchangeToken } from "../_lib/plaidHandlers";
+import { handleExchangeToken } from "../_lib/plaidHandlers.js";
 
 export const config = {
   runtime: "nodejs",

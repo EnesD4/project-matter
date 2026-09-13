@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "http";
-import { handleGeminiCoach } from "./_lib/geminiCoach";
+import { handleGeminiCoach } from "./_lib/geminiCoach.js";
 
 export const config = {
   runtime: "nodejs",

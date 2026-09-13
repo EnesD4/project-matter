@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "http";
-import { isProductionRuntime } from "./env";
+import { isProductionRuntime } from "./env.js";
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "0.0.0.0"]);
 

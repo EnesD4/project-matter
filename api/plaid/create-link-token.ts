@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "http";
-import { handleCreateLinkToken } from "../_lib/plaidHandlers";
-import { sendJson } from "../_lib/security";
+import { handleCreateLinkToken } from "../_lib/plaidHandlers.js";
+import { sendJson } from "../_lib/security.js";
 
 export const config = {
   runtime: "nodejs",

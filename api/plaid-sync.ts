@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "http";
-import { handlePlaidSync } from "./_lib/plaidSync";
+import { handlePlaidSync } from "./_lib/plaidSync.js";
 
 export const config = {
   runtime: "nodejs",

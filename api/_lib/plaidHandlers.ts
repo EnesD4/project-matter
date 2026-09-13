@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "http";
-import { isPlaidConfigured, missingPlaidEnvKeys, plaidCredentialsError } from "./env";
+import { isPlaidConfigured, missingPlaidEnvKeys, plaidCredentialsError } from "./env.js";
 import {
   linkTokenCreate,
   exchangePublicToken,
@@ -9,15 +9,15 @@ import {
   type PlaidAccount,
   type PlaidHolding,
   type PlaidTransaction,
-} from "./plaidClient";
+} from "./plaidClient.js";
 import {
   loadBankAccounts,
   loadPlaidItems,
   resolveApiUser,
   saveBankAccounts,
   savePlaidItem,
-} from "./plaidStore";
-import { guardApiRequest, guardApiRequestMethods, readJsonBody, sendJson } from "./security";
+} from "./plaidStore.js";
+import { guardApiRequest, guardApiRequestMethods, readJsonBody, sendJson } from "./security.js";
 
 function header(req: IncomingMessage, name: string): string | string[] | undefined {
   return req.headers[name];

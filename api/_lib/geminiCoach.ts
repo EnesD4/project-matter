@@ -5,9 +5,9 @@ import {
   stripEducationalDisclaimer,
   SPROUT_SYSTEM_INSTRUCTION,
   type SproutAiFinancialSnapshot,
-} from "../../src/lib/sproutAi";
-import { GEMINI_FLASH_MODEL, getGeminiApiKey, getGeminiModel } from "./env";
-import { guardApiRequest, readJsonBody, sendJson } from "./security";
+} from "../../src/lib/sproutAi.js";
+import { GEMINI_FLASH_MODEL, getGeminiApiKey, getGeminiModel } from "./env.js";
+import { guardApiRequest, readJsonBody, sendJson } from "./security.js";
 
 export type GeminiCoachHistoryItem = {
   sender?: string;

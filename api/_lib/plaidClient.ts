@@ -1,4 +1,4 @@
-import { getPlaidClientId, getPlaidSecret } from "./env";
+import { getPlaidClientId, getPlaidSecret } from "./env.js";
 
 /** Official Plaid host map — same keys as `PlaidEnvironments` from the Plaid Node SDK. */
 export const PlaidEnvironments = {
