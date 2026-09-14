@@ -2,16 +2,14 @@ import type { IncomingMessage, ServerResponse } from "http";
 import react from "@vitejs/plugin-react";
 import { defineConfig, loadEnv, type Connect, type Plugin } from "vite";
 import { handleGeminiCoach } from "./api/gemini-coach";
-import handleCreateLinkToken from "./api/plaid/create-link-token.js";
-import handleExchangeToken from "./api/plaid/exchange-token.js";
-import handleGetAccounts from "./api/plaid/accounts.js";
-import { handlePlaidSync } from "./api/plaid-sync";
-import handleCashFlow from "./api/cash-flow";
-import handleStockQuote from "./api/stocks/quote";
-import handleStockQuotes from "./api/stocks/quotes";
-import handleStockSearch from "./api/stocks/search";
+import handlePlaidPath from "./api/plaid/[...path]";
+import { handlePlaidSync } from "./api/_lib/plaidSync";
 import handleStockPath from "./api/_lib/stockHandlers";
-import { handlePortfolioFallback, handleWatchlistsFallback } from "./api/_lib/resourceFallbacks";
+import {
+  handleCashFlowFallback,
+  handlePortfolioFallback,
+  handleWatchlistsFallback,
+} from "./api/_lib/resourceFallbacks";
 
 function pathOf(req: IncomingMessage): string {
   const raw = req.url || "";
@@ -48,16 +46,11 @@ function localServerlessApi(): Plugin {
       let handler: ApiHandler | null = null;
       if (path === "/api/gemini-coach") handler = handleGeminiCoach;
       else if (path === "/api/plaid-sync") handler = handlePlaidSync;
-      else if (path === "/api/plaid/create-link-token") handler = handleCreateLinkToken;
-      else if (path === "/api/plaid/exchange-token") handler = handleExchangeToken;
-      else if (path === "/api/plaid/accounts") handler = handleGetAccounts;
-      else if (path === "/api/stocks/quote") handler = handleStockQuote;
-      else if (path === "/api/stocks/quotes") handler = handleStockQuotes;
-      else if (path === "/api/stocks/search") handler = handleStockSearch;
-      else if (path === "/api/cash-flow") handler = handleCashFlow;
+      else if (path.startsWith("/api/plaid/")) handler = handlePlaidPath;
+      else if (path.startsWith("/api/stocks/")) handler = handleStockPath;
+      else if (path === "/api/cash-flow") handler = handleCashFlowFallback;
       else if (path === "/api/portfolio" || path.startsWith("/api/portfolio/")) handler = handlePortfolioFallback;
       else if (path === "/api/watchlists" || path.startsWith("/api/watchlists/")) handler = handleWatchlistsFallback;
-      else if (path.startsWith("/api/stocks/")) handler = handleStockPath;
 
       if (!handler) {
         sendJson(res, 404, { error: "Not found" });

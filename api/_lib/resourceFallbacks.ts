@@ -115,3 +115,26 @@ export async function handleWatchlistsFallback(req: IncomingMessage, res: Server
     sendJson(res, 200, []);
   }
 }
+
+/** Local-dev only empty cash-flow payload (not deployed as a Vercel function). */
+export async function handleCashFlowFallback(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (await guardApiRequestMethods(req, res, ["GET", "POST", "PUT", "PATCH"])) return;
+  sendJson(res, 200, {
+    status: "ok",
+    monthlyIncome: 0,
+    emergencyFund: 0,
+    extraPayoff: 0,
+    expenses: [],
+    debts: [],
+    safetyNet: {
+      portfolioPct: 0,
+      goldAmount: 0,
+      goldUnit: "oz",
+      bonds: [],
+      hysaCash: 0,
+      reserveLines: [],
+    },
+    updatedAt: 0,
+    data: [],
+  });
+}
