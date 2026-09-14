@@ -1,4 +1,5 @@
 // Native Prototype Defensive Shield — MUST be the first import (before App/components).
+// Polyfill lives in this module because ESM hoists imports; inline code above imports runs too late.
 import "./lib/nativePrototypeShield";
 
 import React from "react";

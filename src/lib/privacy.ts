@@ -6,6 +6,7 @@ export const MASK_SHARES = "•••• shares";
 export const MASK_COMPACT = "••••";
 
 export function formatMoney(amount: unknown, digits = 2) {
+  if (!amount && amount !== 0) return "0";
   return safeFormatNumber(amount, {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
@@ -15,6 +16,7 @@ export function formatMoney(amount: unknown, digits = 2) {
 /** `$1,234.56` or `$••••••` when hidden. */
 export function privacyMoney(hidden: boolean, amount: unknown, digits = 2): string {
   if (hidden) return MASK_MONEY;
+  if (!amount && amount !== 0) return "$0";
   return `$${formatMoney(amount, digits)}`;
 }
 

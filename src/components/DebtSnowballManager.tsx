@@ -136,6 +136,7 @@ function simulateSnowball(debts: Debt[], extraPayment: number): SimResult {
 }
 
 function formatMoney(amount: unknown) {
+  if (!amount && amount !== 0) return "0";
   return formatNumber(Math.round(Math.max(0, toFiniteNumber(amount, 0))));
 }
 
