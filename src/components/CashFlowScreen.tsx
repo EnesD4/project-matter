@@ -217,7 +217,11 @@ export default function CashFlowScreen({
   const monthlyIncome = annualIncome / 12;
   const payerCount = positions.filter((position) => annualDividendIncome(position, metaBySymbol[position.symbol]) > 0)
     .length;
-  const stockValue = positions.reduce((sum, position) => sum + Math.max(0, position.price) * position.shares, 0);
+  const stockValue = positions.reduce(
+    (sum, position) =>
+      sum + Math.max(0, toFiniteNumber(position?.price, 0)) * Math.max(0, toFiniteNumber(position?.shares, 0)),
+    0
+  );
   const blendedYield = stockValue > 0 ? annualIncome / stockValue : 0;
   const upcoming = useMemo(() => buildUpcomingPayouts(positions, metaBySymbol), [positions, metaBySymbol]);
   const grouped = useMemo(() => groupByMonth(upcoming), [upcoming]);
@@ -466,9 +470,13 @@ function formatCoverage(months: number): string {
 }
 
 function stockPortfolioValue(holdings: Holding[]): number {
-  return holdings
-    .filter((h): h is StockHolding => h.kind === "stock")
-    .reduce((sum, h) => sum + Math.max(0, h.quantity) * Math.max(0, h.currentPrice), 0);
+  return (holdings || [])
+    .filter((h): h is StockHolding => h?.kind === "stock")
+    .reduce(
+      (sum, h) =>
+        sum + Math.max(0, toFiniteNumber(h?.quantity, 0)) * Math.max(0, toFiniteNumber(h?.currentPrice, 0)),
+      0
+    );
 }
 
 export type SafetyNetSectionProps = {

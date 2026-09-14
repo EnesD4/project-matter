@@ -792,14 +792,20 @@ const App: React.FC = () => {
       const linkedExpenses = detail?.expenses || [];
       setExpenses(linkedExpenses);
       setCashFlowLinked(true);
-      const investments = portfolioStocks.reduce((sum, lot) => sum + lot.shares * lot.buyPrice, 0);
-      const monthlyEssentialExpenses = linkedExpenses.reduce((sum, item) => sum + item.amount, 0);
+      const investments = portfolioStocks.reduce(
+        (sum, lot) => sum + toFiniteNumber(lot?.shares, 0) * toFiniteNumber(lot?.buyPrice, 0),
+        0
+      );
+      const monthlyEssentialExpenses = linkedExpenses.reduce(
+        (sum, item) => sum + toFiniteNumber(item?.amount, 0),
+        0
+      );
       saveFinancialProfile(
         inferProfileFromBalances({
           cash: detail.chaseChecking,
           hysa: detail.marcusHysa + (detail.moneyMarket ?? 0),
           investments,
-          debt: linkedDebts.reduce((sum, debt) => sum + debt.balance, 0),
+          debt: linkedDebts.reduce((sum, debt) => sum + toFiniteNumber(debt?.balance, 0), 0),
           monthlyIncome: detail.monthlyIncome,
           monthlyEssentialExpenses,
         }),
@@ -960,13 +966,19 @@ const App: React.FC = () => {
   const emergencyGoal = 1000;
 
   const categoryExpenses = useMemo(
-    () => safeExpenses.reduce((sum, item) => sum + item.amount, 0),
+    () => safeExpenses.reduce((sum, item) => sum + toFiniteNumber(item?.amount, 0), 0),
     [safeExpenses]
   );
-  const totalDebt = useMemo(() => safeDebts.reduce((sum, d) => sum + d.balance, 0), [safeDebts]);
-  const activeDebts = useMemo(() => safeDebts.filter((d) => d.balance > 0), [safeDebts]);
+  const totalDebt = useMemo(
+    () => safeDebts.reduce((sum, d) => sum + toFiniteNumber(d?.balance, 0), 0),
+    [safeDebts]
+  );
+  const activeDebts = useMemo(
+    () => safeDebts.filter((d) => toFiniteNumber(d?.balance, 0) > 0),
+    [safeDebts]
+  );
   const totalMinPayment = useMemo(
-    () => activeDebts.reduce((sum, d) => sum + d.minPayment, 0),
+    () => activeDebts.reduce((sum, d) => sum + toFiniteNumber(d?.minPayment, 0), 0),
     [activeDebts]
   );
   // Active debt minimums count toward monthly expenses so users never enter them twice.
@@ -984,41 +996,63 @@ const App: React.FC = () => {
 
   const avgApr = useMemo(() => {
     if (totalDebt <= 0) return 0;
-    return safeDebts.reduce((sum, d) => sum + d.balance * d.apr, 0) / totalDebt;
+    return (
+      safeDebts.reduce(
+        (sum, d) => sum + toFiniteNumber(d?.balance, 0) * toFiniteNumber(d?.apr, 0),
+        0
+      ) / totalDebt
+    );
   }, [safeDebts, totalDebt]);
 
   // Snowball focus: every extra dollar lands on the smallest remaining balance.
   const focusDebt = useMemo(
     () =>
       safeDebts
-        .filter((d) => d.balance > 0)
-        .sort((a, b) => a.balance - b.balance || b.apr - a.apr)[0] ?? null,
+        .filter((d) => toFiniteNumber(d?.balance, 0) > 0)
+        .sort(
+          (a, b) =>
+            toFiniteNumber(a?.balance, 0) - toFiniteNumber(b?.balance, 0) ||
+            toFiniteNumber(b?.apr, 0) - toFiniteNumber(a?.apr, 0)
+        )[0] ?? null,
     [safeDebts]
   );
 
   // Live portfolio context — real holdings, so Socrates can answer "which stocks do I own?" accurately.
   const portfolioContext = useMemo(() => {
     if (safeHoldings.length === 0) return "No investments or connected accounts yet.";
-    const totalValue = safeHoldings.reduce(
-      (sum, h) => sum + (h.kind === "stock" ? h.quantity * h.currentPrice : h.balance),
-      0
-    );
-    const lines = safeHoldings.map((h) =>
-      h.kind === "stock"
-        ? `${h.symbol} (${h.description}, ${h.account === "verified" ? "Verified Brokerage" : "Paper Account"}): ${h.quantity} shares @ $${h.currentPrice.toFixed(2)} = $${money(
-            h.quantity * h.currentPrice
-          )} (today ${h.dayChangePct >= 0 ? "+" : ""}${h.dayChangePct.toFixed(2)}%)`
-        : `${h.name} (${h.account === "verified" ? "Verified Brokerage" : "Paper Account"} balance): $${money(h.balance)}`
-    );
+    const totalValue = safeHoldings.reduce((sum, h) => {
+      if (h?.kind === "stock") {
+        return sum + toFiniteNumber(h?.quantity, 0) * toFiniteNumber(h?.currentPrice, 0);
+      }
+      return sum + toFiniteNumber(h?.balance, 0);
+    }, 0);
+    const lines = safeHoldings.map((h) => {
+      if (h?.kind === "stock") {
+        const qty = toFiniteNumber(h?.quantity, 0);
+        const price = toFiniteNumber(h?.currentPrice, 0);
+        const dayPct = toFiniteNumber(h?.dayChangePct, 0);
+        return `${h.symbol} (${h.description}, ${h.account === "verified" ? "Verified Brokerage" : "Paper Account"}): ${qty} shares @ $${price.toFixed(2)} = $${money(
+          qty * price
+        )} (today ${dayPct >= 0 ? "+" : ""}${dayPct.toFixed(2)}%)`;
+      }
+      return `${h.name} (${h.account === "verified" ? "Verified Brokerage" : "Paper Account"} balance): $${money(h?.balance)}`;
+    });
     return `Total portfolio value: $${money(totalValue)}. Investment achievement badges only count Verified Brokerage holdings; Paper Account lots are excluded. Holdings:\n- ${lines.join("\n- ")}`;
   }, [safeHoldings]);
 
   const stockHoldingsValue = useMemo(
-    () => stocks.reduce((sum, h) => sum + h.quantity * h.currentPrice, 0),
+    () =>
+      stocks.reduce(
+        (sum, h) => sum + toFiniteNumber(h?.quantity, 0) * toFiniteNumber(h?.currentPrice, 0),
+        0
+      ),
     [stocks]
   );
   const brokerCashValue = useMemo(
-    () => safeHoldings.filter((h) => h.kind === "broker").reduce((sum, h) => sum + h.balance, 0),
+    () =>
+      safeHoldings
+        .filter((h) => h?.kind === "broker")
+        .reduce((sum, h) => sum + toFiniteNumber(h?.balance, 0), 0),
     [safeHoldings]
   );
   const { goldPricePerOz, bondPrices, loading: safetyQuotesLoading } = useSafetyNetQuotes(safetyNet);

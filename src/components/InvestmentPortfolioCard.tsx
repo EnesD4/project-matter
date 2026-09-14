@@ -1097,12 +1097,15 @@ export default function InvestmentPortfolioCard({
   const displayGainAbs = hoverPoint
     ? (hoverPoint.portfolioValue ?? hoverPoint.value) - startPortfolioValue
     : gainAbs;
-  const displayGainPct = hoverPoint
-    ? hoverPoint.portfolioPct ??
-      (startPortfolioValue
-        ? ((hoverPoint.value - startPortfolioValue) / startPortfolioValue) * 100
-        : 0)
-    : gainPct;
+  const displayGainPct = toFiniteNumber(
+    hoverPoint
+      ? hoverPoint.portfolioPct ??
+        (startPortfolioValue
+          ? ((toFiniteNumber(hoverPoint?.value, 0) - startPortfolioValue) / startPortfolioValue) * 100
+          : 0)
+      : gainPct,
+    0
+  );
   const displaySpPct = hoverPoint?.spPct ?? chartData[chartData.length - 1]?.spPct;
   const displayPositive = displayGainPct > 0;
   const displayNegative = displayGainPct < 0;
@@ -2313,12 +2316,18 @@ export default function InvestmentPortfolioCard({
                       )}
                       {!quoteLoading && !historyLoading && historyMeta?.source === "live" && historyMeta.closePrice ? (
                         <p className="text-[11px] font-semibold text-emerald-300">
-                          Live price: ${historyMeta.closePrice.toFixed(2)}
+                          Live price: ${toFiniteNumber(historyMeta?.closePrice, 0).toFixed(2)}
                           {selectedQuote && (
-                            <span className={selectedQuote.dp >= 0 ? "text-emerald-300" : "text-rose-400"}>
+                            <span
+                              className={
+                                toFiniteNumber(selectedQuote?.dp, 0) >= 0
+                                  ? "text-emerald-300"
+                                  : "text-rose-400"
+                              }
+                            >
                               {" "}
-                              ({selectedQuote.dp >= 0 ? "+" : ""}
-                              {selectedQuote.dp.toFixed(2)}% today)
+                              ({toFiniteNumber(selectedQuote?.dp, 0) >= 0 ? "+" : ""}
+                              {toFiniteNumber(selectedQuote?.dp, 0).toFixed(2)}% today)
                             </span>
                           )}
                         </p>
@@ -2326,7 +2335,7 @@ export default function InvestmentPortfolioCard({
                       {!quoteLoading && !historyLoading && historyMeta?.source === "history" && historyMeta.closePrice ? (
                         <p className="text-[11px] font-semibold text-emerald-300">
                           Close on {formatSessionDate(historyMeta.sessionDate)}: $
-                          {historyMeta.closePrice.toFixed(2)}
+                          {toFiniteNumber(historyMeta?.closePrice, 0).toFixed(2)}
                           {historyMeta.sessionDate !== historyMeta.requestedDate ? (
                             <span className="font-medium text-slate-500">
                               {" "}
@@ -2338,7 +2347,7 @@ export default function InvestmentPortfolioCard({
                       {!quoteLoading && !historyLoading && historyMeta?.source === "fallback" && historyMeta.closePrice ? (
                         <p className="text-[11px] font-semibold text-amber-300">
                           No close for {formatSessionDate(historyMeta.requestedDate)} (weekend, holiday, or data gap).
-                          Using ${historyMeta.closePrice.toFixed(2)} — enter your price per share if that isn&apos;t your fill.
+                          Using ${toFiniteNumber(historyMeta?.closePrice, 0).toFixed(2)} — enter your price per share if that isn&apos;t your fill.
                         </p>
                       ) : null}
                       {quoteError && <p className="mt-1 text-[11px] text-rose-400">{quoteError}</p>}

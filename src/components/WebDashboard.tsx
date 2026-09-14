@@ -40,6 +40,7 @@ import {
   type LessonModuleDef,
 } from "../lib/lessons";
 import { privacyMoney } from "../lib/privacy";
+import { toFiniteNumber } from "../lib/money";
 import {
   requestFinancialOnboarding,
   toggleRoadmapTask,
@@ -327,13 +328,49 @@ export default function WebDashboard({
   const slices = useMemo<BreakdownSlice[]>(
     () =>
       [
-        { key: "portfolio", label: "Portfolio", value: stockHoldingsValue, color: BREAKDOWN_COLORS.portfolio, Icon: TrendingUp },
-        { key: "retirement", label: "Retirement", value: retirementBalance, color: BREAKDOWN_COLORS.retirement, Icon: Shield },
-        { key: "checking", label: "Checking", value: liquidCashValue, color: BREAKDOWN_COLORS.checking, Icon: Banknote },
-        { key: "hysa", label: "HYSA", value: hysaCashValue, color: BREAKDOWN_COLORS.hysa, Icon: Landmark },
-        { key: "gold", label: "Gold", value: goldValue, color: BREAKDOWN_COLORS.gold, Icon: Coins },
-        { key: "bonds", label: "Bonds", value: bondsValue, color: BREAKDOWN_COLORS.bonds, Icon: ScrollText },
-      ].filter((slice) => slice.value > 0),
+        {
+          key: "portfolio",
+          label: "Portfolio",
+          value: toFiniteNumber(stockHoldingsValue, 0),
+          color: BREAKDOWN_COLORS.portfolio,
+          Icon: TrendingUp,
+        },
+        {
+          key: "retirement",
+          label: "Retirement",
+          value: toFiniteNumber(retirementBalance, 0),
+          color: BREAKDOWN_COLORS.retirement,
+          Icon: Shield,
+        },
+        {
+          key: "checking",
+          label: "Checking",
+          value: toFiniteNumber(liquidCashValue, 0),
+          color: BREAKDOWN_COLORS.checking,
+          Icon: Banknote,
+        },
+        {
+          key: "hysa",
+          label: "HYSA",
+          value: toFiniteNumber(hysaCashValue, 0),
+          color: BREAKDOWN_COLORS.hysa,
+          Icon: Landmark,
+        },
+        {
+          key: "gold",
+          label: "Gold",
+          value: toFiniteNumber(goldValue, 0),
+          color: BREAKDOWN_COLORS.gold,
+          Icon: Coins,
+        },
+        {
+          key: "bonds",
+          label: "Bonds",
+          value: toFiniteNumber(bondsValue, 0),
+          color: BREAKDOWN_COLORS.bonds,
+          Icon: ScrollText,
+        },
+      ].filter((slice) => toFiniteNumber(slice?.value, 0) > 0),
     [stockHoldingsValue, retirementBalance, liquidCashValue, hysaCashValue, goldValue, bondsValue]
   );
 
@@ -824,7 +861,8 @@ function BalanceBreakdown({
         </div>
         <ul className="m-0 w-full list-none space-y-2 p-0">
           {slices.map((slice) => {
-            const pct = total > 0 ? Math.round((slice.value / total) * 100) : 0;
+            const value = toFiniteNumber(slice?.value, 0);
+            const pct = total > 0 ? Math.round((value / total) * 100) : 0;
             return (
               <li key={slice.key} className="flex items-center gap-2 text-[12px]">
                 <span className="h-2.5 w-2.5 flex-shrink-0 rounded-full" style={{ background: slice.color }} />
@@ -834,7 +872,7 @@ function BalanceBreakdown({
                   </span>
                   {slice.label}
                 </span>
-                <span className="tabular-nums font-bold text-white">{privacyMoney(privacyMode, slice.value)}</span>
+                <span className="tabular-nums font-bold text-white">{privacyMoney(privacyMode, value)}</span>
                 <span className="w-9 text-right tabular-nums font-semibold text-slate-500">{pct}%</span>
               </li>
             );
