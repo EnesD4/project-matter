@@ -1,3 +1,12 @@
+// @ts-ignore
+if (typeof window !== 'undefined') {
+  const orig = Number.prototype.toLocaleString;
+  // @ts-ignore
+  Number.prototype.toLocaleString = function (...args) {
+    if (this === undefined || this === null) return '0';
+    return orig.apply(this, args);
+  };
+}
 // Native Prototype Defensive Shield — MUST be the first import (before App/components).
 import "./lib/nativePrototypeShield";
 
