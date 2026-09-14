@@ -332,7 +332,7 @@ function WatchlistCard({
                   const raw = item as any;
                   const quote = quotes[item.symbol] ?? cachedOrPendingQuote(item.symbol);
                   const price = toFiniteNumber(
-                    raw.price ?? raw.current_price ?? quote?.price,
+                    quote?.price ?? raw.current_price ?? raw.price,
                     0
                   );
                   const shares = toFiniteNumber(raw.shares ?? raw.quantity, 0);

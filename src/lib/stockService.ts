@@ -108,8 +108,27 @@ function finiteNumber(value: unknown, fallback = 0): number {
 }
 
 /**
+ * Resolve live/market mark from API payloads.
+ * Prefer Polygon/Finnhub `c`, then explicit current_price fields, then generic price —
+ * never invent a static default (e.g. 100).
+ */
+export function resolveLiveMark(raw: Record<string, any> | null | undefined, fallback = 0): number {
+  const row = raw ?? {};
+  const live = finiteNumber(
+    row.current_price ?? row.currentPrice ?? row.c ?? row.close ?? row.last ?? row.regularMarketPrice
+  );
+  if (live > 0) return live;
+  const generic = finiteNumber(row.price);
+  if (generic > 0) return generic;
+  return finiteNumber(fallback);
+}
+
+/**
  * Mandatory sanitizer before any stock enters React state, tables, or Recharts.
  * Guarantees finite numerics — never undefined/NaN on price/shares/change fields.
+ *
+ * `price` / `current_price` are the live market mark (API `c`).
+ * `buy_price` is cost basis only and must not override a live quote.
  */
 export function sanitizeSafeStock<T extends Record<string, any>>(rawStock: T | null | undefined): T & {
   price: number;
@@ -122,13 +141,11 @@ export function sanitizeSafeStock<T extends Record<string, any>>(rawStock: T | n
 } {
   const raw = (rawStock ?? {}) as Record<string, any>;
   const shares = finiteNumber(raw?.shares ?? raw?.quantity ?? 0);
-  const buy_price = finiteNumber(
-    raw?.buy_price ?? raw?.buyPrice ?? raw?.avgCost ?? raw?.price ?? 0
-  );
-  const current_price = finiteNumber(
-    raw?.current_price ?? raw?.currentPrice ?? raw?.price ?? raw?.close ?? raw?.c ?? buy_price ?? 0
-  );
-  const price = finiteNumber(raw?.price ?? current_price ?? buy_price ?? 0);
+  const buy_price = finiteNumber(raw?.buy_price ?? raw?.buyPrice ?? raw?.avgCost ?? 0);
+  // Live quote fields (`c` / current_price) win over generic `price`, which callers
+  // often set to the fill/buy price and must not clobber Polygon marks.
+  const current_price = resolveLiveMark(raw, buy_price);
+  const price = current_price;
   const change = finiteNumber(raw?.change ?? raw?.d ?? 0);
   const change_percent = finiteNumber(raw?.change_percent ?? raw?.dp ?? 0);
   const total_value = finiteNumber(raw?.total_value ?? price * shares);
@@ -163,7 +180,8 @@ export const normalizeStockData = (raw: any): NormalizedStockData => {
   const symbol = String(safe?.symbol || raw?.ticker || "")
     .trim()
     .toUpperCase();
-  const price = finiteNumber(safe.price ?? raw?.close ?? raw?.c ?? 0);
+  // Prefer sanitized live mark (already mapped from Polygon `c` / current_price).
+  const price = finiteNumber(safe.current_price ?? safe.price ?? resolveLiveMark(raw));
   const shares = finiteNumber(safe.shares);
   return {
     symbol,
@@ -374,11 +392,12 @@ const MOCK_DAY_CHANGE: Record<string, number> = {
   VOO: 0.19,
 };
 
-export function mockQuoteForSymbol(symbol: string): StockQuote | null {
+export function mockQuoteForSymbol(symbol: string, fallbackPrice?: number): StockQuote | null {
   const ticker = symbol.trim().toUpperCase();
   if (!ticker) return null;
   const known = DEMO_TICKER_CATALOG[ticker];
-  const price = known?.buyPrice ?? (TICKER_QUERY.test(ticker) ? 100 : 0);
+  // Catalog or caller-supplied mark only — never invent a static $100 default.
+  const price = finiteNumber(known?.buyPrice ?? fallbackPrice);
   if (!(price > 0)) return null;
   const dp = MOCK_DAY_CHANGE[ticker] ?? 0;
   const d = price * (dp / 100);
@@ -411,9 +430,12 @@ function chartStepMs(range: RangeOption): number {
   return 7 * 24 * 60 * 60 * 1000;
 }
 
-function mockChartForSymbol(ticker: string, range: RangeOption) {
-  const quote = mockQuoteForSymbol(ticker);
-  const price = quote?.c ?? 100;
+function mockChartForSymbol(ticker: string, range: RangeOption, fallbackPrice?: number) {
+  const quote = mockQuoteForSymbol(ticker, fallbackPrice);
+  const price = finiteNumber(quote?.c ?? fallbackPrice);
+  if (!(price > 0)) {
+    return { mapped: [] as SeriesPoint[], source: "mock", points: [] as ChartCandle[] };
+  }
   const mapped = buildHistoricalSeries(ticker, range, price, quote?.dp ?? 0, {
     open: quote?.o ?? price,
     high: quote?.h ?? price,

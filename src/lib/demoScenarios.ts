@@ -348,7 +348,8 @@ export function resolveDemoTicker(symbol: string): { symbol: string; name: strin
   return {
     symbol: ticker,
     name: known?.name ?? ticker,
-    buyPrice: known?.buyPrice ?? 100,
+    // Catalog price only — do not invent a static $100 when the ticker is unknown.
+    buyPrice: known?.buyPrice ?? 0,
   };
 }
 
@@ -371,7 +372,7 @@ export function buildCustomDemoDetail(input: CustomDemoInput): DemoScenarioApply
   for (const row of input.stocks) {
     const meta = resolveDemoTicker(row.symbol);
     const shares = Math.max(0, row.shares);
-    if (!meta.symbol || shares <= 0) continue;
+    if (!meta.symbol || shares <= 0 || !(meta.buyPrice > 0)) continue;
     lots.push({
       symbol: meta.symbol,
       name: meta.name,

@@ -515,7 +515,10 @@ function stockHoldingFromItem(item: PortfolioApiItem, name?: string): StockHoldi
     ...item,
     symbol: item.symbol,
     name,
-    price: (item as any).price ?? (item as any).current_price ?? item.buyPrice,
+    // Prefer stored mark fields; buyPrice is cost basis fallback only.
+    price: (item as any).current_price ?? (item as any).currentPrice ?? (item as any).price ?? item.buyPrice,
+    current_price: (item as any).current_price ?? (item as any).currentPrice ?? (item as any).price,
+    buy_price: item.buyPrice,
     shares: (item as any).quantity ?? item.shares,
     change: (item as any).change,
     change_percent: (item as any).change_percent,
@@ -576,26 +579,32 @@ async function enrichStockHolding(item: PortfolioApiItem): Promise<StockHolding>
   const rawQuote = quoteResult.status === "fulfilled" ? quoteResult.value : null;
   const quote = normalizeToStockQuote(rawQuote, item.symbol);
   const profile = profileResult.status === "fulfilled" ? profileResult.value : null;
+  const buyPrice = Number(item?.buyPrice) || 0;
+  // Live Polygon/API `c` first; then any stored mark on the item; never a static default.
+  const itemMark = Number(
+    (item as any)?.current_price ?? (item as any)?.currentPrice ?? (item as any)?.price
+  ) || 0;
+  const liveMark = Number(quote?.c) || 0;
+  const mark = liveMark > 0 ? liveMark : itemMark > 0 ? itemMark : buyPrice;
   const safeStock = sanitizeSafeStock({
     symbol: item.symbol,
     name: profile?.name || item.symbol,
     shares: Number(item?.shares) || 0,
-    price: Number(quote && quote.c > 0 ? quote.c : item?.buyPrice) || 0,
-    current_price: Number(quote?.c) || 0,
-    buy_price: Number(item?.buyPrice) || 0,
+    price: mark,
+    current_price: mark,
+    buy_price: buyPrice,
     change: Number(quote?.d) || 0,
     change_percent: Number(quote?.dp) || 0,
     high: Number(quote?.h) || 0,
     low: Number(quote?.l) || 0,
-    c: Number(quote?.c) || 0,
+    c: liveMark,
     d: Number(quote?.d) || 0,
     dp: Number(quote?.dp) || 0,
     h: Number(quote?.h) || 0,
     l: Number(quote?.l) || 0,
   });
   const normalized = normalizeStockData(safeStock);
-  const buyPrice = Number(item?.buyPrice) || 0;
-  const currentPrice = Number(normalized.price > 0 ? normalized.price : buyPrice) || 0;
+  const currentPrice = Number(normalized.price > 0 ? normalized.price : mark) || 0;
   const shares = Number(normalized.shares) || 0;
 
   return sanitizeStockHolding({
@@ -1442,10 +1451,16 @@ export default function InvestmentPortfolioCard({
       quoteResult.status === "fulfilled" && quoteResult.value
         ? normalizeToStockQuote(quoteResult.value, symbol)
         : null;
+    const existingMark = holdingsRef.current.find(
+      (h): h is StockHolding => h?.kind === "stock" && String(h.symbol || "").toUpperCase() === symbol
+    )?.currentPrice;
     const quote =
       liveQuote && liveQuote.c > 0
         ? liveQuote
-        : normalizeToStockQuote(mockQuoteForSymbol(symbol), symbol);
+        : normalizeToStockQuote(
+            mockQuoteForSymbol(symbol, existingMark && existingMark > 0 ? existingMark : undefined),
+            symbol
+          );
     if (quote) {
       setSelectedQuote(quote);
       if (!liveQuote || !(liveQuote.c > 0)) {
@@ -1578,7 +1593,8 @@ export default function InvestmentPortfolioCard({
       }
 
       const safeShares = Number(draft.shares) || 0;
-      const safeBuyPrice = Number(draft.price ?? safeStock.buy_price) || 0;
+      // Cost basis comes from the form fill — not draft.price (live mark after sanitize).
+      const safeBuyPrice = Number(safeStock.buy_price || price) || 0;
       const saved = await createPortfolioItem({
         symbol: draft.symbol,
         shares: safeShares,
@@ -1588,6 +1604,16 @@ export default function InvestmentPortfolioCard({
 
       const existing = holdings.find((h) => isPaperTicker(h, draft.symbol));
       const quote = normalizeToStockQuote(selectedQuote, draft.symbol);
+      const liveMark =
+        Number(
+          quote && quote.c > 0
+            ? quote.c
+            : existing?.currentPrice && existing.currentPrice > 0
+              ? existing.currentPrice
+              : safeStock.current_price > 0
+                ? safeStock.current_price
+                : 0
+        ) || 0;
       const markSafe = sanitizeSafeStock({
         ...safeStock,
         ...draft,
@@ -1600,15 +1626,8 @@ export default function InvestmentPortfolioCard({
         shares: Number(saved?.shares ?? safeShares) || 0,
         buy_price: Number(saved?.buyPrice ?? safeBuyPrice) || 0,
         buyPrice: Number(saved?.buyPrice ?? safeBuyPrice) || 0,
-        price:
-          Number(
-            quote && quote.c > 0
-              ? quote.c
-              : existing?.currentPrice && existing.currentPrice > 0
-                ? existing.currentPrice
-                : draft.price
-          ) || 0,
-        current_price: Number(quote?.c ?? existing?.currentPrice ?? draft.price) || 0,
+        price: liveMark > 0 ? liveMark : safeBuyPrice,
+        current_price: liveMark > 0 ? liveMark : safeBuyPrice,
         change: Number(quote?.d ?? existing?.dayChangeAbs ?? draft.change) || 0,
         change_percent: Number(quote?.dp ?? existing?.dayChangePct ?? draft.change_percent) || 0,
         high: Number(quote?.h ?? existing?.high ?? draft.high) || 0,
@@ -1619,17 +1638,10 @@ export default function InvestmentPortfolioCard({
         h: Number(quote?.h) || 0,
         l: Number(quote?.l) || 0,
         total_value:
-          (Number(saved?.shares ?? safeShares) || 0) *
-          (Number(
-            quote && quote.c > 0
-              ? quote.c
-              : existing?.currentPrice && existing.currentPrice > 0
-                ? existing.currentPrice
-                : draft.price
-          ) || 0),
+          (Number(saved?.shares ?? safeShares) || 0) * (liveMark > 0 ? liveMark : safeBuyPrice),
       });
       const markData = normalizeStockData(markSafe);
-      const buyPrice = Number(saved?.buyPrice ?? markSafe.buy_price ?? draft.price) || 0;
+      const buyPrice = Number(saved?.buyPrice ?? markSafe.buy_price ?? safeBuyPrice) || 0;
       const currentPrice =
         Number(markData.price > 0 ? markData.price : markSafe.current_price ?? buyPrice) || 0;
 

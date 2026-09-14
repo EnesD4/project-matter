@@ -41,8 +41,6 @@ const MOCK_TICKERS: Record<string, { name: string; c: number; dp: number }> = {
   VXUS: { name: "Vanguard Total International", c: 64.2, dp: 0.11 },
 };
 
-const TICKER_QUERY = /^[A-Z][A-Z0-9.\-]{0,9}$/;
-
 function seededRandom(seed: string) {
   let h = 1779033703 ^ seed.length;
   for (let i = 0; i < seed.length; i++) {
@@ -57,11 +55,14 @@ function seededRandom(seed: string) {
   };
 }
 
-export function mockQuoteForSymbol(symbol: string): MockQuote | null {
+export function mockQuoteForSymbol(symbol: string, fallbackPrice?: number): MockQuote | null {
   const ticker = symbol.trim().toUpperCase();
   if (!ticker) return null;
   const known = MOCK_TICKERS[ticker];
-  const price = known?.c ?? (TICKER_QUERY.test(ticker) ? 100 : 0);
+  const catalogPrice = known?.c;
+  const fallback = typeof fallbackPrice === "number" && Number.isFinite(fallbackPrice) ? fallbackPrice : 0;
+  // Known catalog or caller-supplied mark only — never invent a static $100 default.
+  const price = catalogPrice ?? (fallback > 0 ? fallback : 0);
   if (!(price > 0)) return null;
   const dp = known?.dp ?? 0;
   const d = price * (dp / 100);
