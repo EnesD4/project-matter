@@ -15,6 +15,7 @@ import {
   oauthNameFromSupabaseSession,
   persistUserProfile,
   signOutSupabase,
+  subscribeSupabaseAuth,
   syncSupabaseAuth,
   waitForSupabaseSession,
   type ProfileSyncInput,
@@ -115,10 +116,11 @@ export function isGoogleAuthUser(user: AuthUser | null | undefined): boolean {
 
 export function isDemoOrGuestSession(token = getToken(), user = getStoredUser()): boolean {
   if (token === LOCAL_DEMO_TOKEN) return true;
-  if (!user) return false;
+  if (!user?.id) return false;
   if (user.authProvider === "demo" || user.authProvider === "guest") return true;
   if (user.id === "local-demo" || user.id.startsWith("guest-")) return true;
-  return user.email.endsWith("@sprout.local") || user.email.endsWith("@guest.sprout.app");
+  const email = user.email || "";
+  return email.endsWith("@sprout.local") || email.endsWith("@guest.sprout.app");
 }
 
 /** Drop Skip / Demo auto-login tokens and guest fallback flags so startup requires real auth. */
@@ -161,11 +163,37 @@ export function isLocalDemoSession(token = getToken()): boolean {
   return token === LOCAL_DEMO_TOKEN;
 }
 
+function asAuthProvider(value: unknown): AuthProvider | undefined {
+  return value === "google" || value === "password" || value === "demo" || value === "guest"
+    ? value
+    : undefined;
+}
+
+export function normalizeAuthUser(value: unknown): AuthUser | null {
+  if (!value || typeof value !== "object") return null;
+  const rec = value as Record<string, unknown>;
+  const id = typeof rec.id === "string" ? rec.id.trim() : "";
+  if (!id) return null;
+  const email = typeof rec.email === "string" ? rec.email.trim().toLowerCase() : "";
+  const name = typeof rec.name === "string" ? rec.name.trim() : "";
+  const avatarUrl =
+    typeof rec.avatarUrl === "string" && rec.avatarUrl.trim() ? rec.avatarUrl.trim() : null;
+  return {
+    id,
+    email,
+    name,
+    avatarUrl,
+    hasCompletedOnboarding: Boolean(rec.hasCompletedOnboarding),
+    createdAt: typeof rec.createdAt === "string" ? rec.createdAt : undefined,
+    authProvider: asAuthProvider(rec.authProvider),
+  };
+}
+
 export function getStoredUser(): AuthUser | null {
   try {
     const raw = readLocalItem(USER_KEY, LEGACY_USER_KEY);
     if (!raw) return null;
-    return JSON.parse(raw) as AuthUser;
+    return normalizeAuthUser(JSON.parse(raw));
   } catch {
     return null;
   }
@@ -324,11 +352,13 @@ function writeLocalSettings(settings: UserSettings) {
 }
 
 function isGuestUser(user: Pick<AuthUser, "id" | "email">) {
+  const id = user?.id || "";
+  const email = user?.email || "";
   return (
     isLocalDemoSession() ||
-    user.id.startsWith("guest-") ||
-    user.id.startsWith("local-") ||
-    user.email.endsWith("@sprout.local")
+    id.startsWith("guest-") ||
+    id.startsWith("local-") ||
+    email.endsWith("@sprout.local")
   );
 }
 
@@ -382,7 +412,12 @@ async function attachSupabaseProfile(
   const fallback = { user, settings: normalizeSettings(settings) };
   try {
     await syncSupabaseAuth(authInput);
-    const oauthName = ((await oauthNameFromSupabaseSession()) || authInput.name?.trim() || user.name.trim()).trim();
+    const oauthName = (
+      (await oauthNameFromSupabaseSession()) ||
+      authInput.name?.trim() ||
+      user.name?.trim() ||
+      ""
+    ).trim();
     const namedUser = { ...user, name: oauthName || user.name };
     const row = await fetchUserProfile();
     if (row) {
@@ -443,7 +478,7 @@ function createLocalSession(user: { email: string; name: string; id?: string }):
 }
 
 function isUnreachableStatus(status: number) {
-  return status === 502 || status === 503 || status === 504;
+  return status === 404 || status === 501 || status === 502 || status === 503 || status === 504;
 }
 
 function isUnreachableError(err: unknown) {
@@ -627,20 +662,22 @@ export async function loginUser(input: {
 function authUserFromSupabaseSession(session: {
   access_token: string;
   user: {
-    id: string;
+    id?: string | null;
     email?: string | null;
     app_metadata?: Record<string, unknown> | null;
     user_metadata?: Record<string, unknown> | null;
     identities?: Array<{ provider?: string | null }> | null;
   };
-}): AuthUser {
+}): AuthUser | null {
+  const id = typeof session.user?.id === "string" ? session.user.id.trim() : "";
+  if (!id) return null;
   const meta = (session.user.user_metadata ?? {}) as Record<string, unknown>;
   const provider = String(session.user.app_metadata?.provider ?? "");
   const isGoogle =
     provider === "google" ||
     (session.user.identities ?? []).some((identity) => identity.provider === "google");
   return {
-    id: session.user.id,
+    id,
     email: asMetadataText(session.user.email).toLowerCase(),
     name: nameFromUserMetadata(meta),
     avatarUrl: asMetadataText(meta.avatar_url) || asMetadataText(meta.picture) || null,
@@ -648,30 +685,87 @@ function authUserFromSupabaseSession(session: {
   };
 }
 
+async function authResponseFromSupabaseSession(session: {
+  access_token: string;
+  user: {
+    id?: string | null;
+    email?: string | null;
+    app_metadata?: Record<string, unknown> | null;
+    user_metadata?: Record<string, unknown> | null;
+    identities?: Array<{ provider?: string | null }> | null;
+  };
+}): Promise<AuthResponse | null> {
+  try {
+    const googleUser = authUserFromSupabaseSession(session);
+    if (!googleUser) return null;
+    const stored = getStoredUser();
+    const sameUser = stored?.id === googleUser.id;
+    const settings = sameUser ? readLocalSettings() : { ...DEFAULT_USER_SETTINGS };
+    if (!sameUser) writeLocalSettings(settings);
+
+    let cloudUser = googleUser;
+    let cloudSettings = settings;
+    try {
+      const cloud = await tryCloudProfile(googleUser, settings, {
+        kind: "oauth",
+        name: googleUser.name,
+      });
+      cloudUser = cloud.user ?? googleUser;
+      cloudSettings = cloud.settings ?? settings;
+    } catch {
+      // Metadata / profile fetch must not block Google sign-in.
+    }
+
+    const user = normalizeAuthUser({
+      ...cloudUser,
+      id: cloudUser?.id || googleUser.id,
+      email: cloudUser?.email || googleUser.email,
+      authProvider: googleUser.authProvider,
+      name: cloudUser?.name?.trim() || googleUser.name,
+      avatarUrl: cloudUser?.avatarUrl || googleUser.avatarUrl,
+    });
+    if (!user) return null;
+    saveSession(session.access_token, user);
+    writeLocalSettings(cloudSettings);
+    return { token: session.access_token, user, settings: cloudSettings };
+  } catch {
+    const fallback = authUserFromSupabaseSession(session);
+    if (!fallback) return null;
+    const settings = readLocalSettings();
+    saveSession(session.access_token, fallback);
+    return { token: session.access_token, user: fallback, settings };
+  }
+}
+
 /** Resume a Google (or other) Supabase session after OAuth redirect or refresh. */
 export async function restoreSupabaseAuthSession(): Promise<AuthResponse | null> {
-  const session = await waitForSupabaseSession();
-  if (!session?.user) return null;
+  try {
+    const session = await waitForSupabaseSession();
+    if (!session?.user) return null;
+    return await authResponseFromSupabaseSession(session);
+  } catch {
+    return null;
+  }
+}
 
-  const googleUser = authUserFromSupabaseSession(session);
-  const stored = getStoredUser();
-  const sameUser = stored?.id === googleUser.id;
-  const settings = sameUser ? readLocalSettings() : { ...DEFAULT_USER_SETTINGS };
-  if (!sameUser) writeLocalSettings(settings);
-
-  const cloud = await tryCloudProfile(googleUser, settings, {
-    kind: "oauth",
-    name: googleUser.name,
+/** Keep App auth state aligned with Supabase SIGNED_IN / SIGNED_OUT / token refresh. */
+export function subscribeAuthSession(
+  onChange: (payload: AuthResponse | null, event: string) => void
+): () => void {
+  return subscribeSupabaseAuth((event, session) => {
+    void (async () => {
+      try {
+        if (session?.user) {
+          const restored = await authResponseFromSupabaseSession(session);
+          onChange(restored, event);
+          return;
+        }
+        onChange(null, event);
+      } catch {
+        onChange(null, event);
+      }
+    })();
   });
-  const user: AuthUser = {
-    ...cloud.user,
-    authProvider: googleUser.authProvider,
-    name: cloud.user.name.trim() || googleUser.name,
-    avatarUrl: cloud.user.avatarUrl || googleUser.avatarUrl,
-  };
-  saveSession(session.access_token, user);
-  writeLocalSettings(cloud.settings);
-  return { token: session.access_token, user, settings: cloud.settings };
 }
 
 export type OnboardingChoices = {
@@ -708,12 +802,17 @@ export async function fetchMe(): Promise<{ user: AuthUser; settings: UserSetting
     throw remote.error;
   }
   const stored = getStoredUser();
-  const user: AuthUser = {
-    ...base.user,
-    authProvider: base.user.authProvider ?? stored?.authProvider,
-    name: base.user.name?.trim() || stored?.name || "",
-    avatarUrl: base.user.avatarUrl || stored?.avatarUrl,
-  };
+  const user = normalizeAuthUser({
+    ...(base.user ?? {}),
+    authProvider: base.user?.authProvider ?? stored?.authProvider,
+    name: base.user?.name?.trim() || stored?.name || "",
+    avatarUrl: base.user?.avatarUrl || stored?.avatarUrl,
+    email: base.user?.email || stored?.email || "",
+    id: base.user?.id || stored?.id,
+  });
+  if (!user) {
+    throw new Error("Session restore failed");
+  }
   return tryCloudProfile(user, base.settings, {
     kind: "guest",
     name: user.name,
@@ -807,7 +906,7 @@ export async function fetchPortfolio(): Promise<PortfolioApiItem[]> {
   try {
     const remote = await tryRemoteJson<PortfolioApiItem[]>("/api/portfolio", {}, AUTH_TIMEOUT_MS, true);
     if (remote.ok && Array.isArray(remote.data)) {
-      const cached = readPortfolioCache()?.items ?? [];
+      const cached = readPortfolioCache()?.items || [];
       if (remote.data.length === 0 && cached.length > 0) return cached;
       writePortfolioCache(remote.data);
       return remote.data;
@@ -815,7 +914,7 @@ export async function fetchPortfolio(): Promise<PortfolioApiItem[]> {
   } catch {
     // Missing /api/portfolio must not throw in the UI.
   }
-  return readPortfolioCache()?.items ?? [];
+  return readPortfolioCache()?.items || [];
 }
 
 function portfolioCacheKey(userId?: string | null) {
@@ -830,8 +929,8 @@ export function readPortfolioCache(userId?: string | null): {
     const raw = localStorage.getItem(portfolioCacheKey(userId));
     if (!raw) return null;
     const parsed = JSON.parse(raw) as { items?: PortfolioApiItem[]; updatedAt?: number };
-    if (!Array.isArray(parsed.items)) return null;
-    return { items: parsed.items, updatedAt: Number(parsed.updatedAt) || 0 };
+    if (!Array.isArray(parsed.items)) return { items: [], updatedAt: Number(parsed.updatedAt) || 0 };
+    return { items: parsed.items.filter(Boolean), updatedAt: Number(parsed.updatedAt) || 0 };
   } catch {
     return null;
   }
@@ -1018,12 +1117,46 @@ function watchlistCacheLegacyKey() {
   return `matterpro_watchlists_${user?.id ?? "anon"}`;
 }
 
+function watchlistItemsOf(list: Pick<WatchlistApiList, "items"> | null | undefined): WatchlistApiItem[] {
+  return Array.isArray(list?.items) ? list.items.filter(Boolean) : [];
+}
+
+function normalizeWatchlist(list: unknown): WatchlistApiList | null {
+  if (!list || typeof list !== "object") return null;
+  const rec = list as Record<string, unknown>;
+  const id = typeof rec.id === "string" ? rec.id.trim() : "";
+  if (!id) return null;
+  const items = Array.isArray(rec.items)
+    ? rec.items
+        .filter((item): item is WatchlistApiItem => {
+          if (!item || typeof item !== "object") return false;
+          const row = item as WatchlistApiItem;
+          return Boolean(row.id && row.symbol);
+        })
+        .map((item) => ({
+          ...item,
+          name: item.name || item.symbol,
+        }))
+    : [];
+  return {
+    id,
+    userId: typeof rec.userId === "string" && rec.userId ? rec.userId : currentUserId(),
+    name: typeof rec.name === "string" && rec.name.trim() ? rec.name.trim() : "Watchlist",
+    createdAt: typeof rec.createdAt === "string" ? rec.createdAt : new Date().toISOString(),
+    items,
+  };
+}
+
+function normalizeWatchlists(lists: unknown): WatchlistApiList[] {
+  if (!Array.isArray(lists)) return [];
+  return lists.map(normalizeWatchlist).filter((list): list is WatchlistApiList => Boolean(list));
+}
+
 export function readWatchlistCache(): WatchlistApiList[] {
   try {
     const raw = readLocalItem(watchlistCacheKey(), watchlistCacheLegacyKey());
     if (!raw) return [];
-    const parsed = JSON.parse(raw) as WatchlistApiList[];
-    return Array.isArray(parsed) ? parsed : [];
+    return normalizeWatchlists(JSON.parse(raw));
   } catch {
     return [];
   }
@@ -1041,10 +1174,11 @@ export async function fetchWatchlists(): Promise<WatchlistApiList[]> {
   try {
     const remote = await tryRemoteJson<WatchlistApiList[]>("/api/watchlists", {}, AUTH_TIMEOUT_MS, true);
     if (remote.ok && Array.isArray(remote.data)) {
+      const lists = normalizeWatchlists(remote.data);
       const cached = readWatchlistCache();
-      if (remote.data.length === 0 && cached.length > 0) return cached;
-      writeWatchlistCache(remote.data);
-      return remote.data;
+      if (lists.length === 0 && cached.length > 0) return cached;
+      writeWatchlistCache(lists);
+      return lists;
     }
   } catch {
     // Missing /api/watchlists must not throw in the UI.
@@ -1116,7 +1250,7 @@ export async function addWatchlistItem(input: {
     try {
       writeWatchlistCache(
         readWatchlistCache().map((list) =>
-          list.id === input.watchlistId ? { ...list, items: [...list.items, remote.data] } : list
+          list.id === input.watchlistId ? { ...list, items: [...watchlistItemsOf(list), remote.data] } : list
         )
       );
     } catch {
@@ -1133,7 +1267,7 @@ export async function addWatchlistItem(input: {
   };
   writeWatchlistCache(
     readWatchlistCache().map((list) =>
-      list.id === input.watchlistId ? { ...list, items: [...list.items, item] } : list
+      list.id === input.watchlistId ? { ...list, items: [...watchlistItemsOf(list), item] } : list
     )
   );
   return item;
@@ -1148,7 +1282,7 @@ export async function deleteWatchlistItem(watchlistId: string, itemId: string): 
   );
   writeWatchlistCache(
     readWatchlistCache().map((list) =>
-      list.id === watchlistId ? { ...list, items: list.items.filter((item) => item.id !== itemId) } : list
+      list.id === watchlistId ? { ...list, items: watchlistItemsOf(list).filter((item) => item.id !== itemId) } : list
     )
   );
   if (remote.ok) return;

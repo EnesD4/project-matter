@@ -1,6 +1,7 @@
 import { getStoredUser } from "./auth";
 import { awardLessonXp } from "./lessonProgress";
 import { PHASE_ORDER, type PhaseId } from "./lessons";
+import { formatNumber, toFiniteNumber } from "./money";
 import { readLocalItem } from "./storage";
 
 export const FINANCIAL_PROFILE_UPDATED_EVENT = "matterpro:financial-profile-updated";
@@ -272,10 +273,10 @@ function legacyTodoStorageKey(userId?: string) {
   return `matterpro_roadmap_todo_${userId ?? getStoredUser()?.id ?? "anon"}`;
 }
 
-function usd(amount: number): string {
-  const rounded = Math.round(amount);
+function usd(amount: unknown): string {
+  const rounded = Math.round(toFiniteNumber(amount, 0));
   const sign = rounded < 0 ? "-" : "";
-  return `${sign}$${Math.abs(rounded).toLocaleString("en-US")}`;
+  return `${sign}$${formatNumber(Math.abs(rounded))}`;
 }
 
 export function costOfLivingForState(code: string | null | undefined): CostOfLiving | null {

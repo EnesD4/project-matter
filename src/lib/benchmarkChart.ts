@@ -23,22 +23,26 @@ export type BenchmarkChartPoint = SeriesPoint & {
 };
 
 export async function fetchChartCandles(symbol: string, range: RangeOption): Promise<ChartCandle[]> {
-  const res = await fetch(
-    `${apiBase()}/api/stocks/${encodeURIComponent(symbol)}/chart?range=${encodeURIComponent(range)}`
-  );
-  if (!res.ok) return [];
-  const data = (await res.json()) as { points?: ChartCandle[] };
-  if (!Array.isArray(data.points)) return [];
-  const points = data.points.filter(
-    (p) => Number.isFinite(p.price) && p.price > 0 && Number.isFinite(p.timestamp)
-  );
-  if (points.length > 1) {
-    setCachedSpark(
-      symbol,
-      points.map((point) => point.price)
+  try {
+    const res = await fetch(
+      `${apiBase()}/api/stocks/${encodeURIComponent(symbol)}/chart?range=${encodeURIComponent(range)}`
     );
+    if (!res.ok) return [];
+    const data = (await res.json()) as { points?: ChartCandle[] };
+    if (!Array.isArray(data.points)) return [];
+    const points = data.points.filter(
+      (p) => Number.isFinite(p.price) && p.price > 0 && Number.isFinite(p.timestamp)
+    );
+    if (points.length > 1) {
+      setCachedSpark(
+        symbol,
+        points.map((point) => point.price)
+      );
+    }
+    return points;
+  } catch {
+    return [];
   }
-  return points;
 }
 
 export async function fetchSp500Candles(range: RangeOption): Promise<ChartCandle[]> {

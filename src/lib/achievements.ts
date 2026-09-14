@@ -1,5 +1,6 @@
 import { holdingAccount, type AccountKind } from "./accountKind";
 import { isEtfAsset } from "./etfIcons";
+import { formatNumber, toFiniteNumber } from "./money";
 import { SAFETY_NET_STARTER_MONTHS } from "./safetyNet";
 import { readLocalItem } from "./storage";
 import { getLessonStreak, STREAK_MILESTONES } from "./streakService";
@@ -458,9 +459,9 @@ function daysBetween(fromISO: string, now: Date): number {
   return Math.max(0, Math.floor((now.getTime() - start) / 86_400_000));
 }
 
-function formatUsd(amount: number): string {
-  const rounded = Math.max(0, Math.round(amount));
-  return `$${rounded.toLocaleString("en-US")}`;
+function formatUsd(amount: unknown): string {
+  const rounded = Math.max(0, Math.round(toFiniteNumber(amount, 0)));
+  return `$${formatNumber(rounded)}`;
 }
 
 function formatPct(ratio: number): string {
@@ -571,8 +572,9 @@ export function evaluateTrophies(facts: TrophyFacts): Trophy[] {
   const snapshot = JSON.stringify(persist);
   const unlockedAt = { ...persist.unlockedAt };
 
-  const verifiedHoldings = facts.holdings.filter(isVerifiedHolding);
-  const paperHoldings = facts.holdings.filter((holding) => !isVerifiedHolding(holding));
+  const holdings = Array.isArray(facts.holdings) ? facts.holdings : [];
+  const verifiedHoldings = holdings.filter(isVerifiedHolding);
+  const paperHoldings = holdings.filter((holding) => !isVerifiedHolding(holding));
   const verified = summarizeHoldings(verifiedHoldings);
   const paper = summarizeHoldings(paperHoldings);
 

@@ -76,6 +76,7 @@ import {
   seriesChangePct,
   sparklineValues,
 } from "../lib/priceSimulation";
+import { toFiniteNumber } from "../lib/money";
 import { privacyAxis, privacyMoney, privacyShares, privacySignedMoney, formatMoney } from "../lib/privacy";
 import { todayISODate } from "../lib/age";
 import { parseAccountKind, type AccountKind } from "../lib/accountKind";
@@ -166,7 +167,10 @@ function writeAssetsPerfMode(mode: AssetsPerfMode) {
 }
 
 function holdingValue(h: Holding): number {
-  return h.kind === "stock" ? h.quantity * h.currentPrice : h.balance;
+  if (h.kind === "stock") {
+    return toFiniteNumber(h?.quantity, 0) * toFiniteNumber(h?.currentPrice, 0);
+  }
+  return toFiniteNumber(h?.balance, 0);
 }
 
 function readHoldingOrder(): string[] {
@@ -301,11 +305,11 @@ type SelectedStock = {
   type?: string;
 };
 
-function formatAxisMoney(amount: number) {
-  if (amount >= 1_000_000) return `$${(amount / 1_000_000).toFixed(1)}M`;
-  if (amount >= 10_000) return `$${(amount / 1_000).toFixed(1)}k`;
-  if (amount >= 1_000) return `$${formatMoney(amount, 0)}`;
-  return `$${formatMoney(amount, 0)}`;
+function formatAxisMoney(amount: unknown) {
+  const n = toFiniteNumber(amount, 0);
+  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 10_000) return `$${(n / 1_000).toFixed(1)}k`;
+  return `$${formatMoney(n, 0)}`;
 }
 
 const GAIN_GREEN = "#10B981";
@@ -442,14 +446,15 @@ function PortfolioActionButtons({
 }
 
 function stockHoldingFromItem(item: PortfolioApiItem, name?: string): StockHolding {
-  const currentPrice = item.buyPrice;
+  const currentPrice = toFiniteNumber(item?.buyPrice, 0);
+  const quantity = toFiniteNumber(item?.shares, 0);
   return {
     id: item.id,
     kind: "stock",
     symbol: item.symbol,
     description: name || item.symbol,
-    quantity: item.shares,
-    avgCost: item.buyPrice,
+    quantity,
+    avgCost: currentPrice,
     currentPrice,
     dayChangePct: 0,
     dayChangeAbs: 0,
@@ -462,10 +467,12 @@ function stockHoldingFromItem(item: PortfolioApiItem, name?: string): StockHoldi
   };
 }
 
-function holdingsFromApiItems(items: PortfolioApiItem[]): StockHolding[] {
-  return items.map((item) =>
-    stockHoldingFromItem(item, "name" in item && typeof item.name === "string" ? item.name : undefined)
-  );
+function holdingsFromApiItems(items: PortfolioApiItem[] | null | undefined): StockHolding[] {
+  return (items || [])
+    .filter((item): item is PortfolioApiItem => Boolean(item?.id && item?.symbol))
+    .map((item) =>
+      stockHoldingFromItem(item, "name" in item && typeof item.name === "string" ? item.name : undefined)
+    );
 }
 
 function persistHoldingsCache(holdings: Holding[]) {
@@ -492,22 +499,24 @@ async function enrichStockHolding(item: PortfolioApiItem): Promise<StockHolding>
 
   const quote = quoteResult.status === "fulfilled" ? quoteResult.value : null;
   const profile = profileResult.status === "fulfilled" ? profileResult.value : null;
-  const currentPrice = quote && quote.c > 0 ? quote.c : item.buyPrice;
+  const buyPrice = toFiniteNumber(item?.buyPrice, 0);
+  const quantity = toFiniteNumber(item?.shares, 0);
+  const currentPrice = quote && quote.c > 0 ? toFiniteNumber(quote.c, buyPrice) : buyPrice;
 
   return {
     id: item.id,
     kind: "stock",
     symbol: item.symbol,
     description: profile?.name || item.symbol,
-    quantity: item.shares,
-    avgCost: item.buyPrice,
+    quantity,
+    avgCost: buyPrice,
     currentPrice,
-    dayChangePct: quote?.dp ?? 0,
-    dayChangeAbs: quote?.d ?? 0,
-    open: quote?.o ?? currentPrice,
-    high: quote?.h ?? currentPrice,
-    low: quote?.l ?? currentPrice,
-    prevClose: quote?.pc ?? currentPrice,
+    dayChangePct: toFiniteNumber(quote?.dp, 0),
+    dayChangeAbs: toFiniteNumber(quote?.d, 0),
+    open: toFiniteNumber(quote?.o, currentPrice),
+    high: toFiniteNumber(quote?.h, currentPrice),
+    low: toFiniteNumber(quote?.l, currentPrice),
+    prevClose: toFiniteNumber(quote?.pc, currentPrice),
     logo: profile?.logo,
     domain: profile?.domain || extractDomain(profile?.weburl),
     marketCap: profile?.marketCapitalization,
@@ -607,7 +616,7 @@ export default function InvestmentPortfolioCard({
   const [holdingCandles, setHoldingCandles] = useState<Map<string, ChartCandle[]>>(new Map());
   const [holdings, setHoldings] = useState<Holding[]>(() => {
     const cached = readPortfolioCache();
-    return cached ? holdingsFromApiItems(cached.items) : [];
+    return cached ? holdingsFromApiItems(cached.items || []) : [];
   });
   const [assetsPerfMode, setAssetsPerfMode] = useState<AssetsPerfMode>(readAssetsPerfMode);
   const [hoverPoint, setHoverPoint] = useState<SeriesPoint | null>(null);
@@ -770,7 +779,7 @@ export default function InvestmentPortfolioCard({
     if (cached) {
       setHoldings((prev) => {
         const brokers = prev.filter((h): h is BrokerHolding => h.kind === "broker");
-        return sortHoldingsByOrder([...holdingsFromApiItems(cached.items), ...brokers], readHoldingOrder());
+        return sortHoldingsByOrder([...holdingsFromApiItems(cached.items || []), ...brokers], readHoldingOrder());
       });
       setPortfolioLoading(false);
     }
@@ -779,12 +788,12 @@ export default function InvestmentPortfolioCard({
       setPortfolioError(null);
       if (!cached) setPortfolioLoading(true);
       try {
-        const items = await withTimeout(fetchPortfolio(), 2000, "Portfolio");
+        const items = (await withTimeout(fetchPortfolio(), 2000, "Portfolio")) || [];
         if (cancelled || holdingsEpochRef.current !== epoch) return;
         const latestCache = readPortfolioCache();
         if (latestCache && (latestCache.updatedAt > startedAt || readActiveDemoScenario())) {
-          const cachedStocks = holdingsFromApiItems(latestCache.items);
-          void Promise.all(latestCache.items.map((item) => enrichStockHolding(item)))
+          const cachedStocks = holdingsFromApiItems(latestCache.items || []);
+          void Promise.all((latestCache.items || []).map((item) => enrichStockHolding(item)))
             .then((stocks) => {
               if (cancelled || holdingsEpochRef.current !== epoch) return;
               setHoldings((prev) => {
@@ -796,8 +805,8 @@ export default function InvestmentPortfolioCard({
           if (cachedStocks.length > 0) markUpdated();
           return;
         }
-        if (items.length === 0 && cached && cached.items.length > 0) {
-          const stocks = await Promise.all(cached.items.map((item) => enrichStockHolding(item)));
+        if (items.length === 0 && cached && (cached.items || []).length > 0) {
+          const stocks = await Promise.all((cached.items || []).map((item) => enrichStockHolding(item)));
           if (cancelled || holdingsEpochRef.current !== epoch) return;
           setHoldings((prev) => {
             const brokers = prev.filter((h): h is BrokerHolding => h.kind === "broker");
@@ -822,7 +831,7 @@ export default function InvestmentPortfolioCard({
         if (!cancelled && !cached) {
           setPortfolioError(err instanceof Error ? err.message : "Couldn't load portfolio");
         } else if (!cancelled && cached) {
-          const stocks = await Promise.all(cached.items.map((item) => enrichStockHolding(item)));
+          const stocks = await Promise.all((cached.items || []).map((item) => enrichStockHolding(item)));
           if (cancelled || holdingsEpochRef.current !== epoch) return;
           setHoldings((prev) => {
             const brokers = prev.filter((h): h is BrokerHolding => h.kind === "broker");
@@ -1164,21 +1173,23 @@ export default function InvestmentPortfolioCard({
       const hist = await fetchHistoricalPrice(symbol, useDate);
       if (seq !== historySeqRef.current) return;
       if (hist && hist.source !== "fallback") {
-        if (!priceTouchedRef.current) setPurchasePrice(hist.price.toFixed(2));
+        const closePrice = hist.price ?? 0;
+        if (!priceTouchedRef.current) setPurchasePrice(closePrice.toFixed(2));
         setHistoryMeta({
           requestedDate: useDate,
           sessionDate: hist.date,
           source: "history",
-          closePrice: hist.price,
+          closePrice,
         });
         setQuoteError(null);
       } else if (hist) {
-        if (!priceTouchedRef.current) setPurchasePrice(hist.price.toFixed(2));
+        const closePrice = hist.price ?? 0;
+        if (!priceTouchedRef.current) setPurchasePrice(closePrice.toFixed(2));
         setHistoryMeta({
           requestedDate: useDate,
           sessionDate: hist.date,
           source: "fallback",
-          closePrice: hist.price,
+          closePrice,
         });
         setQuoteError(null);
       } else if (!applyLive("fallback")) {
@@ -1350,27 +1361,29 @@ export default function InvestmentPortfolioCard({
       });
 
       const existing = holdings.find((h) => isPaperTicker(h, selectedTicker.symbol));
-      const currentPrice =
+      const currentPrice = toFiniteNumber(
         selectedQuote && selectedQuote.c > 0
           ? selectedQuote.c
           : existing?.currentPrice && existing.currentPrice > 0
             ? existing.currentPrice
-            : parsedPrice;
+            : parsedPrice,
+        0
+      );
       const holding: StockHolding = {
         id: saved.id,
         kind: "stock",
         symbol: selectedTicker.symbol,
         description:
           existing?.description || selectedTicker.description || selectedProfile?.name || selectedTicker.symbol,
-        quantity: saved.shares,
-        avgCost: saved.buyPrice,
+        quantity: toFiniteNumber(saved?.shares, parsedQuantity),
+        avgCost: toFiniteNumber(saved?.buyPrice, parsedPrice),
         currentPrice,
-        dayChangePct: selectedQuote?.dp ?? existing?.dayChangePct ?? 0,
-        dayChangeAbs: selectedQuote?.d ?? existing?.dayChangeAbs ?? 0,
-        open: selectedQuote?.o ?? existing?.open ?? currentPrice,
-        high: selectedQuote?.h ?? existing?.high ?? currentPrice,
-        low: selectedQuote?.l ?? existing?.low ?? currentPrice,
-        prevClose: selectedQuote?.pc ?? existing?.prevClose ?? currentPrice,
+        dayChangePct: toFiniteNumber(selectedQuote?.dp, existing?.dayChangePct),
+        dayChangeAbs: toFiniteNumber(selectedQuote?.d, existing?.dayChangeAbs),
+        open: toFiniteNumber(selectedQuote?.o, existing?.open ?? currentPrice),
+        high: toFiniteNumber(selectedQuote?.h, existing?.high ?? currentPrice),
+        low: toFiniteNumber(selectedQuote?.l, existing?.low ?? currentPrice),
+        prevClose: toFiniteNumber(selectedQuote?.pc, existing?.prevClose ?? currentPrice),
         logo: selectedProfile?.logo ?? existing?.logo,
         domain: selectedProfile?.domain ?? extractDomain(selectedProfile?.weburl) ?? existing?.domain,
         marketCap: selectedProfile?.marketCapitalization ?? existing?.marketCap,
@@ -1923,23 +1936,30 @@ export default function InvestmentPortfolioCard({
                 }}
               >
                 {holdings.map((h) => {
+                  if (!h) return null;
                   const highlight = h.id === justAddedId;
+                  const quantity = h.kind === "stock" ? toFiniteNumber(h.quantity, 0) : 0;
+                  const currentPrice = h.kind === "stock" ? toFiniteNumber(h.currentPrice, 0) : 0;
+                  const avgCost = h.kind === "stock" ? toFiniteNumber(h.avgCost, 0) : 0;
+                  const prevClose = h.kind === "stock" ? toFiniteNumber(h.prevClose, 0) : 0;
+                  const dayChangeAbs = h.kind === "stock" ? toFiniteNumber(h.dayChangeAbs, 0) : 0;
+                  const dayChangePct = h.kind === "stock" ? toFiniteNumber(h.dayChangePct, 0) : 0;
                   const value = holdingValue(h);
                   const isStock = h.kind === "stock";
                   let perfAbs: number | null = null;
                   let perfPct: number | null = null;
                   if (isStock) {
                     if (assetsPerfMode === "total") {
-                      if (h.avgCost > 0) {
-                        perfAbs = (h.currentPrice - h.avgCost) * h.quantity;
-                        perfPct = ((h.currentPrice - h.avgCost) / h.avgCost) * 100;
+                      if (avgCost > 0) {
+                        perfAbs = (currentPrice - avgCost) * quantity;
+                        perfPct = ((currentPrice - avgCost) / avgCost) * 100;
                       }
-                    } else if (h.prevClose > 0) {
-                      perfAbs = (h.currentPrice - h.prevClose) * h.quantity;
-                      perfPct = ((h.currentPrice - h.prevClose) / h.prevClose) * 100;
+                    } else if (prevClose > 0) {
+                      perfAbs = (currentPrice - prevClose) * quantity;
+                      perfPct = ((currentPrice - prevClose) / prevClose) * 100;
                     } else {
-                      perfAbs = h.dayChangeAbs * h.quantity;
-                      perfPct = h.dayChangePct;
+                      perfAbs = dayChangeAbs * quantity;
+                      perfPct = dayChangePct;
                     }
                   }
                   const dayUp = (perfPct ?? 0) > 0;
@@ -2012,7 +2032,7 @@ export default function InvestmentPortfolioCard({
                             <>
                               <p className="truncate text-sm font-bold text-white">{h.symbol}</p>
                               <p className="truncate text-[11px] text-[#9CA3AF]">
-                                {h.description} · {privacyShares(privacyMode, h.quantity)}
+                                {h.description} · {privacyShares(privacyMode, quantity)}
                               </p>
                             </>
                           ) : (
@@ -2028,7 +2048,7 @@ export default function InvestmentPortfolioCard({
                           <Sparkline
                             values={
                               getCachedSpark(h.symbol) ??
-                              sparklineValues(h.symbol, h.currentPrice, h.dayChangePct)
+                              sparklineValues(h.symbol, currentPrice, dayChangePct)
                             }
                             width={56}
                             height={26}

@@ -55,8 +55,9 @@ function rewriteApiHost(configured: string, pageHost: string): string {
 }
 
 /**
- * Vite (and `vite preview`) proxy `/api` to the backend. Same-origin relative
- * paths work from a phone on Wi-Fi; `http://localhost:5000` would hit the phone itself.
+ * Vite (and `vite preview`) serve `/api` via local serverless middleware.
+ * Same-origin relative paths work from a phone on Wi-Fi; `http://localhost:5000`
+ * would hit the phone itself and is not used as a proxy target.
  */
 function shouldUseSameOriginProxy(): boolean {
   if (typeof window === "undefined") return false;
@@ -67,8 +68,9 @@ function shouldUseSameOriginProxy(): boolean {
 /**
  * Resolve the backend origin for the current page.
  *
- * Prefer relative `/api` during local Vite so phones use the Network URL + proxy.
- * Otherwise rewrite loopback / 0.0.0.0 in `VITE_API_BASE_URL` to the page host.
+ * Prefer relative `/api` during local Vite so phones use the Network URL +
+ * Vite middleware. Otherwise rewrite loopback / 0.0.0.0 in `VITE_API_BASE_URL`
+ * to the page host.
  */
 export function getApiBaseUrl(): string {
   const configured = configuredApiBaseUrl();

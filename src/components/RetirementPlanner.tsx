@@ -29,7 +29,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { formatCurrencyInput, parseCurrency } from "../lib/money";
+import { formatCurrencyInput, formatNumber, parseCurrency, toFiniteNumber } from "../lib/money";
 import { readLocalItem } from "../lib/storage";
 import { clampAge, parseISODate, resolveUserAge, todayISODate } from "../lib/age";
 import {
@@ -281,19 +281,20 @@ function buildProjection(
   return points;
 }
 
-function formatWealth(n: number): string {
-  const abs = Math.abs(n);
+function formatWealth(n: unknown): string {
+  const value = toFiniteNumber(n, 0);
+  const abs = Math.abs(value);
   if (abs >= 1_000_000) {
-    const m = n / 1_000_000;
+    const m = value / 1_000_000;
     const digits = m >= 10 ? 1 : 2;
     return `$${m.toFixed(digits).replace(/\.?0+$/, "")}M`;
   }
-  if (abs >= 10_000) return `$${Math.round(n / 1000).toLocaleString("en-US")}k`;
-  return `$${Math.round(n).toLocaleString("en-US")}`;
+  if (abs >= 10_000) return `$${formatNumber(Math.round(value / 1000))}k`;
+  return `$${formatNumber(Math.round(value))}`;
 }
 
-function formatDollars(n: number): string {
-  return `$${Math.round(n).toLocaleString("en-US")}`;
+function formatDollars(n: unknown): string {
+  return `$${formatNumber(Math.round(toFiniteNumber(n, 0)))}`;
 }
 
 function formatAxisMoney(n: number): string {
@@ -456,7 +457,7 @@ function buildInsight(opts: {
 
   const leadWealth = baseMillionAge != null ? FREEDOM_NUMBER : final.value;
   const leadAge = baseMillionAge ?? retireAge;
-  const lead = `At $${Math.round(monthly).toLocaleString("en-US")}/mo with ${annualReturn}% return, you'll reach ${formatWealth(leadWealth)} by age ${leadAge} in your ${accountLabel(account)}.`;
+  const lead = `At $${formatNumber(Math.round(toFiniteNumber(monthly, 0)))}/mo with ${annualReturn}% return, you'll reach ${formatWealth(leadWealth)} by age ${leadAge} in your ${accountLabel(account)}.`;
 
   let boost = "";
   if (baseMillionAge != null && millionYearsShaved >= 1) {

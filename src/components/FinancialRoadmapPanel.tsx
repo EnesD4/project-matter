@@ -11,6 +11,7 @@ import {
   toggleRoadmapTask,
   type RoadmapTask,
 } from "../lib/roadmapService";
+import { formatNumber } from "../lib/money";
 import { TermInfoPopover, TermRichText } from "./TermInfoPopover";
 
 const BURST_COLORS = ["#10B981", "#34D399", "#F59E0B", "#FBBF24", "#38BDF8", "#F472B6"];
@@ -159,7 +160,7 @@ export default function FinancialRoadmapPanel({ open, onClose }: FinancialRoadma
             </div>
           </div>
           <div className="relative flex-shrink-0 rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-[11px] font-extrabold text-amber-300">
-            Lv {levelFromXp(xp)} · {xp.toLocaleString("en-US")} XP
+            Lv {levelFromXp(xp)} · {formatNumber(xp)} XP
             {floatKey > 0 && floatXp > 0 && (
               <span key={floatKey} className="lesson-xp-float absolute -top-3 right-0 text-[11px] font-extrabold text-emerald-400">
                 +{floatXp} XP

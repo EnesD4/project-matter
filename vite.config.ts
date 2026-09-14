@@ -9,79 +9,9 @@ import { handlePlaidSync } from "./api/plaid-sync";
 import handleCashFlow from "./api/cash-flow";
 import handleStockQuote from "./api/stocks/quote";
 import handleStockQuotes from "./api/stocks/quotes";
-
-function writeProxyDown(res: ServerResponse, err: Error, req?: IncomingMessage) {
-  if (res.headersSent) return;
-  const path = req ? pathOf(req) : "";
-  if (path === "/api/stocks/quote" || path.startsWith("/api/stocks/quote")) {
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ c: 0, d: 0, dp: 0, h: 0, l: 0, o: 0, pc: 0, t: 0 }));
-    return;
-  }
-  if (path === "/api/stocks/quotes") {
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ items: [] }));
-    return;
-  }
-  if (path === "/api/cash-flow") {
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(
-      JSON.stringify({
-        monthlyIncome: 0,
-        emergencyFund: 0,
-        extraPayoff: 0,
-        expenses: [],
-        debts: [],
-        safetyNet: null,
-        updatedAt: 0,
-      })
-    );
-    return;
-  }
-  if (path === "/api/portfolio" || path.startsWith("/api/portfolio/")) {
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify((req?.method || "GET").toUpperCase() === "GET" ? [] : { ok: true }));
-    return;
-  }
-  if (path === "/api/watchlists" || path.startsWith("/api/watchlists/")) {
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify((req?.method || "GET").toUpperCase() === "GET" ? [] : { ok: true }));
-    return;
-  }
-  res.writeHead(502, { "Content-Type": "application/json" });
-  res.end(
-    JSON.stringify({
-      error:
-        "Request failed — the API server is not reachable. Start the backend on port 5000.",
-      detail: err.message,
-    })
-  );
-}
-
-const apiProxy = {
-  "/api": {
-    target: "http://127.0.0.1:5000",
-    changeOrigin: true,
-    bypass(req: IncomingMessage) {
-      const url = pathOf(req);
-      if (
-        url === "/api/gemini-coach" ||
-        url === "/api/plaid-sync" ||
-        url === "/api/stocks/quote" ||
-        url === "/api/stocks/quotes" ||
-        url === "/api/cash-flow" ||
-        url.startsWith("/api/plaid/")
-      ) {
-        return url;
-      }
-    },
-    configure(proxy: {
-      on: (event: "error", handler: (err: Error, req: IncomingMessage, res: ServerResponse) => void) => void;
-    }) {
-      proxy.on("error", (err, req, res) => writeProxyDown(res, err, req));
-    },
-  },
-};
+import handleStockSearch from "./api/stocks/search";
+import handleStockPath from "./api/_lib/stockHandlers";
+import { handlePortfolioFallback, handleWatchlistsFallback } from "./api/_lib/resourceFallbacks";
 
 function pathOf(req: IncomingMessage): string {
   const raw = req.url || "";
@@ -93,39 +23,49 @@ function pathOf(req: IncomingMessage): string {
   }
 }
 
+function sendJson(res: ServerResponse, status: number, payload: unknown) {
+  if (res.headersSent) return;
+  res.statusCode = status;
+  res.setHeader("Content-Type", "application/json");
+  res.end(JSON.stringify(payload));
+}
+
+type ApiHandler = (req: any, res: any) => Promise<unknown>;
+
 function localServerlessApi(): Plugin {
   const attach = (server: ViteDevServer) => {
     server.middlewares.use((req, res, next) => {
       const path = pathOf(req);
-      const handler =
-        path === "/api/gemini-coach"
-          ? handleGeminiCoach
-          : path === "/api/plaid-sync"
-            ? handlePlaidSync
-            : path === "/api/plaid/create-link-token"
-              ? handleCreateLinkToken
-              : path === "/api/plaid/exchange-token"
-                ? handleExchangeToken
-                : path === "/api/plaid/accounts"
-                  ? handleGetAccounts
-                  : path === "/api/stocks/quote"
-                    ? handleStockQuote
-                    : path === "/api/stocks/quotes"
-                      ? handleStockQuotes
-                      : path === "/api/cash-flow"
-                        ? handleCashFlow
-                        : null;
+      if (!path.startsWith("/api/")) {
+        next();
+        return;
+      }
+
+      let handler: ApiHandler | null = null;
+      if (path === "/api/gemini-coach") handler = handleGeminiCoach;
+      else if (path === "/api/plaid-sync") handler = handlePlaidSync;
+      else if (path === "/api/plaid/create-link-token") handler = handleCreateLinkToken;
+      else if (path === "/api/plaid/exchange-token") handler = handleExchangeToken;
+      else if (path === "/api/plaid/accounts") handler = handleGetAccounts;
+      else if (path === "/api/stocks/quote") handler = handleStockQuote;
+      else if (path === "/api/stocks/quotes") handler = handleStockQuotes;
+      else if (path === "/api/stocks/search") handler = handleStockSearch;
+      else if (path === "/api/cash-flow") handler = handleCashFlow;
+      else if (path === "/api/portfolio" || path.startsWith("/api/portfolio/")) handler = handlePortfolioFallback;
+      else if (path === "/api/watchlists" || path.startsWith("/api/watchlists/")) handler = handleWatchlistsFallback;
+      else if (path.startsWith("/api/stocks/")) handler = handleStockPath;
 
       if (!handler) {
-        next();
+        sendJson(res, 404, { error: "Not found" });
         return;
       }
 
       void handler(req, res).catch((error) => {
         if (!res.headersSent) {
-          res.statusCode = 500;
-          res.setHeader("Content-Type", "application/json");
-          res.end(JSON.stringify({ error: error instanceof Error ? error.message : "Serverless route failed" }));
+          sendJson(res, 200, {
+            error: error instanceof Error ? error.message : "Serverless route failed",
+            data: [],
+          });
         }
       });
     });
@@ -153,13 +93,11 @@ export default defineConfig(({ mode }) => {
       host: "0.0.0.0",
       cors: true,
       allowedHosts: true,
-      proxy: apiProxy,
     },
     preview: {
       host: "0.0.0.0",
       cors: true,
       allowedHosts: true,
-      proxy: apiProxy,
     },
   };
 });

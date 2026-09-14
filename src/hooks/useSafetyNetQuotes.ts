@@ -17,7 +17,7 @@ export function useSafetyNetQuotes(config: SafetyNetConfig) {
 
   const bondSymbols = useMemo(() => {
     const symbols = new Set<string>();
-    for (const bond of config.bonds) {
+    for (const bond of config?.bonds || []) {
       if (bond.kind === "ticker" && bond.symbol) symbols.add(bond.symbol);
     }
     return [...symbols].sort();

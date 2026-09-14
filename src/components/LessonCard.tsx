@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import React, { useMemo, useRef, useState } from "react";
 import type { LessonQuizDef, LessonWidget, StoryCard } from "../lib/lessons";
+import { formatNumber } from "../lib/money";
 
 const SWIPE_THRESHOLD = 56;
 const DEBT_MAX_MONTHS = 360;
@@ -17,8 +18,8 @@ const SAMPLE_DEBTS: MiniDebt[] = [
   { id: "loan", balance: 9000, apr: 6, min: 150 },
 ];
 
-function formatUsd(value: number, digits = 0): string {
-  return value.toLocaleString("en-US", {
+function formatUsd(value: unknown, digits = 0): string {
+  return formatNumber(value, {
     style: "currency",
     currency: "USD",
     maximumFractionDigits: digits,

@@ -46,8 +46,10 @@ export function withEducationalDisclaimer(text: string): string {
   return `${body}\n\n${EDUCATIONAL_DISCLAIMER}`;
 }
 
-function usd(amount: number): string {
-  return Math.round(amount).toLocaleString("en-US");
+function usd(amount: unknown): string {
+  const n = typeof amount === "number" && Number.isFinite(amount) ? amount : Number(amount);
+  const safe = Number.isFinite(n) ? n : 0;
+  return (Math.round(safe) ?? 0).toLocaleString("en-US");
 }
 
 export type SproutSpendingCategory = {

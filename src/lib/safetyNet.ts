@@ -194,7 +194,7 @@ export function computeSafetyNetTotals(input: {
   const stocks = Math.max(0, input.portfolioValue) * (Math.min(100, Math.max(0, input.config.portfolioPct)) / 100);
   const ounces = goldOunces(input.config.goldAmount, input.config.goldUnit);
   const gold = input.goldPricePerOz && input.goldPricePerOz > 0 ? ounces * input.goldPricePerOz : 0;
-  const bonds = input.config.bonds.reduce((sum, bond) => {
+  const bonds = (input.config?.bonds || []).reduce((sum, bond) => {
     if (bond.kind === "ticker") {
       const price = input.bondPrices[bond.symbol] ?? 0;
       return sum + Math.max(0, bond.shares) * Math.max(0, price);

@@ -18,6 +18,7 @@ import { getApiBaseUrl } from "../lib/auth";
 import { isEtfAsset } from "../lib/etfIcons";
 import { getCachedChart, getCachedQuote, setCachedChart, setCachedQuote } from "../lib/marketCache";
 import { fetchStockChart, fetchStockQuote, isLiveChartSource } from "../lib/stockService";
+import { formatNumber } from "../lib/money";
 import { privacyMoney, privacyShares, privacySignedMoney } from "../lib/privacy";
 import {
   buildHistoricalSeries,
@@ -88,8 +89,8 @@ function roundShares(n: number): number {
   return Math.round(n * 1e8) / 1e8;
 }
 
-function formatUsd(amount: number, digits = 0) {
-  return amount.toLocaleString("en-US", {
+function formatUsd(amount: unknown, digits = 0) {
+  return formatNumber(amount, {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
   });
@@ -147,7 +148,7 @@ function ChartTooltip({
         {timestamp}
       </p>
       <p className="mt-0.5 text-sm font-extrabold tabular-nums text-white">
-        ${Number(value).toFixed(2)}
+        ${(Number(value) || 0).toFixed(2)}
       </p>
       {hasOhlc ? (
         <p className="mt-1 text-[10px] font-semibold tabular-nums text-[#9CA3AF]">
@@ -1078,7 +1079,7 @@ export default function StockDetailPage({
                   Shares owned
                 </p>
                 <p className="mt-0.5 text-sm font-extrabold tabular-nums text-white">
-                  {holding.quantity.toLocaleString("en-US", { maximumFractionDigits: 8 })}
+                  {formatNumber(holding?.quantity, { maximumFractionDigits: 8 })}
                 </p>
                 {holding.avgCost > 0 ? (
                   <p className="mt-0.5 text-[11px] text-slate-500">
@@ -1169,7 +1170,7 @@ export default function StockDetailPage({
                     </p>
                   ) : (
                     <p className="text-[11px] text-slate-400">
-                      Remaining: {remainingAfterSell.toLocaleString("en-US", { maximumFractionDigits: 8 })}{" "}
+                      Remaining: {formatNumber(remainingAfterSell, { maximumFractionDigits: 8 })}{" "}
                       sh @ {privacyMoney(privacyMode, holding.avgCost)} avg cost
                     </p>
                   )}

@@ -1,3 +1,5 @@
+import { mockQuotePayload } from "../_lib/mockMarket";
+
 export const config = {
   runtime: "nodejs",
   maxDuration: 15,
@@ -25,6 +27,22 @@ function querySymbols(req: any): string[] {
   }
 }
 
+function fallbackItem(symbol: string) {
+  const mock = mockQuotePayload(symbol);
+  return {
+    symbol,
+    c: mock.c,
+    d: mock.d,
+    dp: mock.dp,
+    h: mock.h,
+    l: mock.l,
+    o: mock.o,
+    pc: mock.pc,
+    t: mock.t,
+    source: mock.source,
+  };
+}
+
 export default async function handler(req: any, res: any) {
   try {
     const symbols = querySymbols(req);
@@ -44,22 +62,23 @@ export default async function handler(req: any, res: any) {
           } | null;
           const meta = json?.chart?.result?.[0]?.meta || {};
           const price = Number(meta.regularMarketPrice ?? meta.previousClose ?? 0);
+          if (!Number.isFinite(price) || price <= 0) return fallbackItem(symbol);
           const previous = Number(meta.chartPreviousClose ?? meta.previousClose ?? 0);
-          const change = price && previous ? price - previous : 0;
+          const change = previous ? price - previous : 0;
           const changePct = previous ? (change / previous) * 100 : 0;
           return {
             symbol,
-            c: Number.isFinite(price) ? price : 0,
+            c: price,
             d: Number.isFinite(change) ? change : 0,
             dp: Number.isFinite(changePct) ? changePct : 0,
-            h: Number(meta.regularMarketDayHigh ?? 0) || 0,
-            l: Number(meta.regularMarketDayLow ?? 0) || 0,
-            o: Number(meta.regularMarketOpen ?? previous ?? 0) || 0,
-            pc: Number.isFinite(previous) ? previous : 0,
-            t: Number(meta.regularMarketTime ?? 0) || 0,
+            h: Number(meta.regularMarketDayHigh ?? 0) || price,
+            l: Number(meta.regularMarketDayLow ?? 0) || price,
+            o: Number(meta.regularMarketOpen ?? previous ?? 0) || price,
+            pc: Number.isFinite(previous) && previous > 0 ? previous : price,
+            t: Number(meta.regularMarketTime ?? 0) || Math.floor(Date.now() / 1000),
           };
         } catch {
-          return { symbol, c: 0, d: 0, dp: 0, h: 0, l: 0, o: 0, pc: 0, t: 0 };
+          return fallbackItem(symbol);
         }
       })
     );

@@ -26,7 +26,7 @@ import {
   type DividendPosition,
   type UpcomingPayout,
 } from "../lib/dividends";
-import { formatCurrencyInput, formatCurrencyValue, parseCurrency } from "../lib/money";
+import { formatCurrencyInput, formatCurrencyValue, formatNumber, parseCurrency, toFiniteNumber } from "../lib/money";
 import { privacyMoney } from "../lib/privacy";
 import {
   SAFETY_NET_STARTER_MONTHS,
@@ -98,8 +98,8 @@ function positionsFromHoldings(holdings: Holding[]): DividendPosition[] {
     holdings.filter(isStockHolding).map((h) => ({
       symbol: h.symbol,
       name: h.description || h.symbol,
-      shares: h.quantity,
-      price: h.currentPrice,
+      shares: toFiniteNumber(h?.quantity, 0),
+      price: toFiniteNumber(h?.currentPrice, 0),
       logo: h.logo,
       domain: h.domain,
     }))
@@ -829,7 +829,7 @@ export function SafetyNetSection({
                 <p className="mt-2 mb-0 text-[11px] font-semibold text-neutral-500">
                   {goldPricePerOz
                     ? `Live gold ${privacyMoney(privacyMode, goldPricePerOz)} / oz${
-                        goldOz > 0 ? ` · ${goldOz.toLocaleString("en-US", { maximumFractionDigits: 4 })} oz` : ""
+                        goldOz > 0 ? ` · ${formatNumber(goldOz, { maximumFractionDigits: 4 })} oz` : ""
                       }`
                     : "Fetching the live gold price…"}
                 </p>

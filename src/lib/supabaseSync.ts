@@ -1,8 +1,9 @@
-import type { Session } from "@supabase/supabase-js";
+import type { AuthChangeEvent, Session } from "@supabase/supabase-js";
 import { ageFromBirthDate } from "./age";
 import {
   canReachSupabase,
   getSupabase,
+  isSupabaseClientKey,
   isSupabaseTableUnavailable,
   noteSupabaseRelationError,
   supabase,
@@ -66,6 +67,20 @@ function urlLooksLikeOAuthCallback() {
   return /access_token|refresh_token|code=/.test(`${window.location.hash}${window.location.search}`);
 }
 
+function hasPersistedSupabaseAuth(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    for (const key of Object.keys(localStorage)) {
+      if (!isSupabaseClientKey(key)) continue;
+      const raw = localStorage.getItem(key);
+      if (raw && raw !== "null" && raw !== "{}") return true;
+    }
+  } catch {
+    // private mode
+  }
+  return false;
+}
+
 /** Wait for detectSessionInUrl / persisted storage after a Google redirect. */
 export async function waitForSupabaseSession(timeoutMs = 4000): Promise<Session | null> {
   const client = getSupabase();
@@ -75,10 +90,11 @@ export async function waitForSupabaseSession(timeoutMs = 4000): Promise<Session 
     const existing = await client.auth.getSession();
     if (existing.data.session?.user) return existing.data.session;
   } catch {
-    return null;
+    // Hash exchange may still be in flight — keep waiting instead of aborting.
   }
 
-  if (!urlLooksLikeOAuthCallback()) return null;
+  const shouldWait = urlLooksLikeOAuthCallback() || hasPersistedSupabaseAuth();
+  if (!shouldWait) return null;
 
   return new Promise((resolve) => {
     let done = false;
@@ -86,20 +102,58 @@ export async function waitForSupabaseSession(timeoutMs = 4000): Promise<Session 
     const finish = (session: Session | null) => {
       if (done) return;
       done = true;
-      unsubscribe();
+      try {
+        unsubscribe();
+      } catch {
+        // already unsubscribed
+      }
       window.clearTimeout(timer);
       resolve(session);
     };
 
-    const { data } = client.auth.onAuthStateChange((_event, session) => {
-      if (session?.user) finish(session);
-    });
-    unsubscribe = () => data.subscription.unsubscribe();
+    try {
+      const { data } = client.auth.onAuthStateChange((_event, session) => {
+        if (session?.user) finish(session);
+      });
+      unsubscribe = () => data.subscription.unsubscribe();
+    } catch {
+      finish(null);
+      return;
+    }
 
     const timer = window.setTimeout(() => {
-      void client.auth.getSession().then(({ data: next }) => finish(next.session ?? null));
+      void client.auth
+        .getSession()
+        .then(({ data: next }) => finish(next.session ?? null))
+        .catch(() => finish(null));
     }, timeoutMs);
   });
+}
+
+/** Keep React auth state in sync with Supabase. Listener errors must not unmount the tree. */
+export function subscribeSupabaseAuth(
+  listener: (event: AuthChangeEvent, session: Session | null) => void
+): () => void {
+  const client = getSupabase();
+  if (!client) return () => {};
+  try {
+    const { data } = client.auth.onAuthStateChange((event, session) => {
+      try {
+        listener(event, session);
+      } catch (err) {
+        console.warn("Auth state listener failed:", err);
+      }
+    });
+    return () => {
+      try {
+        data.subscription.unsubscribe();
+      } catch {
+        // already torn down
+      }
+    };
+  } catch {
+    return () => {};
+  }
 }
 
 export async function signInWithGoogleOAuth(): Promise<void> {

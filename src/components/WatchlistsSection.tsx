@@ -24,6 +24,7 @@ import {
 } from "../lib/auth";
 import { getCachedQuote, getCachedSpark } from "../lib/marketCache";
 import { privacyMoney } from "../lib/privacy";
+import { toFiniteNumber } from "../lib/money";
 import { sparklineValues } from "../lib/priceSimulation";
 import { readLocalItem } from "../lib/storage";
 import {
@@ -105,8 +106,8 @@ function cachedOrPendingQuote(symbol: string): LiveQuote {
   const cached = getCachedQuote(symbol);
   if (cached) {
     return {
-      price: cached.price,
-      changePct: cached.changePct,
+      price: toFiniteNumber(cached?.price, 0),
+      changePct: toFiniteNumber(cached?.changePct, 0),
       name: cached.name || KNOWN_NAMES[symbol],
       logo: cached.logo,
       domain: cached.domain,
@@ -125,6 +126,10 @@ function rowSparkValues(symbol: string, price: number, changePct: number): numbe
 
 function companyName(item: WatchlistApiItem, quote?: LiveQuote) {
   return item.name || quote?.name || KNOWN_NAMES[item.symbol] || item.symbol;
+}
+
+function watchlistItems(list: WatchlistApiList | null | undefined): WatchlistApiItem[] {
+  return Array.isArray(list?.items) ? list.items.filter(Boolean) : [];
 }
 
 function persistLists(lists: WatchlistApiList[]) {
@@ -233,7 +238,7 @@ function WatchlistCard({
           <p className="truncate text-sm font-bold text-white">{list.name}</p>
         </div>
         <span className="flex-shrink-0 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-extrabold tabular-nums text-emerald-300">
-          {stockCountLabel(list.items.length)}
+          {stockCountLabel(watchlistItems(list).length)}
         </span>
         {expanded ? (
           <ChevronUp size={16} className="flex-shrink-0 text-[#9CA3AF]" />
@@ -314,15 +319,18 @@ function WatchlistCard({
             {addError && <p className="mt-1.5 text-[11px] font-semibold text-rose-300">{addError}</p>}
 
             <div className="matter-touch-scroll mt-2 max-h-[min(48vh,380px)] divide-y divide-[#1F2937] overflow-y-auto overscroll-contain touch-pan-y md:max-h-none">
-              {list.items.length === 0 ? (
+              {watchlistItems(list).length === 0 ? (
                 <p className="py-4 text-center text-[11px] text-[#6B7280]">
                   This list is empty. Add a ticker to start tracking it.
                 </p>
               ) : (
-                list.items.map((item) => {
+                watchlistItems(list).map((item) => {
+                  if (!item?.symbol) return null;
                   const quote = quotes[item.symbol] ?? cachedOrPendingQuote(item.symbol);
-                  const up = quote.changePct > 0;
-                  const down = quote.changePct < 0;
+                  const price = toFiniteNumber(quote?.price, 0);
+                  const changePct = toFiniteNumber(quote?.changePct, 0);
+                  const up = changePct > 0;
+                  const down = changePct < 0;
                   const changeColor = down ? LOSS_RED : up ? GAIN_GREEN : "#9CA3AF";
                   return (
                     <div key={item.id} className="flex items-center gap-2 py-3">
@@ -332,18 +340,18 @@ function WatchlistCard({
                           onSelectStock?.({
                             symbol: item.symbol,
                             name: companyName(item, quote),
-                            price: quote.price,
-                            changePct: quote.changePct,
-                            logo: quote.logo,
-                            domain: quote.domain,
+                            price,
+                            changePct,
+                            logo: quote?.logo,
+                            domain: quote?.domain,
                           })
                         }
                         className="flex min-w-0 flex-1 items-center gap-3 text-left transition hover:opacity-90 active:scale-[0.995]"
                       >
                         <StockLogo
                           symbol={item.symbol}
-                          finnhubLogo={quote.logo}
-                          domain={quote.domain}
+                          finnhubLogo={quote?.logo}
+                          domain={quote?.domain}
                           size={40}
                         />
                         <div className="min-w-0 flex-1">
@@ -351,17 +359,17 @@ function WatchlistCard({
                           <p className="truncate text-[11px] text-[#9CA3AF]">{companyName(item, quote)}</p>
                         </div>
                         <Sparkline
-                          values={rowSparkValues(item.symbol, quote.price, quote.changePct)}
+                          values={rowSparkValues(item.symbol, price, changePct)}
                           width={58}
                           height={26}
                           color={changeColor}
                         />
                         <div className="flex-shrink-0 text-right">
                           <p className="text-sm font-bold tabular-nums text-white">
-                            {quote.price > 0 ? privacyMoney(privacyMode, quote.price) : "—"}
+                            {price > 0 ? privacyMoney(privacyMode, price) : "—"}
                           </p>
                           <p className="text-[11px] font-bold tabular-nums" style={{ color: changeColor }}>
-                            {quote.price > 0 ? `${up ? "+" : ""}${quote.changePct.toFixed(2)}%` : "—"}
+                            {price > 0 ? `${up ? "+" : ""}${changePct.toFixed(2)}%` : "—"}
                           </p>
                         </div>
                         <ChevronRight size={14} className="flex-shrink-0 text-[#9CA3AF]" />
@@ -505,7 +513,7 @@ export default function WatchlistsSection({
 
   const allSymbolsKey = useMemo(
     () =>
-      Array.from(new Set(lists.flatMap((list) => list.items.map((item) => item.symbol))))
+      Array.from(new Set(lists.flatMap((list) => watchlistItems(list).map((item) => item.symbol))))
         .sort()
         .join(","),
     [lists]
@@ -533,8 +541,8 @@ export default function WatchlistsSection({
 
           const live: LiveQuote = { ...pending };
           if (quoteRes.status === "fulfilled" && quoteRes.value && quoteRes.value.c > 0) {
-            live.price = quoteRes.value.c;
-            live.changePct = quoteRes.value.dp ?? pending.changePct;
+            live.price = toFiniteNumber(quoteRes.value.c, pending.price);
+            live.changePct = toFiniteNumber(quoteRes.value.dp, pending.changePct);
           }
           if (profileRes.status === "fulfilled" && profileRes.value) {
             if (profileRes.value.name) live.name = profileRes.value.name;
@@ -596,7 +604,7 @@ export default function WatchlistsSection({
       throw new Error("Enter a ticker symbol");
     }
     const latest = lists.find((list) => list.id === targetList.id) ?? targetList;
-    if (latest.items.some((item) => item.symbol === symbol)) {
+    if (watchlistItems(latest).some((item) => item.symbol === symbol)) {
       throw new Error(`${symbol} is already in this list`);
     }
 
@@ -607,7 +615,7 @@ export default function WatchlistsSection({
       const saved = await addWatchlistItem({ watchlistId: targetList.id, symbol, name });
       updateLists(
         lists.map((list) =>
-          list.id === targetList.id ? { ...list, items: [...list.items, saved] } : list
+          list.id === targetList.id ? { ...list, items: [...watchlistItems(list), saved] } : list
         )
       );
     } catch (err) {
@@ -624,7 +632,7 @@ export default function WatchlistsSection({
       };
       updateLists(
         lists.map((list) =>
-          list.id === targetList.id ? { ...list, items: [...list.items, saved] } : list
+          list.id === targetList.id ? { ...list, items: [...watchlistItems(list), saved] } : list
         )
       );
     } finally {
@@ -643,7 +651,7 @@ export default function WatchlistsSection({
     updateLists(
       lists.map((list) =>
         list.id === targetList.id
-          ? { ...list, items: list.items.filter((row) => row.id !== item.id) }
+          ? { ...list, items: watchlistItems(list).filter((row) => row.id !== item.id) }
           : list
       )
     );
@@ -671,7 +679,7 @@ export default function WatchlistsSection({
   };
 
   const totalItems = useMemo(
-    () => lists.reduce((sum, list) => sum + list.items.length, 0),
+    () => lists.reduce((sum, list) => sum + watchlistItems(list).length, 0),
     [lists]
   );
 

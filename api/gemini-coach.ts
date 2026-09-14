@@ -139,8 +139,10 @@ function stripEducationalDisclaimer(text: string): string {
   return String(text || "").replace(DISCLAIMER_TAIL, "").trim();
 }
 
-function usd(amount: number): string {
-  return Math.round(amount).toLocaleString("en-US");
+function usd(amount: unknown): string {
+  const n = typeof amount === "number" && Number.isFinite(amount) ? amount : Number(amount);
+  const safe = Number.isFinite(n) ? n : 0;
+  return (Math.round(safe) ?? 0).toLocaleString("en-US");
 }
 
 function firstNameOf(name: string, fallback = "Investor"): string {

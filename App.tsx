@@ -28,7 +28,7 @@ import {
 } from "lucide-react";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { type Debt } from "./src/components/DebtSnowballManager";
-import { formatCurrencyInput, formatCurrencyValue, parseCurrency } from "./src/lib/money";
+import { formatCurrencyInput, formatCurrencyValue, formatNumber, parseCurrency, toFiniteNumber } from "./src/lib/money";
 import { privacyMoney } from "./src/lib/privacy";
 import { categoryIcon } from "./src/lib/categoryIcons";
 import AuthScreen from "./src/components/AuthScreen";
@@ -64,6 +64,7 @@ import {
   isGoogleAuthUser,
   clearGuestSessionFallbacks,
   restoreSupabaseAuthSession,
+  subscribeAuthSession,
   needsBankSetup,
   normalizeUserSettings,
   queueFinancialSnapshotSync,
@@ -236,8 +237,8 @@ function SproutChatMarkdown({ text }: { text: string }) {
   );
 }
 
-function money(amount: number) {
-  return Math.round(amount).toLocaleString("en-US");
+function money(amount: unknown) {
+  return formatNumber(Math.round(toFiniteNumber(amount, 0)));
 }
 
 const MAX_PAYOFF_MONTHS = 600;
@@ -362,10 +363,14 @@ function cashFlowPayloadKey(snapshot: Pick<CashFlowSnapshot, "monthlyIncome" | "
 }
 
 function initialRealUser(): AuthUser | null {
-  const user = getStoredUser();
-  const token = getToken();
-  if (!user || !token || isDemoOrGuestSession(token, user)) return null;
-  return user;
+  try {
+    const user = getStoredUser();
+    const token = getToken();
+    if (!user?.id || !token || isDemoOrGuestSession(token, user)) return null;
+    return user;
+  } catch {
+    return null;
+  }
 }
 
 const App: React.FC = () => {
@@ -429,18 +434,63 @@ const App: React.FC = () => {
 
   useEffect(() => {
     let cancelled = false;
+    const bootstrapping = { current: true };
+
+    const applyAuth = (payload: { token: string; user: AuthUser; settings?: UserSettings | null } | null) => {
+      if (cancelled || !payload?.user?.id) return false;
+      saveSession(payload.token, payload.user);
+      setAuthUser(payload.user);
+      setUserSettings(payload.settings ?? getStoredSettings());
+      setAuthChecking(false);
+      return true;
+    };
+
+    const fallBackToStoredOrLogin = () => {
+      if (cancelled) return;
+      try {
+        const token = getToken();
+        const stored = getStoredUser();
+        if (token && stored?.id && !isDemoOrGuestSession(token, stored)) {
+          setAuthUser(stored);
+          setUserSettings((prev) => prev ?? getStoredSettings());
+          setAuthChecking(false);
+          return;
+        }
+      } catch {
+        // Malformed storage must not blank the screen.
+      }
+      setAuthUser(null);
+      setUserSettings(null);
+      setAuthChecking(false);
+    };
+
+    try {
+      clearGuestSessionFallbacks();
+    } catch {
+      // Guest cleanup must not prevent Google session restore.
+    }
+
+    const unsubscribe = subscribeAuthSession((payload, event) => {
+      if (cancelled) return;
+      if (payload?.user?.id) {
+        applyAuth(payload);
+        bootstrapping.current = false;
+        return;
+      }
+      if (bootstrapping.current && (event === "INITIAL_SESSION" || event === "SIGNED_OUT")) {
+        return;
+      }
+      if (event === "SIGNED_OUT") {
+        fallBackToStoredOrLogin();
+      }
+    });
 
     (async () => {
-      clearGuestSessionFallbacks();
-
       try {
         const restored = await restoreSupabaseAuthSession();
         if (cancelled) return;
-        if (restored) {
-          saveSession(restored.token, restored.user);
-          setAuthUser(restored.user);
-          setUserSettings(restored.settings ?? getStoredSettings());
-          setAuthChecking(false);
+        if (applyAuth(restored)) {
+          bootstrapping.current = false;
           return;
         }
       } catch {
@@ -451,22 +501,27 @@ const App: React.FC = () => {
 
       const token = getToken();
       const stored = getStoredUser();
-      if (!token || !stored || isDemoOrGuestSession(token, stored)) {
+      if (!token || !stored?.id || isDemoOrGuestSession(token, stored)) {
         setAuthUser(null);
         setUserSettings(null);
         setAuthChecking(false);
+        bootstrapping.current = false;
         return;
       }
 
       try {
         const me = await withTimeout(fetchMe(), 2500, "Session");
         if (cancelled) return;
-        saveSession(token, me.user);
-        setAuthUser(me.user);
-        setUserSettings(me.settings ?? getStoredSettings());
+        if (me.user?.id) {
+          saveSession(token, me.user);
+          setAuthUser(me.user);
+          setUserSettings(me.settings ?? getStoredSettings());
+        } else {
+          fallBackToStoredOrLogin();
+        }
       } catch {
         if (cancelled) return;
-        if (getStoredUser() && !isDemoOrGuestSession()) {
+        if (getStoredUser()?.id && !isDemoOrGuestSession()) {
           setUserSettings((prev) => prev ?? getStoredSettings());
         } else {
           clearSession();
@@ -486,25 +541,36 @@ const App: React.FC = () => {
       } finally {
         if (!cancelled) {
           setAuthChecking(false);
+          bootstrapping.current = false;
         }
       }
     })();
 
     return () => {
       cancelled = true;
+      unsubscribe();
     };
   }, []);
 
   const cashFlowHydratedJsonRef = useRef(cashFlowPayloadKey(cashFlowBoot));
 
-  const applyCashFlow = (snapshot: CashFlowSnapshot) => {
-    cashFlowHydratedJsonRef.current = cashFlowPayloadKey(snapshot);
-    setMonthlyIncome(snapshot.monthlyIncome);
-    setEmergencyFund(snapshot.emergencyFund);
-    setSafetyNet(snapshot.safetyNet ?? emptySafetyNet());
-    setExtraPayoff(snapshot.extraPayoff);
-    setExpenses(snapshot.expenses);
-    setDebts(snapshot.debts);
+  const applyCashFlow = (snapshot: CashFlowSnapshot | null | undefined) => {
+    const next: CashFlowSnapshot = {
+      monthlyIncome: snapshot?.monthlyIncome ?? 0,
+      emergencyFund: snapshot?.emergencyFund ?? 0,
+      extraPayoff: snapshot?.extraPayoff ?? 0,
+      expenses: snapshot?.expenses || [],
+      debts: snapshot?.debts || [],
+      safetyNet: snapshot?.safetyNet ?? emptySafetyNet(),
+      updatedAt: snapshot?.updatedAt ?? 0,
+    };
+    cashFlowHydratedJsonRef.current = cashFlowPayloadKey(next);
+    setMonthlyIncome(next.monthlyIncome);
+    setEmergencyFund(next.emergencyFund);
+    setSafetyNet(next.safetyNet);
+    setExtraPayoff(next.extraPayoff);
+    setExpenses(next.expenses);
+    setDebts(next.debts);
   };
 
   const cashFlowSnapshot = useMemo<CashFlowSnapshot>(
@@ -659,6 +725,7 @@ const App: React.FC = () => {
   }, [profileMenuOpen]);
 
   const handleAuthenticated = (user: AuthUser, settings?: UserSettings | null) => {
+    if (!user?.id) return;
     setAuthUser(user);
     setActiveTab("dashboard");
     setUserSettings(
@@ -1243,7 +1310,7 @@ const App: React.FC = () => {
     }
   };
 
-  if (authChecking && !authUser) {
+  if (authChecking && !authUser?.id) {
     return (
       <div className={MOBILE_FRAME_CLASS}>
         <div style={{ ...styles.page, display: "grid", placeItems: "center", minHeight: "100vh" }}>
@@ -1253,7 +1320,7 @@ const App: React.FC = () => {
     );
   }
 
-  if (!authUser) {
+  if (!authUser?.id) {
     return (
       <div className={MOBILE_FRAME_CLASS}>
         <AuthScreen onAuthenticated={handleAuthenticated} />

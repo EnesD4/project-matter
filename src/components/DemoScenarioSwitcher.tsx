@@ -7,6 +7,7 @@ import {
   readActiveDemoScenario,
   type DemoScenarioId,
 } from "../lib/demoScenarios";
+import { formatNumber, toFiniteNumber } from "../lib/money";
 import DemoAccountBuilder from "./DemoAccountBuilder";
 
 type DemoScenarioSwitcherProps = {
@@ -15,8 +16,8 @@ type DemoScenarioSwitcherProps = {
   onApplied?: (id: DemoScenarioId) => void;
 };
 
-function formatUsd(amount: number) {
-  return `$${Math.round(amount).toLocaleString("en-US")}`;
+function formatUsd(amount: unknown) {
+  return `$${formatNumber(Math.round(toFiniteNumber(amount, 0)))}`;
 }
 
 export default function DemoScenarioSwitcher({

@@ -1,6 +1,7 @@
 import { Star } from "lucide-react";
 import React, { useEffect, useRef, useState } from "react";
 import { XP_PER_LEVEL, levelFromXp, xpIntoLevel } from "../lib/lessonProgress";
+import { formatNumber } from "../lib/money";
 import StreakBadge from "./StreakBadge";
 
 type LessonsHeaderProps = {
@@ -56,7 +57,7 @@ export default function LessonsHeader({ xp, streak, compact = false }: LessonsHe
             </p>
             <div className="relative mt-1">
               <p className={`font-extrabold leading-tight text-white ${compact ? "text-sm" : "text-base"}`}>
-                {xp.toLocaleString("en-US")} XP
+                {formatNumber(xp)} XP
               </p>
               {floatKey > 0 && floatAmount > 0 && (
                 <span key={floatKey} className="lesson-xp-float absolute -right-1 -top-3 text-[11px] font-extrabold text-emerald-400">

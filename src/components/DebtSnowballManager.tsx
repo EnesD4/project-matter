@@ -16,7 +16,7 @@ import {
   X,
 } from "lucide-react";
 import { categoryIcon } from "../lib/categoryIcons";
-import { formatCurrencyInput, parseCurrency } from "../lib/money";
+import { formatCurrencyInput, parseCurrency, formatNumber, toFiniteNumber } from "../lib/money";
 
 export type Debt = {
   id: string;
@@ -135,8 +135,8 @@ function simulateSnowball(debts: Debt[], extraPayment: number): SimResult {
   return { order, payoffMonth, monthsToDebtFree: months, totalInterestPaid };
 }
 
-function formatMoney(amount: number) {
-  return Math.round(Math.max(0, amount)).toLocaleString("en-US");
+function formatMoney(amount: unknown) {
+  return formatNumber(Math.round(Math.max(0, toFiniteNumber(amount, 0))));
 }
 
 function formatYearsMonths(totalMonths: number) {

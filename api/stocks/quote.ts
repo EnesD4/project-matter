@@ -1,3 +1,5 @@
+import { mockQuotePayload } from "../_lib/mockMarket";
+
 export const config = {
   runtime: "nodejs",
   maxDuration: 15,
@@ -12,10 +14,6 @@ function sendJson(res: any, status: number, payload: unknown) {
   res.end(JSON.stringify(payload));
 }
 
-function emptyQuote() {
-  return { status: "ok", c: 0, d: 0, dp: 0, h: 0, l: 0, o: 0, pc: 0, t: 0, data: [] };
-}
-
 function querySymbol(req: any): string {
   try {
     const url = new URL(req.url || "", "http://localhost");
@@ -28,7 +26,7 @@ function querySymbol(req: any): string {
 export default async function handler(req: any, res: any) {
   const symbol = querySymbol(req);
   if (!symbol) {
-    return sendJson(res, 200, emptyQuote());
+    return sendJson(res, 200, mockQuotePayload(""));
   }
 
   try {
@@ -41,22 +39,25 @@ export default async function handler(req: any, res: any) {
     } | null;
     const meta = json?.chart?.result?.[0]?.meta || {};
     const price = Number(meta.regularMarketPrice ?? meta.previousClose ?? 0);
+    if (!Number.isFinite(price) || price <= 0) {
+      return sendJson(res, 200, mockQuotePayload(symbol));
+    }
     const previous = Number(meta.chartPreviousClose ?? meta.previousClose ?? 0);
-    const change = price && previous ? price - previous : 0;
+    const change = previous ? price - previous : 0;
     const changePct = previous ? (change / previous) * 100 : 0;
     return sendJson(res, 200, {
       status: "ok",
-      c: Number.isFinite(price) ? price : 0,
+      c: price,
       d: Number.isFinite(change) ? change : 0,
       dp: Number.isFinite(changePct) ? changePct : 0,
-      h: Number(meta.regularMarketDayHigh ?? 0) || 0,
-      l: Number(meta.regularMarketDayLow ?? 0) || 0,
-      o: Number(meta.regularMarketOpen ?? previous ?? 0) || 0,
-      pc: Number.isFinite(previous) ? previous : 0,
-      t: Number(meta.regularMarketTime ?? 0) || 0,
+      h: Number(meta.regularMarketDayHigh ?? 0) || price,
+      l: Number(meta.regularMarketDayLow ?? 0) || price,
+      o: Number(meta.regularMarketOpen ?? previous ?? 0) || price,
+      pc: Number.isFinite(previous) && previous > 0 ? previous : price,
+      t: Number(meta.regularMarketTime ?? 0) || Math.floor(Date.now() / 1000),
       data: [],
     });
   } catch {
-    return sendJson(res, 200, emptyQuote());
+    return sendJson(res, 200, mockQuotePayload(symbol));
   }
 }
