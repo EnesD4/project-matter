@@ -82,22 +82,28 @@ export function canonicalTimestamps(preferred: ChartCandle[] | undefined, others
   return best.map((p) => p.timestamp);
 }
 
-export function pricesOnTimestamps(candles: ChartCandle[], timestamps: number[]): number[] {
-  return timestamps.map((ts) => lastPriceAtOrBefore(candles, ts) ?? 0);
+export function pricesOnTimestamps(
+  candles: ChartCandle[] | null | undefined,
+  timestamps: number[] | null | undefined
+): number[] {
+  return (timestamps ?? []).map((ts) => Number(lastPriceAtOrBefore(candles ?? [], ts)) || 0);
 }
 
 export function reconstructPortfolioValues(
-  stocks: StockSlice[],
+  stocks: StockSlice[] | null | undefined,
   charts: Map<string, ChartCandle[]>,
   cashValue: number,
   timestamps: number[]
 ): number[] {
-  return timestamps.map((ts) => {
-    let sum = Math.max(0, cashValue);
-    for (const stock of stocks) {
-      const pts = charts.get(stock.symbol);
+  return (timestamps ?? []).map((ts) => {
+    let sum = Math.max(0, Number(cashValue) || 0);
+    for (const stock of stocks ?? []) {
+      if (!stock) continue;
+      const pts = charts?.get(stock.symbol);
       const price = pts && pts.length > 0 ? lastPriceAtOrBefore(pts, ts) : null;
-      sum += stock.quantity * (price ?? stock.currentPrice);
+      const qty = Number(stock?.quantity) || 0;
+      const mark = Number(price ?? stock?.currentPrice) || 0;
+      sum += qty * mark;
     }
     return sum;
   });

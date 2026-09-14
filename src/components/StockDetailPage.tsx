@@ -153,7 +153,8 @@ function ChartTooltip({
       </p>
       {hasOhlc ? (
         <p className="mt-1 text-[10px] font-semibold tabular-nums text-[#9CA3AF]">
-          O ${point.open!.toFixed(2)} · H ${point.high!.toFixed(2)} · L ${point.low!.toFixed(2)}
+          O ${(Number(point?.open) || 0).toFixed(2)} · H ${(Number(point?.high) || 0).toFixed(2)} · L{" "}
+          {(Number(point?.low) || 0).toFixed(2)}
         </p>
       ) : null}
     </div>
@@ -195,14 +196,16 @@ export default function StockDetailPage({
   const [liveQuote, setLiveQuote] = useState<StockQuote | null>(() => {
     const cached = getCachedQuote(holding.symbol);
     if (!cached) return null;
-    const prev = cached.price / (1 + cached.changePct / 100);
+    const price = Number(cached?.price) || 0;
+    const changePct = Number(cached?.changePct) || 0;
+    const prev = changePct !== -100 ? price / (1 + changePct / 100) : 0;
     return {
-      c: cached.price,
-      dp: cached.changePct,
-      d: cached.price - prev,
+      c: price,
+      dp: changePct,
+      d: price - prev,
       o: prev,
-      h: Math.max(cached.price, prev),
-      l: Math.min(cached.price, prev),
+      h: Math.max(price, prev),
+      l: Math.min(price, prev),
       pc: prev,
       t: cached.updatedAt,
     };
@@ -296,9 +299,13 @@ export default function StockDetailPage({
   const gradientId = `cc-area-${holding.symbol.replace(/[^A-Za-z0-9]/g, "")}`;
 
   const yDomain = useMemo(() => {
-    if (series.length === 0) return ["auto", "auto"] as const;
-    const lows = series.map((p) => Math.min(p.value, p.low ?? p.value));
-    const highs = series.map((p) => Math.max(p.value, p.high ?? p.value));
+    if ((series ?? []).length === 0) return ["auto", "auto"] as const;
+    const lows = (series ?? []).map((p) =>
+      Math.min(Number(p?.value) || 0, Number(p?.low ?? p?.value) || 0)
+    );
+    const highs = (series ?? []).map((p) =>
+      Math.max(Number(p?.value) || 0, Number(p?.high ?? p?.value) || 0)
+    );
     let min = Math.min(...lows);
     let max = Math.max(...highs);
     if (range === "1D") {
@@ -353,16 +360,18 @@ export default function StockDetailPage({
   useEffect(() => {
     let cancelled = false;
     const cached = getCachedQuote(holding.symbol);
-    const prev = cached ? cached.price / (1 + cached.changePct / 100) : 0;
+    const price = Number(cached?.price) || 0;
+    const changePct = Number(cached?.changePct) || 0;
+    const prev = cached && changePct !== -100 ? price / (1 + changePct / 100) : 0;
     setLiveQuote(
       cached
         ? {
-            c: cached.price,
-            dp: cached.changePct,
-            d: cached.price - prev,
+            c: price,
+            dp: changePct,
+            d: price - prev,
             o: prev,
-            h: Math.max(cached.price, prev),
-            l: Math.min(cached.price, prev),
+            h: Math.max(price, prev),
+            l: Math.min(price, prev),
             pc: prev,
             t: cached.updatedAt,
           }
@@ -380,8 +389,8 @@ export default function StockDetailPage({
         if (!cancelled && data) {
           setLiveQuote(data);
           setCachedQuote(holding.symbol, {
-            price: data.c,
-            changePct: data.dp ?? holding.dayChangePct,
+            price: Number(data?.c) || 0,
+            changePct: Number(data?.dp ?? holding?.dayChangePct) || 0,
             name: holding.description,
             logo: holding.logo,
             domain: holding.domain,

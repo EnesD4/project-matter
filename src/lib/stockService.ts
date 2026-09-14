@@ -131,7 +131,7 @@ export function sanitizeSafeStock<T extends Record<string, any>>(rawStock: T | n
   const price = finiteNumber(raw?.price ?? current_price ?? buy_price ?? 0);
   const change = finiteNumber(raw?.change ?? raw?.d ?? 0);
   const change_percent = finiteNumber(raw?.change_percent ?? raw?.dp ?? 0);
-  const total_value = finiteNumber(raw?.total_value ?? price * shares ?? 0);
+  const total_value = finiteNumber(raw?.total_value ?? price * shares);
   return {
     ...raw,
     price,
@@ -143,7 +143,7 @@ export function sanitizeSafeStock<T extends Record<string, any>>(rawStock: T | n
     change,
     change_percent,
     total_value,
-  } as T & {
+  } as unknown as T & {
     price: number;
     shares: number;
     buy_price: number;

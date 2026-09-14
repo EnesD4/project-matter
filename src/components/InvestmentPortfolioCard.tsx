@@ -169,7 +169,7 @@ function sanitizeStockHolding(holding: StockHolding): StockHolding {
   return {
     ...holding,
     symbol: String(holding?.symbol || safeStock.symbol || "—").toUpperCase(),
-    description: String(holding?.description || safeStock.name || holding?.symbol || "—"),
+    description: String(holding?.description || (safeStock as any)?.name || holding?.symbol || "—"),
     quantity: shares,
     avgCost: buyPrice,
     currentPrice: price,
@@ -406,8 +406,8 @@ function BenchmarkTooltip({
   if (!active || !payload || !payload.length) return null;
   const point = payload[0]?.payload;
   if (!point) return null;
-  const portfolioPct = point.portfolioPct ?? 0;
-  const gainAbs = (point.portfolioValue ?? startValue) - startValue;
+  const portfolioPct = Number(point?.portfolioPct) || 0;
+  const gainAbs = (Number(point?.portfolioValue) || Number(startValue) || 0) - (Number(startValue) || 0);
 
   return (
     <div className="rounded-xl border border-[#1F1F1F] bg-[#0A0A0A] px-3 py-2 shadow-[0_8px_24px_rgba(0,0,0,0.45)]">
@@ -812,16 +812,18 @@ export default function InvestmentPortfolioCard({
   const { markUpdated, marketOpen } = useMarketPolling({
     enabled: hasStockHoldings,
     onPoll: async () => {
-      const stocks = holdingsRef.current.filter((h): h is StockHolding => h.kind === "stock");
+      const stocks = (holdingsRef.current || []).filter(
+        (h): h is StockHolding => h?.kind === "stock"
+      );
       if (stocks.length === 0) return;
-      const uniqueSymbols = [...new Set(stocks.map((s) => s.symbol))];
+      const uniqueSymbols = [...new Set(stocks.map((s) => s?.symbol).filter(Boolean))];
       const quotes = await fetchStockQuotes(uniqueSymbols);
       if (quotes.size === 0) return;
 
       setChartAnimate(false);
       setHoldings((prev) =>
-        prev.map((h) => {
-          if (h.kind !== "stock") return h;
+        (prev || []).map((h) => {
+          if (!h || h.kind !== "stock") return h;
           const quote = quotes.get(h.symbol);
           return quote ? applyQuoteToHolding(h, quote) : h;
         })
@@ -839,13 +841,16 @@ export default function InvestmentPortfolioCard({
       holdingsEpochRef.current += 1;
       setPortfolioLoading(false);
       setHoldings((prev) => {
-        const incomingSymbols = new Set(stocks.map((stock) => stock.symbol.toUpperCase()));
-        const kept = prev.filter((holding) => {
+        const incomingSymbols = new Set(
+          (stocks || []).map((stock) => String(stock?.symbol || "").toUpperCase()).filter(Boolean)
+        );
+        const kept = (prev || []).filter((holding) => {
+          if (!holding) return false;
           if (holding.kind === "broker") return true;
           if (replaceVerified) return holding.account !== "verified";
           return !(holding.account === "verified" && incomingSymbols.has(holding.symbol.toUpperCase()));
         });
-        return sortHoldingsByOrder([...kept, ...stocks], readHoldingOrder());
+        return sortHoldingsByOrder([...kept, ...(stocks || [])], readHoldingOrder());
       });
       setHoldingsExpanded(true);
       setModalOpen(false);
@@ -856,23 +861,25 @@ export default function InvestmentPortfolioCard({
       const detail = (event as CustomEvent<PlaidLinkResult>).detail;
       if (!detail?.holdings) return;
       const portfolioStocks = detail?.holdings || [];
-      const stocks = portfolioStocks.map((item) => ({
-        ...stockHoldingFromItem(item, item.name),
-        account: "verified" as const,
-        description: item.name || item.symbol,
-      }));
+      const stocks = (portfolioStocks ?? [])
+        .filter(Boolean)
+        .map((item) => ({
+          ...stockHoldingFromItem(item, item?.name),
+          account: "verified" as const,
+          description: item?.name || item?.symbol,
+        }));
       applyStocks(stocks, false);
       const first = stocks[0];
       if (first) {
         setJustAddedId(first.id);
         window.setTimeout(() => setJustAddedId(null), 2000);
       }
-      void Promise.all(portfolioStocks.map((item) => enrichStockHolding(item)))
+      void Promise.all((portfolioStocks ?? []).map((item) => enrichStockHolding(item)))
         .then((enriched) => {
           setHoldings((prev) =>
-            prev.map((holding) => {
-              if (holding.kind !== "stock") return holding;
-              return enriched.find((item) => item.id === holding.id) ?? holding;
+            (prev || []).map((holding) => {
+              if (!holding || holding.kind !== "stock") return holding;
+              return enriched.find((item) => item?.id === holding.id) ?? holding;
             })
           );
         })
@@ -882,16 +889,21 @@ export default function InvestmentPortfolioCard({
     const onDemo = (event: Event) => {
       const detail = (event as CustomEvent<DemoScenarioApplyDetail>).detail;
       if (!detail) return;
-      const portfolioStocks = detail?.holdings || [];
-      const stocks = portfolioStocks.map((item) => {
-        const lot =
-          detail.lots?.find((row) => row.symbol === item.symbol) ??
-          (detail.id !== "custom" ? DEMO_SCENARIOS[detail.id]?.lots.find((row) => row.symbol === item.symbol) : undefined);
-        return stockHoldingFromItem(item, lot?.name);
-      });
+      const portfolioStocks = (detail?.holdings || []).filter(Boolean);
+      const stocks = portfolioStocks
+        .map((item) => {
+          if (!item?.symbol) return null;
+          const lot =
+            detail.lots?.find((row) => row?.symbol === item.symbol) ??
+            (detail.id !== "custom"
+              ? DEMO_SCENARIOS[detail.id]?.lots.find((row) => row?.symbol === item.symbol)
+              : undefined);
+          return stockHoldingFromItem(item, lot?.name);
+        })
+        .filter((h): h is StockHolding => Boolean(h));
       holdingsEpochRef.current += 1;
       setPortfolioLoading(false);
-      setHoldings(stocks);
+      setHoldings(guardHoldings(stocks));
       writePortfolioCache(portfolioStocks);
       setHoldingsExpanded(true);
       if (stocks.length > 0) markUpdated();
@@ -913,7 +925,7 @@ export default function InvestmentPortfolioCard({
     const cached = readPortfolioCache();
     if (cached) {
       setHoldings((prev) => {
-        const brokers = prev.filter((h): h is BrokerHolding => h.kind === "broker");
+        const brokers = (prev || []).filter((h): h is BrokerHolding => h?.kind === "broker");
         return sortHoldingsByOrder([...holdingsFromApiItems(cached.items || []), ...brokers], readHoldingOrder());
       });
       setPortfolioLoading(false);
@@ -932,7 +944,7 @@ export default function InvestmentPortfolioCard({
             .then((stocks) => {
               if (cancelled || holdingsEpochRef.current !== epoch) return;
               setHoldings((prev) => {
-                const brokers = prev.filter((h): h is BrokerHolding => h.kind === "broker");
+                const brokers = (prev || []).filter((h): h is BrokerHolding => h?.kind === "broker");
                 return sortHoldingsByOrder([...stocks, ...brokers], readHoldingOrder());
               });
             })
@@ -944,14 +956,14 @@ export default function InvestmentPortfolioCard({
           const stocks = await Promise.all((cached.items || []).map((item) => enrichStockHolding(item)));
           if (cancelled || holdingsEpochRef.current !== epoch) return;
           setHoldings((prev) => {
-            const brokers = prev.filter((h): h is BrokerHolding => h.kind === "broker");
+            const brokers = (prev || []).filter((h): h is BrokerHolding => h?.kind === "broker");
             return sortHoldingsByOrder([...stocks, ...brokers], readHoldingOrder());
           });
           return;
         }
         const instant = holdingsFromApiItems(items);
         setHoldings((prev) => {
-          const brokers = prev.filter((h): h is BrokerHolding => h.kind === "broker");
+          const brokers = (prev || []).filter((h): h is BrokerHolding => h?.kind === "broker");
           return sortHoldingsByOrder([...instant, ...brokers], readHoldingOrder());
         });
         writePortfolioCache(items);
@@ -959,18 +971,18 @@ export default function InvestmentPortfolioCard({
         const stocks = await Promise.all(items.map((item) => enrichStockHolding(item)));
         if (cancelled || holdingsEpochRef.current !== epoch) return;
         setHoldings((prev) => {
-          const brokers = prev.filter((h): h is BrokerHolding => h.kind === "broker");
+          const brokers = (prev || []).filter((h): h is BrokerHolding => h?.kind === "broker");
           return sortHoldingsByOrder([...stocks, ...brokers], readHoldingOrder());
         });
       } catch (err) {
         if (!cancelled && !cached) {
           setPortfolioError(err instanceof Error ? err.message : "Couldn't load portfolio");
-          setHoldings((prev) => prev.filter((h): h is BrokerHolding => h?.kind === "broker"));
+          setHoldings((prev) => (prev || []).filter((h): h is BrokerHolding => h?.kind === "broker"));
         } else if (!cancelled && cached) {
           const stocks = await Promise.all((cached.items || []).map((item) => enrichStockHolding(item)));
           if (cancelled || holdingsEpochRef.current !== epoch) return;
           setHoldings((prev) => {
-            const brokers = prev.filter((h): h is BrokerHolding => h.kind === "broker");
+            const brokers = (prev || []).filter((h): h is BrokerHolding => h?.kind === "broker");
             return sortHoldingsByOrder([...stocks, ...brokers], readHoldingOrder());
           });
         }
@@ -1037,18 +1049,22 @@ export default function InvestmentPortfolioCard({
       : belowAllocation;
   const hasHoldings = safeHoldings.length > 0;
   const investmentValue = useMemo(
-    () => stocks.reduce((sum, h) => sum + holdingValue(h), 0),
+    () => (stocks ?? []).reduce((sum, h) => sum + (Number(holdingValue(h)) || 0), 0),
     [stocks]
   );
   const brokerCash = useMemo(
-    () => safeHoldings.filter((h) => h.kind === "broker").reduce((sum, h) => sum + holdingValue(h), 0),
+    () =>
+      (safeHoldings ?? [])
+        .filter((h) => h?.kind === "broker")
+        .reduce((sum, h) => sum + (Number(holdingValue(h)) || 0), 0),
     [safeHoldings]
   );
   const cashValue = brokerCash + Math.max(0, cashBalance);
   const totalValue = investmentValue + cashValue;
 
   const allocationSlices = useMemo(() => {
-    const items = stocks
+    const items = (stocks || [])
+      .filter((h): h is StockHolding => Boolean(h))
       .map((h) => ({
         bucket: classifyHolding({
           kind: "stock",
@@ -1057,7 +1073,7 @@ export default function InvestmentPortfolioCard({
           type: h.instrumentType,
           industry: h.industry,
         }),
-        value: holdingValue(h),
+        value: Number(holdingValue(h)) || 0,
         holdingId: h.id,
         holdingLabel: h.symbol,
         holdingDetail: h.account === "verified" ? `${h.description} · Verified` : `${h.description} · Paper`,
@@ -1066,7 +1082,7 @@ export default function InvestmentPortfolioCard({
     return buildAllocationSlices(items);
   }, [stocks]);
 
-  const holdingOrderKey = safeHoldings.map((h) => h.id).join("\0");
+  const holdingOrderKey = (safeHoldings ?? []).map((h) => h?.id).filter(Boolean).join("\0");
   useEffect(() => {
     if (portfolioLoading || !holdingOrderKey) return;
     writeHoldingOrder(holdingOrderKey.split("\0"));
@@ -1093,8 +1109,9 @@ export default function InvestmentPortfolioCard({
 
   const stockSymbolsKey = useMemo(
     () =>
-      stocks
-        .map((h) => h.symbol)
+      (stocks ?? [])
+        .map((h) => h?.symbol)
+        .filter(Boolean)
         .sort()
         .join(","),
     [stocks]
@@ -1164,12 +1181,12 @@ export default function InvestmentPortfolioCard({
     });
 
     const fallback = () => {
-      const first = simulatedChartData[0]?.value ?? 0;
-      return simulatedChartData.map((p) =>
+      const first = Number(simulatedChartData?.[0]?.value) || 0;
+      return (simulatedChartData ?? []).map((p) =>
         sanitizePoint({
           ...p,
-          portfolioValue: p.value,
-          portfolioPct: first > 0 ? ((p.value - first) / first) * 100 : 0,
+          portfolioValue: Number(p?.value) || 0,
+          portfolioPct: first > 0 ? (((Number(p?.value) || 0) - first) / first) * 100 : 0,
         })
       );
     };
@@ -1181,11 +1198,13 @@ export default function InvestmentPortfolioCard({
     );
     if (timestamps.length < 2) return fallback();
 
-    const stockLots = stocks.map((h) => ({
-      symbol: h.symbol,
-      quantity: h.quantity ?? 0,
-      currentPrice: h.currentPrice ?? 0,
-    }));
+    const stockLots = (stocks || [])
+      .filter((h): h is StockHolding => Boolean(h))
+      .map((h) => ({
+        symbol: h.symbol,
+        quantity: Number(h?.quantity) || 0,
+        currentPrice: Number(h?.currentPrice) || 0,
+      }));
     const reconstructed = reconstructPortfolioValues(stockLots, holdingCandles, cashValue, timestamps);
     const hasLivePath = reconstructed.some((v) => v > 0);
     if (!hasLivePath) return fallback();
@@ -1273,7 +1292,13 @@ export default function InvestmentPortfolioCard({
   }, [chartData.length, range]);
 
   const connectedPlatformNames = useMemo(
-    () => new Set(safeHoldings.filter((h): h is BrokerHolding => h.kind === "broker").map((h) => h.name)),
+    () =>
+      new Set(
+        (safeHoldings ?? [])
+          .filter((h): h is BrokerHolding => h?.kind === "broker")
+          .map((h) => h?.name)
+          .filter(Boolean)
+      ),
     [safeHoldings]
   );
 
@@ -1697,12 +1722,13 @@ export default function InvestmentPortfolioCard({
       if (clientY < rect.top || clientY > rect.bottom) continue;
       const mid = rect.top + rect.height / 2;
       setHoldings((prev) => {
-        const from = prev.findIndex((item) => item.id === dragId);
-        const to = prev.findIndex((item) => item.id === overId);
-        if (from < 0 || to < 0 || from === to) return prev;
-        if (from < to && clientY < mid) return prev;
-        if (from > to && clientY > mid) return prev;
-        return moveItemToIndex(prev, dragId, to);
+        const list = prev || [];
+        const from = list.findIndex((item) => item?.id === dragId);
+        const to = list.findIndex((item) => item?.id === overId);
+        if (from < 0 || to < 0 || from === to) return list;
+        if (from < to && clientY < mid) return list;
+        if (from > to && clientY > mid) return list;
+        return moveItemToIndex(list, dragId, to);
       });
       break;
     }
@@ -1772,8 +1798,9 @@ export default function InvestmentPortfolioCard({
 
   const moveHolding = (id: string, direction: -1 | 1) => {
     setHoldings((prev) => {
-      const index = prev.findIndex((h) => h.id === id);
-      return moveItemToIndex(prev, id, index + direction);
+      const list = prev || [];
+      const index = list.findIndex((h) => h?.id === id);
+      return moveItemToIndex(list, id, index + direction);
     });
   };
 
@@ -1782,7 +1809,7 @@ export default function InvestmentPortfolioCard({
     if (!target || removingId) return;
 
     if (target.kind === "broker") {
-      setHoldings((prev) => prev.filter((h) => h.id !== id));
+      setHoldings((prev) => (prev || []).filter((h) => h?.id !== id));
       if (selectedHolding?.id === id) setSelectedHolding(null);
       return;
     }
@@ -1790,7 +1817,7 @@ export default function InvestmentPortfolioCard({
     setRemovingId(id);
     try {
       await deletePortfolioItem(id);
-      setHoldings((prev) => prev.filter((h) => h.id !== id));
+      setHoldings((prev) => (prev || []).filter((h) => h?.id !== id));
       if (selectedHolding?.id === id) setSelectedHolding(null);
     } catch (err) {
       window.alert(err instanceof Error ? err.message : "Couldn't remove this asset");
@@ -1806,16 +1833,16 @@ export default function InvestmentPortfolioCard({
   ): Promise<{ remainingShares: number }> => {
     const result = await sellPortfolioItem(holding.id, { shares, sellPrice });
     if (result.deleted) {
-      setHoldings((prev) => prev.filter((h) => h.id !== holding.id));
+      setHoldings((prev) => (prev || []).filter((h) => h?.id !== holding.id));
       if (selectedHolding?.id === holding.id) setSelectedHolding(null);
       return { remainingShares: 0 };
     }
 
-    const remaining = Number(result.item.shares) || 0;
-    const avgCost = Number(result.item.buyPrice) || 0;
+    const remaining = Number(result?.item?.shares) || 0;
+    const avgCost = Number(result?.item?.buyPrice) || 0;
     setHoldings((prev) =>
-      prev.map((h) =>
-        h.kind === "stock" && h.id === holding.id ? { ...h, quantity: remaining, avgCost } : h
+      (prev || []).map((h) =>
+        h?.kind === "stock" && h.id === holding.id ? { ...h, quantity: remaining, avgCost } : h
       )
     );
     setSelectedHolding((prev) =>
@@ -2035,10 +2062,10 @@ export default function InvestmentPortfolioCard({
                     domain={yDomain}
                     width={benchmarkReady ? 56 : 46}
                     tickFormatter={(v: any) => {
-                      const val = v ?? 0;
+                      const val = Number(v) || 0;
                       return benchmarkReady
-                        ? formatSignedPct(Number(val), Math.abs(Number(val)) < 10 ? 1 : 0)
-                        : privacyAxis(privacyMode, formatAxisMoney(Number(val)));
+                        ? formatSignedPct(val, Math.abs(val) < 10 ? 1 : 0)
+                        : privacyAxis(privacyMode, formatAxisMoney(val));
                     }}
                     tick={{ fill: "#9CA3AF", fontSize: 10 }}
                     axisLine={false}
@@ -2134,7 +2161,7 @@ export default function InvestmentPortfolioCard({
                     Assets
                   </span>
                   <span className="rounded-full bg-[#1F2937] px-2 py-0.5 text-[10px] font-bold text-[#9CA3AF]">
-                    {holdings.length}
+                    {(safeHoldings ?? []).length}
                   </span>
                   {holdingsExpanded ? (
                     <ChevronUp size={16} className="text-[#9CA3AF]" />
@@ -2202,21 +2229,21 @@ export default function InvestmentPortfolioCard({
                   if (!h) return null;
                   const raw = h as any;
                   const highlight = h.id === justAddedId;
-                  const price = Number(raw.price ?? raw.current_price ?? raw.currentPrice) || 0;
-                  const shares = Number(raw.shares ?? raw.quantity) || 0;
-                  const buyPrice = Number(raw.buy_price ?? raw.buyPrice ?? raw.avgCost) || 0;
-                  const change = Number(raw.change ?? raw.change_percent ?? raw.dayChangePct) || 0;
+                  const price = Number(raw?.price ?? raw?.current_price ?? raw?.currentPrice) || 0;
+                  const shares = Number(raw?.shares ?? raw?.quantity) || 0;
+                  const buyPrice = Number(raw?.buy_price ?? raw?.buyPrice ?? raw?.avgCost) || 0;
+                  const change = Number(raw?.change ?? raw?.change_percent ?? raw?.dayChangePct) || 0;
                   const quantity = h.kind === "stock" ? shares : 0;
                   const currentPrice = h.kind === "stock" ? price : 0;
                   const avgCost = h.kind === "stock" ? buyPrice : 0;
-                  const prevClose = h.kind === "stock" ? Number(raw.prevClose) || 0 : 0;
-                  const dayChangeAbs = h.kind === "stock" ? Number(raw.dayChangeAbs) || 0 : 0;
+                  const prevClose = h.kind === "stock" ? Number(raw?.prevClose) || 0 : 0;
+                  const dayChangeAbs = h.kind === "stock" ? Number(raw?.dayChangeAbs) || 0 : 0;
                   const dayChangePct = h.kind === "stock" ? change : 0;
-                  const total =
-                    Number(raw.total_value ?? raw.value ?? price * shares) ||
+                  const totalValue =
+                    Number(raw?.total_value ?? raw?.totalValue ?? raw?.value ?? price * shares) ||
                     Number(holdingValue(h)) ||
                     0;
-                  const value = h.kind === "stock" ? total : Number(holdingValue(h)) || 0;
+                  const value = h.kind === "stock" ? totalValue : Number(holdingValue(h)) || 0;
                   const isStock = h.kind === "stock";
                   let perfAbs: number | null = null;
                   let perfPct: number | null = null;

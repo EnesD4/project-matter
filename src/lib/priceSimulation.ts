@@ -242,21 +242,27 @@ export function sparklineValues(
   todayChangePct = 0,
   range: RangeOption = "1M"
 ): number[] {
-  return buildHistoricalSeries(seedKey, range, currentValue, todayChangePct).map((point) => point.value);
+  const price = Number(currentValue) || 0;
+  const changePct = Number(todayChangePct) || 0;
+  return (buildHistoricalSeries(seedKey, range, price, changePct) ?? []).map(
+    (point) => Number(point?.value) || 0
+  );
 }
 
 /** Percentage change from the first to the last point of a series. */
-export function seriesChangePct(series: SeriesPoint[]): number {
-  const first = series[0]?.value;
-  const last = series[series.length - 1]?.value;
+export function seriesChangePct(series: SeriesPoint[] | null | undefined): number {
+  const list = series ?? [];
+  const first = Number(list[0]?.value) || 0;
+  const last = Number(list[list.length - 1]?.value) || 0;
   if (!first) return 0;
   return ((last - first) / first) * 100;
 }
 
 /** Absolute change from the first to the last point of a series. */
-export function seriesChangeAbs(series: SeriesPoint[]): number {
-  const first = series[0]?.value ?? 0;
-  const last = series[series.length - 1]?.value ?? 0;
+export function seriesChangeAbs(series: SeriesPoint[] | null | undefined): number {
+  const list = series ?? [];
+  const first = Number(list[0]?.value) || 0;
+  const last = Number(list[list.length - 1]?.value) || 0;
   return last - first;
 }
 
