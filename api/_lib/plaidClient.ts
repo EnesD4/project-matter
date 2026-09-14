@@ -234,10 +234,10 @@ export function mapPlaidHoldings(raw: unknown, securities: unknown, now = new Da
     .map((item) => {
       const security = securityById.get(String(item.security_id || "")) || {};
       const symbol = String(security.ticker_symbol || item.ticker_symbol || "").trim().toUpperCase();
-      const shares = Number(item.quantity ?? item.shares);
+      const shares = Number(item.quantity ?? item.shares) || 0;
       const value = Number(item.institution_value);
       const buyPrice =
-        shares > 0 && Number.isFinite(value) ? value / shares : Number(item.institution_price || item.buyPrice);
+        (shares > 0 && Number.isFinite(value) ? value / shares : Number(item.institution_price || item.buyPrice)) || 0;
       return {
         id: String(item.security_id || `plaid-${symbol.toLowerCase()}`),
         userId: "local",

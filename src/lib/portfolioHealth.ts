@@ -1,5 +1,6 @@
 import { classifyHolding } from "./allocation";
 import { isEtfAsset } from "./etfIcons";
+import { toFiniteNumber } from "./money";
 import type { Holding, StockHolding } from "../components/InvestmentPortfolioCard";
 
 export type HealthTone = "good" | "moderate" | "elevated" | "high";
@@ -160,7 +161,10 @@ function round1(n: number): number {
 }
 
 function holdingValue(h: Holding): number {
-  return h.kind === "stock" ? Math.max(0, h.quantity * h.currentPrice) : Math.max(0, h.balance);
+  if (h.kind === "stock") {
+    return Math.max(0, toFiniteNumber(h?.quantity, 0) * toFiniteNumber(h?.currentPrice, 0));
+  }
+  return Math.max(0, toFiniteNumber(h?.balance, 0));
 }
 
 function isStock(h: Holding): h is StockHolding {

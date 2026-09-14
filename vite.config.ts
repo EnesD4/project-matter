@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "http";
 import react from "@vitejs/plugin-react";
-import { defineConfig, loadEnv, type Plugin, type ViteDevServer } from "vite";
+import { defineConfig, loadEnv, type Connect, type Plugin } from "vite";
 import { handleGeminiCoach } from "./api/gemini-coach";
 import handleCreateLinkToken from "./api/plaid/create-link-token.js";
 import handleExchangeToken from "./api/plaid/exchange-token.js";
@@ -32,8 +32,12 @@ function sendJson(res: ServerResponse, status: number, payload: unknown) {
 
 type ApiHandler = (req: any, res: any) => Promise<unknown>;
 
+type ServerWithMiddleware = {
+  middlewares: Connect.Server;
+};
+
 function localServerlessApi(): Plugin {
-  const attach = (server: ViteDevServer) => {
+  const attach = (server: ServerWithMiddleware) => {
     server.middlewares.use((req, res, next) => {
       const path = pathOf(req);
       if (!path.startsWith("/api/")) {
@@ -73,8 +77,16 @@ function localServerlessApi(): Plugin {
 
   return {
     name: "local-serverless-api",
-    configureServer: attach,
-    configurePreviewServer: attach,
+    configureServer(server) {
+      if (typeof attach === "function") {
+        attach(server);
+      }
+    },
+    configurePreviewServer(server) {
+      if (typeof attach === "function") {
+        attach(server);
+      }
+    },
   };
 }
 
@@ -89,10 +101,14 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [react(), localServerlessApi()],
     envPrefix: ["VITE_"],
+    build: {
+      sourcemap: true,
+    },
     server: {
       host: "0.0.0.0",
       cors: true,
       allowedHosts: true,
+      sourcemapIgnoreList: () => false,
     },
     preview: {
       host: "0.0.0.0",

@@ -1,6 +1,11 @@
-import { Loader2, Sparkles } from "lucide-react";
+import { Sparkles } from "lucide-react";
 import React, { useEffect, useState } from "react";
-import { persistLocalUserSettings, type UserSettings } from "../lib/auth";
+import {
+  ONBOARDING_COMPLETE_KEY,
+  USER_AGE_KEY,
+  persistLocalUserSettings,
+  type UserSettings,
+} from "../lib/auth";
 import { ageFromBirthDate, maxBirthDateISO, minBirthDateISO } from "../lib/age";
 import {
   getSupabase,
@@ -19,6 +24,70 @@ type OnboardingScreenProps = {
   onComplete: (name: string, settings: UserSettings) => void;
 };
 
+/** Fire-and-forget profile write — never awaited by the submit path. */
+function syncOnboardingProfileInBackground(input: {
+  name: string;
+  birthIso: string;
+  age: number;
+}) {
+  void (async () => {
+    try {
+      const client = getSupabase();
+      if (!client || isSupabaseTableUnavailable("profiles")) return;
+
+      const {
+        data: { user },
+      } = await client.auth.getUser();
+      if (!user) return;
+
+      const profilePatch = {
+        name: input.name,
+        full_name: input.name,
+        birth_date: input.birthIso,
+        age: input.age,
+        has_completed_onboarding: true,
+      };
+
+      const writeProfile = async (patch: Record<string, unknown>) => {
+        const { data: updated, error: updateError } = await client
+          .from("profiles")
+          .update(patch)
+          .eq("id", user.id)
+          .select("id")
+          .maybeSingle();
+        if (updateError) return { updated: null, error: updateError };
+        if (updated) return { updated, error: null };
+        const { error: upsertError } = await client.from("profiles").upsert({
+          id: user.id,
+          email: user.email ?? null,
+          ...patch,
+          has_completed_bank_setup: false,
+          updated_at: new Date().toISOString(),
+        });
+        return { updated: upsertError ? null : { id: user.id }, error: upsertError };
+      };
+
+      let result = await writeProfile(profilePatch);
+      if (result.error && /full_name|column|schema cache/i.test(result.error.message || "")) {
+        const { full_name: _ignored, ...withoutFullName } = profilePatch;
+        result = await writeProfile(withoutFullName);
+      }
+      if (result.error) {
+        if (
+          noteSupabaseRelationError("profiles", result.error) ||
+          isMissingSupabaseRelationError(result.error)
+        ) {
+          return;
+        }
+        console.warn("Onboarding profile save skipped:", result.error.message);
+      }
+    } catch (err) {
+      console.warn("Supabase update failed, continuing with local state", err);
+      noteSupabaseRelationError("profiles", err);
+    }
+  })();
+}
+
 export default function OnboardingScreen({
   initialName = "",
   initialBirthDate = "",
@@ -28,7 +97,6 @@ export default function OnboardingScreen({
   const oauthName = initialName.trim();
   const [fullName, setFullName] = useState(oauthName);
   const [birthdate, setBirthdate] = useState(initialBirthDate ? toDisplayDate(initialBirthDate, "MDY") : "");
-  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -43,9 +111,8 @@ export default function OnboardingScreen({
   }, [skipNameStep, fullName]);
 
   const birthIso = parseToIsoDate(birthdate, "MDY");
-  const age = birthIso ? ageFromBirthDate(birthIso) : null;
 
-  const finish = async (event: React.FormEvent) => {
+  const finish = (event: React.FormEvent) => {
     event.preventDefault();
     const nextName = fullName.trim() || oauthName;
     if (!nextName) {
@@ -56,11 +123,12 @@ export default function OnboardingScreen({
       setError("Add your date of birth as MM/DD/YYYY to continue.");
       return;
     }
-    const nextAge = ageFromBirthDate(birthIso);
-    if (nextAge == null) {
+    const computedAge = ageFromBirthDate(birthIso);
+    if (computedAge == null) {
       setError("Enter a valid date of birth as MM/DD/YYYY.");
       return;
     }
+    const nextAge = Number.isFinite(computedAge) ? computedAge : parseInt(String(computedAge), 10) || 20;
     if (nextAge < 13) {
       setError("You need to be at least 13 to use Sprout.");
       return;
@@ -70,82 +138,33 @@ export default function OnboardingScreen({
       return;
     }
 
-    setSaving(true);
     setError(null);
+
+    // 1) Immediate local persistence — never wait on the network.
     try {
-      const client = getSupabase();
-      if (client && !isSupabaseTableUnavailable("profiles")) {
-        try {
-          const {
-            data: { user },
-          } = await client.auth.getUser();
-
-          if (user) {
-            const profilePatch = {
-              name: nextName,
-              full_name: nextName,
-              birth_date: birthIso,
-              age: nextAge,
-              has_completed_onboarding: true,
-            };
-
-            const writeProfile = async (patch: Record<string, unknown>) => {
-              const { data: updated, error: updateError } = await client
-                .from("profiles")
-                .update(patch)
-                .eq("id", user.id)
-                .select("id")
-                .maybeSingle();
-              if (updateError) return { updated: null, error: updateError };
-              if (updated) return { updated, error: null };
-              const { error: upsertError } = await client.from("profiles").upsert({
-                id: user.id,
-                email: user.email ?? null,
-                ...patch,
-                has_completed_bank_setup: false,
-                updated_at: new Date().toISOString(),
-              });
-              return { updated: upsertError ? null : { id: user.id }, error: upsertError };
-            };
-
-            let result = await writeProfile(profilePatch);
-            if (result.error && /full_name|column|schema cache/i.test(result.error.message || "")) {
-              const { full_name: _ignored, ...withoutFullName } = profilePatch;
-              result = await writeProfile(withoutFullName);
-            }
-            if (result.error) {
-              if (
-                noteSupabaseRelationError("profiles", result.error) ||
-                isMissingSupabaseRelationError(result.error)
-              ) {
-                // Missing profiles table must not block local onboarding.
-              } else {
-                console.warn("Onboarding profile save skipped:", result.error.message);
-              }
-            }
-          }
-        } catch (profileErr) {
-          noteSupabaseRelationError("profiles", profileErr);
-        }
-      }
-
-      const settings = persistLocalUserSettings({
-        hasActiveInvestments: false,
-        hasActiveDebts: false,
-        wantsCapitalGrowth: true,
-        wantsFinancialLiteracy: true,
-        hasCompletedOnboarding: true,
-        hasCompletedBankSetup: false,
-        age: nextAge,
-        birthDate: birthIso,
-        name: nextName,
-      });
-      onComplete(nextName, settings);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Couldn't save your details. Try again.");
-    } finally {
-      setSaving(false);
+      localStorage.setItem(USER_AGE_KEY, String(nextAge));
+      localStorage.setItem(ONBOARDING_COMPLETE_KEY, "true");
+    } catch {
+      // private mode / quota
     }
+
+    const settings = persistLocalUserSettings({
+      hasActiveInvestments: false,
+      hasActiveDebts: false,
+      wantsCapitalGrowth: true,
+      wantsFinancialLiteracy: true,
+      hasCompletedOnboarding: true,
+      hasCompletedBankSetup: true,
+      age: nextAge,
+      birthDate: birthIso,
+      name: nextName,
+    });
+
+    // 2) Immediate UI transition to the next app step / dashboard.
+    onComplete(nextName, settings);
+
+    // 3) Background Supabase sync (non-blocking).
+    syncOnboardingProfileInBackground({ name: nextName, birthIso, age: nextAge });
   };
 
   return (
@@ -154,7 +173,7 @@ export default function OnboardingScreen({
       <div style={styles.glowA} aria-hidden="true" />
       <div style={styles.glowB} aria-hidden="true" />
 
-      <form className="onboard-fade" style={styles.shell} onSubmit={(event) => void finish(event)}>
+      <form className="onboard-fade" style={styles.shell} onSubmit={finish}>
         <p style={styles.brand}>Sprout</p>
         <div style={styles.iconBadge}>
           <Sparkles size={22} color="#10B981" />
@@ -162,14 +181,6 @@ export default function OnboardingScreen({
         <p style={styles.step}>Step 2 of 3</p>
         <p style={styles.eyebrow}>Welcome</p>
         <h1 style={styles.headline}>Let’s get you set up</h1>
-        <p style={styles.subhead}>
-          Add your name and date of birth as MM/DD/YYYY. Age personalizes Sprout AI and retirement
-          projections — then you’ll connect a bank.
-        </p>
-
-        {skipNameStep && (fullName.trim() || oauthName) ? (
-          <p style={styles.signedIn}>Signed in as {fullName.trim() || oauthName}</p>
-        ) : null}
 
         <label style={styles.field}>
           <span style={styles.label}>Name</span>
@@ -207,18 +218,13 @@ export default function OnboardingScreen({
             wrapStyle={styles.dateWrap}
             inputStyle={styles.dateInput}
           />
-          <span style={styles.hint}>
-            {age != null
-              ? `Used for Sprout AI advice and compound growth projections · ${age} years old`
-              : "Enter MM/DD/YYYY. Used for customizing Sprout AI advice and compound growth projections."}
-          </span>
         </label>
 
         {error ? <p style={styles.error}>{error}</p> : null}
 
-        <button type="submit" style={styles.primaryBtn} disabled={saving}>
-          {saving ? <Loader2 size={18} className="animate-spin" /> : <Sparkles size={18} />}
-          {saving ? "Saving…" : "Continue"}
+        <button type="submit" style={styles.primaryBtn}>
+          <Sparkles size={18} />
+          Continue
         </button>
       </form>
     </div>
@@ -322,18 +328,6 @@ const styles: Record<string, React.CSSProperties> = {
     letterSpacing: "-0.03em",
     lineHeight: 1.2,
     color: "#FFFFFF",
-  },
-  subhead: {
-    margin: 0,
-    fontSize: 14,
-    lineHeight: 1.45,
-    color: "#9CA3AF",
-  },
-  signedIn: {
-    margin: "4px 0 0",
-    fontSize: 13,
-    fontWeight: 700,
-    color: "#6EE7B7",
   },
   dateWrap: {
     border: "1px solid #1F1F1F",

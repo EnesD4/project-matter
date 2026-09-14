@@ -1,6 +1,9 @@
 import { Eye, EyeOff, Loader2, Lock, Mail } from "lucide-react";
 import React, { useState } from "react";
 import {
+  ensureLocalMockSession,
+  isAuthRateLimitError,
+  isFatalAuthError,
   loginUser,
   registerUser,
   saveSession,
@@ -53,12 +56,23 @@ export default function AuthScreen({ onAuthenticated }: AuthScreenProps) {
     onAuthenticated(user, settings);
   };
 
+  const finishWithMock = (reason?: unknown) => {
+    console.warn("Auth unavailable — continuing with local mock session", reason);
+    const mock = ensureLocalMockSession();
+    finishAuth(mock.token, mock.user, mock.settings);
+  };
+
   const onGoogle = async () => {
     setError(null);
     setLoading(true);
     try {
       await signInWithGoogleOAuth();
     } catch (err) {
+      // Rate limits / network / fatal auth errors must not trap the user on login.
+      if (isAuthRateLimitError(err) || isFatalAuthError(err)) {
+        finishWithMock(err);
+        return;
+      }
       setError(err instanceof Error ? err.message : "Google sign-in failed");
       setLoading(false);
     }
@@ -78,8 +92,16 @@ export default function AuthScreen({ onAuthenticated }: AuthScreenProps) {
       const result = isSignup
         ? await registerUser({ email: email.trim(), password })
         : await loginUser({ email: email.trim(), password });
+      if (!result?.user?.id) {
+        finishWithMock(new Error("Authentication returned no user"));
+        return;
+      }
       finishAuth(result.token, result.user, result.settings ?? null);
     } catch (err) {
+      if (isAuthRateLimitError(err) || isFatalAuthError(err)) {
+        finishWithMock(err);
+        return;
+      }
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
       setLoading(false);

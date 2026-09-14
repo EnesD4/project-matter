@@ -1,5 +1,6 @@
 import React from "react";
 import InvestmentPortfolioCard, { type Holding } from "./InvestmentPortfolioCard";
+import LoadingSpinner from "./LoadingSpinner";
 import PortfolioHealthScoreCard from "./PortfolioHealthScoreCard";
 import WatchlistScreen from "./WatchlistScreen";
 
@@ -13,6 +14,8 @@ export type InvestmentScreenProps = {
   cashBalance?: number;
   privacyMode: boolean;
   onTogglePrivacy: () => void;
+  /** Optional parent-driven loading flag (auth / cash-flow bootstrap). */
+  loading?: boolean;
 };
 
 export default function InvestmentScreen({
@@ -23,8 +26,13 @@ export default function InvestmentScreen({
   cashBalance,
   privacyMode,
   onTogglePrivacy,
+  loading = false,
 }: InvestmentScreenProps) {
   const safeHoldings = holdings || [];
+
+  if (loading || holdings == null) {
+    return <LoadingSpinner label="Loading portfolio…" />;
+  }
 
   return (
     <InvestmentPortfolioCard

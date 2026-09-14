@@ -22,6 +22,7 @@ import {
 import RoadmapGlyph from "./RoadmapGlyph";
 import React, { useEffect, useMemo, useState } from "react";
 import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts";
+import LoadingSpinner, { EmptyChartPlaceholder } from "./LoadingSpinner";
 import { useFinancialRoadmap, useRoadmapTodoProgress } from "../hooks/useFinancialRoadmap";
 import { playAchievementFanfare, playSuccessChime } from "../lib/audioService";
 import type { AuthUser, UserSettings } from "../lib/auth";
@@ -406,6 +407,11 @@ export default function WebDashboard({
     onConsultSocrates();
   };
 
+  // Strict render guard: wait until portfolio mirror is ready before painting market UI.
+  if (!holdingsReady && safeHoldings.length === 0) {
+    return <LoadingSpinner fullScreen label="Loading your dashboard…" />;
+  }
+
   return (
     <div className="flex h-screen overflow-hidden bg-black text-slate-50">
       <aside className="flex h-full w-[240px] flex-shrink-0 flex-col border-r border-[#1F1F1F] bg-[#050505]">
@@ -421,6 +427,7 @@ export default function WebDashboard({
 
         <nav aria-label="Desktop" className="flex flex-1 flex-col gap-1 px-3">
           {NAV_ITEMS.map((item) => {
+            if (!item) return null;
             const active = view === item.id;
             return (
               <button
@@ -560,7 +567,7 @@ export default function WebDashboard({
                   </p>
                   <p className="mt-1 text-[12px] font-semibold text-slate-400">
                     {monthlyExpenses > 0
-                      ? `${safetyMonths.toFixed(1)} months of spending`
+                      ? `${toFiniteNumber(safetyMonths, 0).toFixed(1)} months of spending`
                       : "Add monthly expenses to size coverage"}
                   </p>
                   <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-black">
@@ -658,6 +665,7 @@ export default function WebDashboard({
                 </p>
                 <div className="mt-3 space-y-1.5">
                   {PHASES.map((phase) => {
+                    if (!phase) return null;
                     const modules = modulesForPhase(phase.id);
                     const done = modules.filter((moduleDef) => completed.includes(moduleDef.id)).length;
                     const complete = phaseIsComplete(phase.id, Object.fromEntries(completed.map((id) => [id, true])));
@@ -811,7 +819,12 @@ function BalanceBreakdown({
   privacyMode: boolean;
   total: number;
 }) {
-  if (slices.length === 0 || total <= 0) {
+  const safeSlices = (slices || []).map((slice) => ({
+    ...slice,
+    value: toFiniteNumber(slice?.value, 0),
+  }));
+  const safeTotal = toFiniteNumber(total, 0);
+  if (safeSlices.length === 0 || safeTotal <= 0) {
     return (
       <section className="mt-6 rounded-2xl border border-dashed border-[#1F1F1F] bg-[#0A0A0A] px-5 py-8 text-center">
         <Lock size={18} className="mx-auto text-slate-600" />
@@ -829,14 +842,15 @@ function BalanceBreakdown({
         <h2 className="m-0 text-[11px] font-extrabold uppercase tracking-[0.14em] text-slate-500">
           Balance Breakdown
         </h2>
-        <span className="text-[11px] font-semibold text-slate-500">{slices.length} sleeves</span>
+        <span className="text-[11px] font-semibold text-slate-500">{safeSlices.length} sleeves</span>
       </div>
       <div className="mt-4 flex flex-col items-center gap-5 xl:flex-row">
         <div className="relative h-44 w-44 flex-shrink-0">
+          {safeSlices && safeSlices.length > 0 ? (
           <ResponsiveContainer width="100%" height="100%">
             <PieChart>
               <Pie
-                data={slices}
+                data={safeSlices}
                 dataKey="value"
                 nameKey="label"
                 cx="50%"
@@ -846,23 +860,33 @@ function BalanceBreakdown({
                 paddingAngle={2}
                 stroke="none"
               >
-                {slices.map((slice) => (
+                {(safeSlices ?? []).map((slice = {} as any) => {
+                  if (!slice) return null;
+                  return (
                   <Cell key={slice.key} fill={slice.color} />
-                ))}
+                  );
+                })}
               </Pie>
             </PieChart>
           </ResponsiveContainer>
+          ) : (
+            <EmptyChartPlaceholder heightClassName="h-44 w-44" title="No breakdown" message="Nothing to chart yet." />
+          )}
           <div className="pointer-events-none absolute inset-0 grid place-items-center">
             <div className="text-center">
               <p className="m-0 text-[10px] font-bold uppercase tracking-wide text-slate-500">Total</p>
-              <p className="m-0 text-sm font-extrabold text-white">{privacyMoney(privacyMode, total)}</p>
+              <p className="m-0 text-sm font-extrabold text-white">{privacyMoney(privacyMode, safeTotal)}</p>
             </div>
           </div>
         </div>
         <ul className="m-0 w-full list-none space-y-2 p-0">
-          {slices.map((slice) => {
-            const value = toFiniteNumber(slice?.value, 0);
-            const pct = total > 0 ? Math.round((value / total) * 100) : 0;
+          {(safeSlices ?? []).map((slice = {} as any) => {
+            if (!slice) return null;
+            const value = toFiniteNumber(
+              (slice as any).price ?? (slice as any).total_value ?? slice.value,
+              0
+            );
+            const pct = safeTotal > 0 ? Math.round((value / safeTotal) * 100) : 0;
             return (
               <li key={slice.key} className="flex items-center gap-2 text-[12px]">
                 <span className="h-2.5 w-2.5 flex-shrink-0 rounded-full" style={{ background: slice.color }} />
@@ -948,7 +972,8 @@ function RoadmapChecklist() {
             <div className="h-full rounded-full transition-[width]" style={{ width: `${pct}%`, background: roadmap.accent }} />
           </div>
           <ol className="mt-3 m-0 list-none space-y-2 p-0">
-            {todos.map((todo, index) => {
+            {(todos ?? []).map((todo = {} as any, index) => {
+              if (!todo) return null;
               const checked = completed.has(todo.id);
               return (
                 <li key={todo.id}>

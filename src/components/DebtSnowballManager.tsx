@@ -136,7 +136,9 @@ function simulateSnowball(debts: Debt[], extraPayment: number): SimResult {
 }
 
 function formatMoney(amount: unknown) {
-  if (!amount && amount !== 0) return "0";
+  if (amount === undefined || amount === null || isNaN(Number(amount))) {
+    return "0";
+  }
   return formatNumber(Math.round(Math.max(0, toFiniteNumber(amount, 0))));
 }
 
@@ -516,8 +518,11 @@ export default function DebtSnowballManager({ onOpenLessons, onDebtsChange }: De
           <div className="space-y-2">
             <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Payoff Order</p>
             <div className="space-y-2">
-              {orderedDebts.map((debt, index) => {
-                const isPaid = debt.balance <= 0;
+              {(orderedDebts ?? []).map((debt = {} as any, index) => {
+                if (!debt) return null;
+                const raw = debt as any;
+                const balance = toFiniteNumber(raw.balance ?? raw.value ?? raw.total_value, 0);
+                const isPaid = balance <= 0;
                 const month = snowball.payoffMonth[debt.id];
                 const timelinePct = snowball.monthsToDebtFree
                   ? Math.min(
@@ -560,11 +565,17 @@ export default function DebtSnowballManager({ onOpenLessons, onDebtsChange }: De
           <div className="space-y-2">
             <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Your Debts</p>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              {orderedDebts.map((debt, index) => {
-                const percentPaid = debt.originalBalance
-                  ? Math.min(100, Math.round(((debt.originalBalance - debt.balance) / debt.originalBalance) * 100))
+              {(orderedDebts ?? []).map((debt = {} as any, index) => {
+                if (!debt) return null;
+                const raw = debt as any;
+                const balance = toFiniteNumber(raw.balance ?? raw.value ?? raw.total_value, 0);
+                const originalBalance = toFiniteNumber(raw.originalBalance, 0);
+                const apr = toFiniteNumber(raw.apr ?? raw.change ?? raw.change_percent, 0);
+                const minPayment = toFiniteNumber(raw.minPayment, 0);
+                const percentPaid = originalBalance
+                  ? Math.min(100, Math.round(((originalBalance - balance) / originalBalance) * 100))
                   : 0;
-                const isPaid = debt.balance <= 0;
+                const isPaid = balance <= 0;
                 const isTarget = debt.id === activeTargetId;
 
                 return (
@@ -582,7 +593,7 @@ export default function DebtSnowballManager({ onOpenLessons, onDebtsChange }: De
                         <div>
                           <p className="text-sm font-bold text-white">{debt.title}</p>
                           <p className="text-[11px] text-slate-500">
-                            #{index + 1} in payoff order{debt.apr > 0 ? ` · ${debt.apr}% APR` : ""}
+                            #{index + 1} in payoff order{apr > 0 ? ` · ${apr}% APR` : ""}
                           </p>
                         </div>
                       </div>
@@ -597,9 +608,9 @@ export default function DebtSnowballManager({ onOpenLessons, onDebtsChange }: De
                     </div>
 
                     <div className="mt-3 flex items-end justify-between">
-                      <p className="text-xl font-extrabold text-white">${formatMoney(debt.balance)}</p>
+                      <p className="text-xl font-extrabold text-white">${formatMoney(balance)}</p>
                       <p className="text-[11px] font-semibold text-slate-500">
-                        of ${formatMoney(debt.originalBalance)}
+                        of ${formatMoney(originalBalance)}
                       </p>
                     </div>
 
@@ -623,7 +634,7 @@ export default function DebtSnowballManager({ onOpenLessons, onDebtsChange }: De
                     </p>
 
                     <div className="mt-3 flex items-center justify-between text-[11px] text-slate-400">
-                      <span>Min ${formatMoney(debt.minPayment)}/mo</span>
+                      <span>Min ${formatMoney(minPayment)}/mo</span>
                       {isTarget && !isPaid && (
                         <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 font-bold text-emerald-300">
                           Paying now
@@ -639,8 +650,8 @@ export default function DebtSnowballManager({ onOpenLessons, onDebtsChange }: De
                     >
                       <CircleDollarSign size={14} />
                       {isTarget && !isPaid
-                        ? `Log Payment (+$${formatMoney(debt.minPayment + extraPayment)})`
-                        : `Log Payment (+$${formatMoney(debt.minPayment)})`}
+                        ? `Log Payment (+$${formatMoney(minPayment + extraPayment)})`
+                        : `Log Payment (+$${formatMoney(minPayment)})`}
                     </button>
                   </article>
                 );

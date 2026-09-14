@@ -26,7 +26,7 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { type Debt } from "./src/components/DebtSnowballManager";
 import { formatCurrencyInput, formatCurrencyValue, safeFormatNumber, parseCurrency, toFiniteNumber } from "./src/lib/money";
 import { privacyMoney } from "./src/lib/privacy";
@@ -44,6 +44,7 @@ import FinancialOnboardingModal from "./src/components/FinancialOnboardingModal"
 import AchievementBanner from "./src/components/AchievementBanner";
 import CertificateCelebration from "./src/components/CertificateCelebration";
 import { ErrorBoundary } from "./src/components/ErrorBoundary";
+import LoadingSpinner from "./src/components/LoadingSpinner";
 import { evaluateTrophies } from "./src/lib/achievements";
 import { STREAK_UPDATED_EVENT } from "./src/lib/streakService";
 import {
@@ -57,7 +58,6 @@ import {
   clearSession,
   emptyCashFlow,
   fetchCashFlow,
-  fetchMe,
   getStoredSettings,
   getStoredUser,
   getToken,
@@ -68,6 +68,7 @@ import {
   subscribeAuthSession,
   needsBankSetup,
   normalizeUserSettings,
+  persistLocalUserSettings,
   queueFinancialSnapshotSync,
   readCashFlowCache,
   resetLocalAppState,
@@ -363,28 +364,12 @@ function cashFlowPayloadKey(snapshot: Pick<CashFlowSnapshot, "monthlyIncome" | "
   });
 }
 
-function initialRealUser(): AuthUser | null {
-  try {
-    const user = getStoredUser();
-    const token = getToken();
-    if (!user?.id || !token || isDemoOrGuestSession(token, user)) return null;
-    return user;
-  } catch {
-    return null;
-  }
-}
-
 const App: React.FC = () => {
-  const [authUser, setAuthUser] = useState<AuthUser | null>(() => initialRealUser());
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [authChecking, setAuthChecking] = useState(true);
-  const [userSettings, setUserSettings] = useState<UserSettings | null>(() =>
-    initialRealUser() ? getStoredSettings() : null
-  );
-  const [cashFlowBoot] = useState<CashFlowSnapshot>(() => {
-    const user = initialRealUser();
-    return user ? readCashFlowCache(user.id) : emptyCashFlow();
-  });
-  const [cashFlowReady, setCashFlowReady] = useState(() => !initialRealUser());
+  const [userSettings, setUserSettings] = useState<UserSettings | null>(null);
+  const [cashFlowBoot] = useState<CashFlowSnapshot>(() => emptyCashFlow());
+  const [cashFlowReady, setCashFlowReady] = useState(false);
   const [emergencyFund, setEmergencyFund] = useState(cashFlowBoot.emergencyFund);
   const [safetyNet, setSafetyNet] = useState<SafetyNetConfig>(cashFlowBoot.safetyNet ?? emptySafetyNet());
   const [question, setQuestion] = useState("");
@@ -441,120 +426,106 @@ const App: React.FC = () => {
 
   useEffect(() => {
     let cancelled = false;
-    const bootstrapping = { current: true };
+    let settled = false;
 
-    const applyAuth = (payload: { token: string; user: AuthUser; settings?: UserSettings | null } | null) => {
-      if (cancelled || !payload?.user?.id) return false;
+    const settleAuthenticated = (
+      payload: { token: string; user: AuthUser; settings?: UserSettings | null }
+    ) => {
+      if (cancelled || settled || !payload.user?.id) return;
+      settled = true;
       saveSession(payload.token, payload.user);
+      setCashFlowReady(false);
+      setHoldingsReady(false);
       setAuthUser(payload.user);
       setUserSettings(payload.settings ?? getStoredSettings());
       setAuthChecking(false);
-      return true;
     };
 
-    const fallBackToStoredOrLogin = () => {
-      if (cancelled) return;
+    const settleUnauthenticated = () => {
+      if (cancelled || settled) return;
+      settled = true;
       try {
-        const token = getToken();
-        const stored = getStoredUser();
-        if (token && stored?.id && !isDemoOrGuestSession(token, stored)) {
-          setAuthUser(stored);
-          setUserSettings((prev) => prev ?? getStoredSettings());
-          setAuthChecking(false);
-          return;
-        }
+        clearSession();
       } catch {
-        // Malformed storage must not blank the screen.
+        // storage may be unavailable
       }
       setAuthUser(null);
       setUserSettings(null);
+      setHoldings([]);
+      setHoldingsReady(false);
+      setRetirementBalance(0);
+      setMonthlyIncome(0);
+      setEmergencyFund(0);
+      setSafetyNet(emptySafetyNet());
+      setExtraPayoff(0);
+      setExpenses([]);
+      setDebts([]);
+      setCashFlowReady(true);
       setAuthChecking(false);
     };
+
+    // Hard fail-safe: never leave the UI on "Checking your session…" longer than 1s.
+    const safetyTimer = window.setTimeout(() => {
+      settleUnauthenticated();
+    }, 1000);
 
     try {
       clearGuestSessionFallbacks();
     } catch {
-      // Guest cleanup must not prevent Google session restore.
+      // Guest cleanup must not block session restore.
     }
 
     const unsubscribe = subscribeAuthSession((payload, event) => {
       if (cancelled) return;
       if (payload?.user?.id) {
-        applyAuth(payload);
-        bootstrapping.current = false;
+        if (!settled) {
+          settleAuthenticated(payload);
+        } else {
+          // Live auth updates after bootstrap — do not toggle loading.
+          saveSession(payload.token, payload.user);
+          setAuthUser(payload.user);
+          if (payload.settings != null) setUserSettings(payload.settings);
+        }
         return;
       }
-      if (bootstrapping.current && (event === "INITIAL_SESSION" || event === "SIGNED_OUT")) {
-        return;
-      }
+      // Ignore INITIAL_SESSION null while still resolving; explicit sign-out always clears.
       if (event === "SIGNED_OUT") {
-        fallBackToStoredOrLogin();
+        if (!settled) {
+          settleUnauthenticated();
+        } else {
+          setAuthUser(null);
+          setUserSettings(null);
+          setAuthChecking(false);
+        }
       }
     });
 
-    (async () => {
+    void (async () => {
       try {
-        const restored = await restoreSupabaseAuthSession();
-        if (cancelled) return;
-        if (applyAuth(restored)) {
-          bootstrapping.current = false;
+        const restored = await withTimeout(restoreSupabaseAuthSession(), 900, "Session");
+        if (cancelled || settled) return;
+        if (restored?.user?.id) {
+          settleAuthenticated(restored);
           return;
         }
+
+        const token = getToken();
+        const stored = getStoredUser();
+        // Keep a real local session; guest/demo must log in again after cleanup.
+        if (token && stored?.id && !isDemoOrGuestSession(token, stored)) {
+          settleAuthenticated({ token, user: stored, settings: getStoredSettings() });
+          return;
+        }
+
+        settleUnauthenticated();
       } catch {
-        // Fall through to a stored password session, or the login screen.
-      }
-
-      if (cancelled) return;
-
-      const token = getToken();
-      const stored = getStoredUser();
-      if (!token || !stored?.id || isDemoOrGuestSession(token, stored)) {
-        setAuthUser(null);
-        setUserSettings(null);
-        setAuthChecking(false);
-        bootstrapping.current = false;
-        return;
-      }
-
-      try {
-        const me = await withTimeout(fetchMe(), 2500, "Session");
-        if (cancelled) return;
-        if (me.user?.id) {
-          saveSession(token, me.user);
-          setAuthUser(me.user);
-          setUserSettings(me.settings ?? getStoredSettings());
-        } else {
-          fallBackToStoredOrLogin();
-        }
-      } catch {
-        if (cancelled) return;
-        if (getStoredUser()?.id && !isDemoOrGuestSession()) {
-          setUserSettings((prev) => prev ?? getStoredSettings());
-        } else {
-          clearSession();
-          setAuthUser(null);
-          setUserSettings(null);
-          setHoldings([]);
-          setHoldingsReady(false);
-          setRetirementBalance(0);
-          setMonthlyIncome(0);
-          setEmergencyFund(0);
-          setSafetyNet(emptySafetyNet());
-          setExtraPayoff(0);
-          setExpenses([]);
-          setDebts([]);
-        }
-        setCashFlowReady(true);
-      } finally {
-        if (!cancelled) {
-          setAuthChecking(false);
-          bootstrapping.current = false;
-        }
+        settleUnauthenticated();
       }
     })();
 
     return () => {
       cancelled = true;
+      window.clearTimeout(safetyTimer);
       unsubscribe();
     };
   }, []);
@@ -733,6 +704,9 @@ const App: React.FC = () => {
 
   const handleAuthenticated = (user: AuthUser, settings?: UserSettings | null) => {
     if (!user?.id) return;
+    setCashFlowReady(false);
+    setHoldingsReady(false);
+    setHoldings([]);
     setAuthUser(user);
     setActiveTab("dashboard");
     setUserSettings(
@@ -898,25 +872,40 @@ const App: React.FC = () => {
     return () => window.removeEventListener(DEMO_SCENARIO_APPLIED_EVENT, onDemo);
   }, []);
 
-  const persistAge = async (nextAge: number, nextBirthDate: string) => {
+  const persistAge = (nextAge: number, nextBirthDate: string) => {
     const previous = userSettings ?? COMPLETED_USER_SETTINGS;
-    const optimistic: UserSettings = { ...previous, age: nextAge, birthDate: nextBirthDate };
+    const ageNum = Number.isFinite(nextAge) ? nextAge : parseInt(String(nextAge), 10) || 20;
+    const optimistic: UserSettings = {
+      ...previous,
+      age: ageNum,
+      birthDate: nextBirthDate,
+      hasCompletedOnboarding: true,
+    };
+    // Local-first — update React state and localStorage immediately.
     setUserSettings(optimistic);
-    try {
-      const saved = await saveUserSettings({
-        hasActiveInvestments: optimistic.hasActiveInvestments,
-        hasActiveDebts: optimistic.hasActiveDebts,
-        wantsCapitalGrowth: optimistic.wantsCapitalGrowth,
-        wantsFinancialLiteracy: optimistic.wantsFinancialLiteracy,
-        hasCompletedOnboarding: true,
-        hasCompletedBankSetup: previous.hasCompletedBankSetup,
-        age: nextAge,
-        birthDate: nextBirthDate,
-      });
-      setUserSettings(saved);
-    } catch {
-      setUserSettings(previous);
-    }
+    persistLocalUserSettings({
+      hasActiveInvestments: optimistic.hasActiveInvestments,
+      hasActiveDebts: optimistic.hasActiveDebts,
+      wantsCapitalGrowth: optimistic.wantsCapitalGrowth,
+      wantsFinancialLiteracy: optimistic.wantsFinancialLiteracy,
+      hasCompletedOnboarding: true,
+      hasCompletedBankSetup: previous.hasCompletedBankSetup,
+      age: ageNum,
+      birthDate: nextBirthDate,
+    });
+    // Background cloud sync — never block the UI.
+    void saveUserSettings({
+      hasActiveInvestments: optimistic.hasActiveInvestments,
+      hasActiveDebts: optimistic.hasActiveDebts,
+      wantsCapitalGrowth: optimistic.wantsCapitalGrowth,
+      wantsFinancialLiteracy: optimistic.wantsFinancialLiteracy,
+      hasCompletedOnboarding: true,
+      hasCompletedBankSetup: previous.hasCompletedBankSetup,
+      age: ageNum,
+      birthDate: nextBirthDate,
+    }).catch((err) => {
+      console.warn("Supabase update failed, continuing with local state", err);
+    });
   };
 
   const returnToLogin = () => {
@@ -1152,7 +1141,8 @@ const App: React.FC = () => {
 
   const educationalSnapshot = useMemo<SproutAiFinancialSnapshot>(() => {
     const safetyNetMonths = monthlyExpenses > 0 ? safetyTotals.total / monthlyExpenses : null;
-    const highestApr = safeDebts.length === 0 ? null : Math.max(...safeDebts.map((d) => d.apr));
+    const highestApr =
+      safeDebts.length === 0 ? null : Math.max(...safeDebts.map((d) => toFiniteNumber(d?.apr, 0)));
     return {
       userName: firstName,
       cash: {
@@ -1350,12 +1340,11 @@ const App: React.FC = () => {
     }
   };
 
-  if (authChecking && !authUser?.id) {
+  // Auth / bootstrap gate: never mount dashboard screens until session + initial data resolve.
+  if (authChecking) {
     return (
       <div className={MOBILE_FRAME_CLASS}>
-        <div style={{ ...styles.page, display: "grid", placeItems: "center", minHeight: "100vh" }}>
-          <p style={{ color: "#9CA3AF", fontWeight: 700, fontSize: 14 }}>Checking your session…</p>
-        </div>
+        <LoadingSpinner fullScreen label="Checking your session…" />
       </div>
     );
   }
@@ -1363,7 +1352,20 @@ const App: React.FC = () => {
   if (!authUser?.id) {
     return (
       <div className={MOBILE_FRAME_CLASS}>
-        <AuthScreen onAuthenticated={handleAuthenticated} />
+        <ErrorBoundary label="sign in">
+          <Suspense fallback={<LoadingSpinner fullScreen label="Loading…" />}>
+            <AuthScreen onAuthenticated={handleAuthenticated} />
+          </Suspense>
+        </ErrorBoundary>
+      </div>
+    );
+  }
+
+  // Wait for cash-flow hydrate so expense/debt arrays are never undefined on first paint.
+  if (!cashFlowReady) {
+    return (
+      <div className={MOBILE_FRAME_CLASS}>
+        <LoadingSpinner fullScreen label="Loading your account…" />
       </div>
     );
   }
@@ -1373,21 +1375,34 @@ const App: React.FC = () => {
   if (!resolvedSettings.hasCompletedOnboarding) {
     return (
       <div className={MOBILE_FRAME_CLASS}>
-        <OnboardingScreen
-          initialName={authUser.name}
-          initialBirthDate={resolvedSettings.birthDate ?? ""}
-          skipNameStep={isGoogleAuthUser(authUser)}
-          onComplete={(name, settings) => {
-            const nextUser = updateStoredUser({ name, hasCompletedOnboarding: true }) ?? {
-              ...authUser,
-              name,
-              hasCompletedOnboarding: true,
-            };
-            saveSession(getToken() || "local-demo", nextUser);
-            setAuthUser(nextUser);
-            setUserSettings({ ...settings, hasCompletedBankSetup: false });
-          }}
-        />
+        <ErrorBoundary label="onboarding">
+          <Suspense fallback={<LoadingSpinner fullScreen label="Loading onboarding…" />}>
+            <OnboardingScreen
+              initialName={authUser.name}
+              initialBirthDate={resolvedSettings.birthDate ?? ""}
+              skipNameStep={isGoogleAuthUser(authUser)}
+              onComplete={(name, settings) => {
+                const nextUser = updateStoredUser({ name, hasCompletedOnboarding: true }) ?? {
+                  ...authUser,
+                  name,
+                  hasCompletedOnboarding: true,
+                };
+                saveSession(getToken() || "local-demo", nextUser);
+                setAuthUser(nextUser);
+                // Local settings already include user_age / onboarding_complete from OnboardingScreen.
+                // Skip forcing bank gate when onboarding keys say we're done — land on dashboard.
+                const nextSettings = persistLocalUserSettings({
+                  ...settings,
+                  hasCompletedOnboarding: true,
+                  // Bank step remains available later; do not block the main dashboard.
+                  hasCompletedBankSetup: true,
+                });
+                setUserSettings(nextSettings);
+                setActiveTab("dashboard");
+              }}
+            />
+          </Suspense>
+        </ErrorBoundary>
       </div>
     );
   }
@@ -1395,13 +1410,17 @@ const App: React.FC = () => {
   if (needsBankSetup(resolvedSettings)) {
     return (
       <div className={MOBILE_FRAME_CLASS}>
-        <BankConnectionScreen
-          currentSettings={resolvedSettings}
-          onComplete={(settings) => {
-            setUserSettings(settings);
-            setActiveTab("dashboard");
-          }}
-        />
+        <ErrorBoundary label="bank setup">
+          <Suspense fallback={<LoadingSpinner fullScreen label="Loading bank setup…" />}>
+            <BankConnectionScreen
+              currentSettings={resolvedSettings}
+              onComplete={(settings) => {
+                setUserSettings(settings);
+                setActiveTab("dashboard");
+              }}
+            />
+          </Suspense>
+        </ErrorBoundary>
       </div>
     );
   }
@@ -1441,7 +1460,8 @@ const App: React.FC = () => {
             </p>
           </div>
         )}
-        {messages.map((msg) => {
+        {(messages ?? []).map((msg = {} as any) => {
+          if (!msg) return null;
           const isUser = msg.sender === "user";
           if (isUser) {
             return (
@@ -1514,6 +1534,7 @@ const App: React.FC = () => {
 
   return (
     <ErrorBoundary label="your dashboard">
+    <Suspense fallback={<LoadingSpinner fullScreen label="Loading your dashboard…" />}>
     <div className={`${MOBILE_FRAME_CLASS}${activeTab === "socrates" ? " h-[100dvh] overflow-hidden" : ""}`}>
       <div
         style={{
@@ -1541,8 +1562,7 @@ const App: React.FC = () => {
         open={financialModalOpen}
         allowCancel={financialModalCancelable}
         initialAnswers={financialDraft}
-        onClose={() => setFinancialModalOpen(false)}
-        onComplete={(roadmap) => {
+        onClose={() => setFinancialModalOpen(false)}        onComplete={(roadmap) => {
           saveAcademyStartPhase(authUser.id, roadmap.recommendedPhaseId);
         }}
       />
@@ -1785,19 +1805,23 @@ const App: React.FC = () => {
             display: activeTab === "dashboard" ? undefined : "none",
           }}
         >
-          <InvestmentScreen
-            key={authUser.id}
-            holdings={safeHoldings}
-            totalPortfolioValue={stockHoldingsValue}
-            onHoldingsChange={(next) => {
-              setHoldings(next);
-              setHoldingsReady(true);
-            }}
-            onConsultSocrates={() => setActiveTab("socrates")}
-            cashBalance={emergencyFund}
-            privacyMode={privacyMode}
-            onTogglePrivacy={() => setPrivacyMode((v) => !v)}
-          />
+          <ErrorBoundary label="portfolio">
+            <Suspense fallback={<LoadingSpinner label="Loading portfolio…" />}>
+              <InvestmentScreen
+                key={authUser.id}
+                holdings={safeHoldings}
+                totalPortfolioValue={stockHoldingsValue}
+                onHoldingsChange={(next) => {
+                  setHoldings(next || []);
+                  setHoldingsReady(true);
+                }}
+                onConsultSocrates={() => setActiveTab("socrates")}
+                cashBalance={emergencyFund}
+                privacyMode={privacyMode}
+                onTogglePrivacy={() => setPrivacyMode((v) => !v)}
+              />
+            </Suspense>
+          </ErrorBoundary>
         </div>
 
         <div
@@ -1808,17 +1832,21 @@ const App: React.FC = () => {
           }}
           aria-hidden={activeTab !== "retirement"}
         >
-          <RetirementScreen
-            key={authUser.id}
-            visible={activeTab === "retirement"}
-            userId={authUser.id}
-            age={userSettings?.age ?? null}
-            birthDate={userSettings?.birthDate ?? null}
-            onAgeChange={(nextAge, nextBirthDate) => {
-              void persistAge(nextAge, nextBirthDate);
-            }}
-            onBalanceChange={setRetirementBalance}
-          />
+          <ErrorBoundary label="retirement">
+            <Suspense fallback={<LoadingSpinner label="Loading retirement…" />}>
+              <RetirementScreen
+                key={authUser.id}
+                visible={activeTab === "retirement"}
+                userId={authUser.id}
+                age={userSettings?.age ?? null}
+                birthDate={userSettings?.birthDate ?? null}
+                onAgeChange={(nextAge, nextBirthDate) => {
+                  void persistAge(nextAge, nextBirthDate);
+                }}
+                onBalanceChange={setRetirementBalance}
+              />
+            </Suspense>
+          </ErrorBoundary>
         </div>
 
         {activeTab === "snowball" && (
@@ -1991,22 +2019,41 @@ const App: React.FC = () => {
                       </div>
                     ) : (
                       <ul style={styles.expenseList}>
-                        {safeExpenses.map((item) => (
+                        {(safeExpenses ?? []).map((item = {} as any) => {
+                          if (!item) return null;
+                          const amount = toFiniteNumber(
+                            (item as any).total_value ?? (item as any).value ?? item.amount,
+                            0
+                          );
+                          return (
                           <ExpenseRow
                             key={item.id}
                             item={item}
-                            share={monthlyExpenses > 0 ? (item.amount / monthlyExpenses) * 100 : 0}
+                            share={
+                              monthlyExpenses > 0
+                                ? (amount / monthlyExpenses) * 100
+                                : 0
+                            }
                             onAmountChange={(next) => setExpenseAmount(item.id, next)}
                             onRemove={() => removeExpense(item.id)}
                           />
-                        ))}
-                        {activeDebts.map((debt) => (
+                          );
+                        })}
+                        {(activeDebts ?? []).map((debt = {} as any) => {
+                          if (!debt) return null;
+                          const minPayment = toFiniteNumber(debt.minPayment, 0);
+                          return (
                           <DebtPaymentRow
                             key={debt.id}
                             debt={debt}
-                            share={monthlyExpenses > 0 ? (debt.minPayment / monthlyExpenses) * 100 : 0}
+                            share={
+                              monthlyExpenses > 0
+                                ? (minPayment / monthlyExpenses) * 100
+                                : 0
+                            }
                           />
-                        ))}
+                          );
+                        })}
                       </ul>
                     )}
 
@@ -2196,7 +2243,9 @@ const App: React.FC = () => {
                         </div>
                       ) : (
                         <div style={styles.debtList}>
-                          {safeDebts.map((debt) => (
+                          {(safeDebts ?? []).map((debt = {} as any) => {
+                            if (!debt) return null;
+                            return (
                             <DebtPayoffCard
                               key={debt.id}
                               debt={debt}
@@ -2204,7 +2253,8 @@ const App: React.FC = () => {
                               extraPayoff={extraPayoff}
                               onLogPayment={() => logDebtPayment(debt.id)}
                             />
-                          ))}
+                            );
+                          })}
                         </div>
                       )}
 
@@ -2289,6 +2339,7 @@ const App: React.FC = () => {
       >
         <div style={styles.tabBar}>
           {TABS.map((tab) => {
+            if (!tab) return null;
             const active = activeTab === tab.id;
             const TabIcon = tab.icon;
             return (
@@ -2314,6 +2365,7 @@ const App: React.FC = () => {
       </div>
       </div>
     </div>
+    </Suspense>
     </ErrorBoundary>
   );
 };
@@ -2330,6 +2382,11 @@ function ExpenseRow({
   onAmountChange: (next: number) => void;
   onRemove: () => void;
 }) {
+  if (!item) return null;
+  const amount = toFiniteNumber(
+    (item as any).total_value ?? (item as any).value ?? item.amount,
+    0
+  );
   return (
     <li style={styles.expenseRow}>
       <span style={styles.expenseIcon}>{categoryIcon(item.label)}</span>
@@ -2346,7 +2403,7 @@ function ExpenseRow({
         <span style={styles.expensePrefix}>$</span>
         <CurrencyInput
           style={styles.expenseInput}
-          value={item.amount}
+          value={amount}
           onValueChange={onAmountChange}
           placeholder="0"
           aria-label={`${item.label} monthly amount`}
@@ -2372,6 +2429,8 @@ function DebtPaymentRow({
   debt: Debt;
   share: number;
 }) {
+  if (!debt) return null;
+  const minPayment = toFiniteNumber(debt.minPayment, 0);
   return (
     <li style={styles.expenseRow}>
       <span style={styles.expenseIcon}>{categoryIcon(debt.title)}</span>
@@ -2389,7 +2448,7 @@ function DebtPaymentRow({
 
       <div style={styles.expenseInputRow}>
         <span style={styles.expensePrefix}>$</span>
-        <span style={styles.expenseLockedAmount}>{money(debt.minPayment)}</span>
+        <span style={styles.expenseLockedAmount}>{money(minPayment)}</span>
       </div>
 
       <span style={styles.rowSpacer} aria-hidden="true" />
@@ -2408,15 +2467,20 @@ function DebtPayoffCard({
   extraPayoff: number;
   onLogPayment: () => void;
 }) {
-  const isPaid = debt.balance <= 0;
+  if (!debt) return null;
+  const balance = toFiniteNumber(debt.balance ?? (debt as any).value ?? (debt as any).total_value, 0);
+  const originalBalance = toFiniteNumber(debt.originalBalance, 0);
+  const apr = toFiniteNumber(debt.apr, 0);
+  const minPayment = toFiniteNumber(debt.minPayment, 0);
+  const isPaid = balance <= 0;
   const paidPct =
-    debt.originalBalance > 0
-      ? Math.min(100, Math.round(((debt.originalBalance - debt.balance) / debt.originalBalance) * 100))
+    originalBalance > 0
+      ? Math.min(100, Math.round(((originalBalance - balance) / originalBalance) * 100))
       : 0;
-  const monthlyPayment = debt.minPayment + (isFocus && !isPaid ? extraPayoff : 0);
-  const payoffMonths = monthsToPayoff(debt.balance, debt.apr, monthlyPayment);
-  const interestPerMonth = (debt.balance * debt.apr) / 100 / 12;
-  const tone = aprTone(debt.apr);
+  const monthlyPayment = minPayment + (isFocus && !isPaid ? extraPayoff : 0);
+  const payoffMonths = monthsToPayoff(balance, apr, monthlyPayment);
+  const interestPerMonth = (balance * apr) / 100 / 12;
+  const tone = aprTone(apr);
 
   return (
     <article
@@ -2439,7 +2503,7 @@ function DebtPayoffCard({
                 border: `1px solid ${tone.border}`,
               }}
             >
-              {debt.apr > 0 ? `${debt.apr}% APR` : "0% APR"}
+              {apr > 0 ? `${apr}% APR` : "0% APR"}
             </span>
             {isFocus && !isPaid && <span style={styles.focusChip}>Paying now</span>}
             {isPaid && (
@@ -2453,8 +2517,8 @@ function DebtPayoffCard({
       </div>
 
       <div style={styles.debtBalanceRow}>
-        <p style={styles.debtBalance}>${money(debt.balance)}</p>
-        <p style={styles.debtOriginal}>of ${money(debt.originalBalance)}</p>
+        <p style={styles.debtBalance}>${money(balance)}</p>
+        <p style={styles.debtOriginal}>of ${money(originalBalance)}</p>
       </div>
 
       <div style={styles.debtBar}>

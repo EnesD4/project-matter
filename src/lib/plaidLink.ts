@@ -87,8 +87,8 @@ function asAccount(raw: unknown): PlaidLinkAccount | null {
     mask: String(item.mask || ""),
     institution: String(item.institution || "Linked bank"),
     balance: Number(item.balance) || 0,
-    minPayment: item.minPayment != null ? Number(item.minPayment) || undefined : undefined,
-    apr: item.apr != null ? Number(item.apr) || undefined : undefined,
+    minPayment: item.minPayment != null ? Number(item.minPayment) || 0 : 0,
+    apr: item.apr != null ? Number(item.apr) || 0 : 0,
   };
 }
 
@@ -151,8 +151,8 @@ export function parsePlaidLinkResult(raw: unknown): PlaidLinkResult | null {
           id: String(item.id || localId("plaid")),
           userId: String(item.userId || "local"),
           symbol: String(item.symbol || "").trim().toUpperCase(),
-          shares: Number(item.shares),
-          buyPrice: Number(item.buyPrice),
+          shares: Number(item.shares) || 0,
+          buyPrice: Number(item.buyPrice) || 0,
           purchasedAt: typeof item.purchasedAt === "string" ? item.purchasedAt : null,
           accountType: "verified" as const,
           createdAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString(),

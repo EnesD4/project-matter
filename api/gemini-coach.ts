@@ -139,23 +139,26 @@ function stripEducationalDisclaimer(text: string): string {
   return String(text || "").replace(DISCLAIMER_TAIL, "").trim();
 }
 
-/** Local safe formatter — mirrors src/lib/money.safeFormatNumber (API bundle isolation). */
+/** Local safe formatter — mirrors src/utils/formatters.safeToLocaleString (API bundle isolation). */
+function safeToLocaleString(
+  val: unknown,
+  locale: string = "en-US",
+  options?: Intl.NumberFormatOptions
+): string {
+  const num = Number(val || 0);
+  if (!Number.isFinite(num)) return "0";
+  return num.toLocaleString(locale, options);
+}
+
 function safeFormatNumber(val: unknown, options?: Intl.NumberFormatOptions): string {
-  const fallback = (): string => {
-    try {
-      return (0).toLocaleString(undefined, options);
-    } catch {
-      return "0";
-    }
-  };
-  if (val === null || val === undefined) return fallback();
-  const num = typeof val === "number" ? val : Number(val);
-  if (Number.isNaN(num) || !Number.isFinite(num)) return fallback();
-  try {
-    return num.toLocaleString(undefined, options);
-  } catch {
-    return fallback();
+  if (val === null || val === undefined || isNaN(Number(val))) {
+    return safeToLocaleString(0, "en-US", options);
   }
+  const num = typeof val === "number" ? val : Number(val);
+  if (Number.isNaN(num) || !Number.isFinite(num)) {
+    return safeToLocaleString(0, "en-US", options);
+  }
+  return safeToLocaleString(num, "en-US", options);
 }
 
 function usd(amount: unknown): string {

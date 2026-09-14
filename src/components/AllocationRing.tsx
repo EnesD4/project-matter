@@ -7,7 +7,9 @@ import {
   TOP_ALLOCATION_SLICES,
   type AllocationSlice,
 } from "../lib/allocation";
+import { formatPercent, toFiniteNumber } from "../lib/money";
 import { privacyMoney } from "../lib/privacy";
+import { EmptyChartPlaceholder } from "./LoadingSpinner";
 
 type AllocationRingProps = {
   slices: AllocationSlice[];
@@ -18,15 +20,32 @@ export default function AllocationRing({ slices, privacyMode }: AllocationRingPr
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const [breakdownOpen, setBreakdownOpen] = useState(false);
 
-  const displaySlices = useMemo(() => collapseToTopN(slices, TOP_ALLOCATION_SLICES), [slices]);
-  const total = useMemo(() => slices.reduce((sum, s) => sum + s.value, 0), [slices]);
-  const hiddenCount = Math.max(0, slices.length - TOP_ALLOCATION_SLICES);
+  const safeSlices = slices || [];
+  const displaySlices = useMemo(
+    () =>
+      collapseToTopN(safeSlices, TOP_ALLOCATION_SLICES).map((slice) => ({
+        ...slice,
+        value: toFiniteNumber(slice?.value, 0),
+        pct: toFiniteNumber(slice?.pct, 0),
+        holdings: (slice?.holdings ?? []).map((h) => ({
+          ...h,
+          value: toFiniteNumber(h?.value, 0),
+          pct: toFiniteNumber(h?.pct, 0),
+        })),
+      })),
+    [safeSlices]
+  );
+  const total = useMemo(
+    () => safeSlices.reduce((sum, s) => sum + toFiniteNumber(s?.value, 0), 0),
+    [safeSlices]
+  );
+  const hiddenCount = Math.max(0, safeSlices.length - TOP_ALLOCATION_SLICES);
   const collapsed = hiddenCount > 0;
 
   const active = activeIndex != null ? displaySlices[activeIndex] : null;
   const centerLabel = active?.label ?? "Portfolio";
-  const centerPct = active ? active.pct : 100;
-  const centerValue = active ? active.value : total;
+  const centerPct = active ? toFiniteNumber(active.pct, 0) : 100;
+  const centerValue = active ? toFiniteNumber(active.value, 0) : total;
   const centerColor = active?.color ?? "#FFFFFF";
 
   useEffect(() => {
@@ -38,7 +57,9 @@ export default function AllocationRing({ slices, privacyMode }: AllocationRingPr
     return () => window.removeEventListener("keydown", onKey);
   }, [breakdownOpen]);
 
-  if (slices.length === 0 || total <= 0) return null;
+  if (safeSlices.length === 0 || total <= 0 || displaySlices.length === 0) {
+    return null;
+  }
 
   return (
     <section
@@ -52,11 +73,11 @@ export default function AllocationRing({ slices, privacyMode }: AllocationRingPr
         <span className="text-[10px] font-semibold text-[#6B7280]">
           {collapsed
             ? `Top ${Math.min(TOP_ALLOCATION_SLICES, displaySlices.length)} + Other · invested assets`
-            : `${slices.length} groups · invested assets`}
+            : `${safeSlices.length} groups · invested assets`}
         </span>
       </div>
 
-      <div className="mt-3 flex flex-col items-center gap-4 sm:flex-row sm:items-center">
+          <div className="mt-3 flex flex-col items-center gap-4 sm:flex-row sm:items-center">
         <div
           className="relative h-44 w-44 flex-shrink-0 cursor-pointer"
           onClick={() => setBreakdownOpen(true)}
@@ -70,6 +91,7 @@ export default function AllocationRing({ slices, privacyMode }: AllocationRingPr
             }
           }}
         >
+          {displaySlices && displaySlices.length > 0 ? (
           <ResponsiveContainer width="100%" height="100%">
             <PieChart>
               <Pie
@@ -90,26 +112,29 @@ export default function AllocationRing({ slices, privacyMode }: AllocationRingPr
                 onMouseLeave={() => setActiveIndex(null)}
                 style={{ outline: "none" }}
               >
-                {displaySlices.map((slice, index) => (
+                {(displaySlices ?? []).map((slice = {} as any, index) => {
+                  if (!slice) return null;
+                  return (
                   <Cell
                     key={slice.key}
                     fill={slice.color}
                     opacity={activeIndex == null || activeIndex === index ? 1 : 0.32}
                   />
-                ))}
+                  );
+                })}
               </Pie>
               <Tooltip
                 content={({ active: tipActive, payload }) => {
-                  if (!tipActive || !payload?.length) return null;
+                  if (!tipActive || !payload || !payload.length) return null;
                   const slice = payload[0]?.payload as AllocationSlice | undefined;
                   if (!slice) return null;
                   return (
                     <div className="rounded-xl border border-[#1F2937] bg-[#0A0A0A] px-3 py-2">
                       <p className="text-[11px] font-bold text-white">{slice.label}</p>
                       <p className="mt-0.5 text-xs font-extrabold tabular-nums" style={{ color: slice.color }}>
-                        {slice.pct.toFixed(0)}%
+                        {formatPercent(slice?.pct, 0)}
                         <span className="ml-1.5 font-semibold text-[#9CA3AF]">
-                          {privacyMoney(privacyMode, slice.value)}
+                          {privacyMoney(privacyMode, slice?.value)}
                         </span>
                       </p>
                     </div>
@@ -118,12 +143,15 @@ export default function AllocationRing({ slices, privacyMode }: AllocationRingPr
               />
             </PieChart>
           </ResponsiveContainer>
+          ) : (
+            <EmptyChartPlaceholder heightClassName="h-44 w-44" title="No slices" message="Nothing to chart." />
+          )}
           <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center text-center">
             <p className="max-w-[5.5rem] truncate text-[10px] font-semibold uppercase tracking-wide text-[#9CA3AF]">
               {centerLabel}
             </p>
             <p className="text-lg font-extrabold tabular-nums" style={{ color: centerColor }}>
-              {centerPct.toFixed(0)}%
+              {formatPercent(centerPct, 0)}
             </p>
             <p className="text-[10px] font-semibold tabular-nums text-[#6B7280]">
               {privacyMoney(privacyMode, centerValue)}
@@ -132,9 +160,11 @@ export default function AllocationRing({ slices, privacyMode }: AllocationRingPr
         </div>
 
         <ul className="w-full min-w-0 flex-1 space-y-1.5">
-          {displaySlices.map((slice, index) => {
+          {(displaySlices ?? []).map((slice = {} as any, index) => {
+            if (!slice) return null;
             const selected = activeIndex === index;
             const isOther = slice.label === OTHER_BUCKET;
+            const pct = toFiniteNumber(slice.pct, 0);
             return (
               <li key={slice.key}>
                 <button
@@ -168,7 +198,7 @@ export default function AllocationRing({ slices, privacyMode }: AllocationRingPr
                     className="flex-shrink-0 text-[12px] font-extrabold tabular-nums"
                     style={{ color: slice.color }}
                   >
-                    {slice.pct.toFixed(0)}%
+                    {formatPercent(pct, 0)}
                   </span>
                 </button>
               </li>
@@ -188,7 +218,7 @@ export default function AllocationRing({ slices, privacyMode }: AllocationRingPr
 
       {breakdownOpen && (
         <AllocationBreakdownModal
-          slices={slices}
+          slices={safeSlices}
           total={total}
           privacyMode={privacyMode}
           onClose={() => setBreakdownOpen(false)}
@@ -209,6 +239,16 @@ function AllocationBreakdownModal({
   privacyMode: boolean;
   onClose: () => void;
 }) {
+  const safeSlices = (slices || []).map((slice) => ({
+    ...slice,
+    value: toFiniteNumber(slice?.value, 0),
+    pct: toFiniteNumber(slice?.pct, 0),
+    holdings: (slice?.holdings ?? []).map((h) => ({
+      ...h,
+      value: toFiniteNumber(h?.value, 0),
+      pct: toFiniteNumber(h?.pct, 0),
+    })),
+  }));
   return (
     <div
       className="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm"
@@ -228,7 +268,8 @@ function AllocationBreakdownModal({
               Full allocation breakdown
             </h3>
             <p className="mt-0.5 text-[11px] text-[#9CA3AF]">
-              {slices.length} {slices.length === 1 ? "sector" : "sectors"} · {privacyMoney(privacyMode, total)}
+              {safeSlices.length} {safeSlices.length === 1 ? "sector" : "sectors"} ·{" "}
+              {privacyMoney(privacyMode, total)}
             </p>
           </div>
           <button
@@ -243,49 +284,69 @@ function AllocationBreakdownModal({
 
         <div className="flex-1 overflow-y-auto px-5 py-3">
           <ul className="space-y-3">
-            {slices.map((slice) => (
-              <li key={slice.key} className="rounded-xl border border-[#1F2937] bg-black/30 p-3">
-                <div className="flex items-center gap-2.5">
-                  <span
-                    className="h-2.5 w-2.5 flex-shrink-0 rounded-full"
-                    style={{ background: slice.color }}
-                    aria-hidden
-                  />
-                  <p className="min-w-0 flex-1 truncate text-[13px] font-extrabold text-white">{slice.label}</p>
-                  <div className="flex-shrink-0 text-right">
-                    <p className="text-[12px] font-extrabold tabular-nums" style={{ color: slice.color }}>
-                      {slice.pct.toFixed(1)}%
-                    </p>
-                    <p className="text-[10px] font-semibold tabular-nums text-[#6B7280]">
-                      {privacyMoney(privacyMode, slice.value)}
-                    </p>
+            {(safeSlices ?? []).map((slice = {} as any) => {
+              if (!slice) return null;
+              const holdings = slice.holdings ?? [];
+              const value = toFiniteNumber((slice as any).total_value ?? slice.value, 0);
+              const pct = toFiniteNumber(slice.pct, 0);
+              return (
+                <li key={slice.key} className="rounded-xl border border-[#1F2937] bg-black/30 p-3">
+                  <div className="flex items-center gap-2.5">
+                    <span
+                      className="h-2.5 w-2.5 flex-shrink-0 rounded-full"
+                      style={{ background: slice.color }}
+                      aria-hidden
+                    />
+                    <p className="min-w-0 flex-1 truncate text-[13px] font-extrabold text-white">{slice.label}</p>
+                    <div className="flex-shrink-0 text-right">
+                      <p className="text-[12px] font-extrabold tabular-nums" style={{ color: slice.color }}>
+                        {formatPercent(pct, 1)}
+                      </p>
+                      <p className="text-[10px] font-semibold tabular-nums text-[#6B7280]">
+                        {privacyMoney(privacyMode, value)}
+                      </p>
+                    </div>
                   </div>
-                </div>
 
-                {slice.holdings.length > 0 && (
-                  <ul className="mt-2 space-y-1 border-t border-[#1F2937] pt-2">
-                    {slice.holdings.map((holding) => (
-                      <li key={holding.id} className="flex items-baseline gap-2 px-1 py-0.5">
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-[12px] font-semibold text-white">{holding.label}</p>
-                          {holding.detail && holding.detail !== holding.label && (
-                            <p className="truncate text-[10px] text-[#6B7280]">{holding.detail}</p>
-                          )}
-                        </div>
-                        <div className="flex-shrink-0 text-right">
-                          <p className="text-[12px] font-bold tabular-nums text-white">
-                            {privacyMoney(privacyMode, holding.value)}
-                          </p>
-                          <p className="text-[10px] font-semibold tabular-nums text-[#9CA3AF]">
-                            {holding.pct.toFixed(1)}%
-                          </p>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </li>
-            ))}
+                  {holdings.length > 0 && (
+                    <ul className="mt-2 space-y-1 border-t border-[#1F2937] pt-2">
+                      {(holdings ?? []).map((holding = {} as any) => {
+                        if (!holding) return null;
+                        const raw = holding as any;
+                        const price = toFiniteNumber(raw.price ?? raw.current_price, 0);
+                        const shares = toFiniteNumber(raw.shares ?? raw.quantity, 0);
+                        const change = toFiniteNumber(
+                          raw.change ?? raw.change_percent ?? raw.pct,
+                          0
+                        );
+                        const total = toFiniteNumber(
+                          raw.total_value ?? raw.value ?? price * shares,
+                          0
+                        );
+                        return (
+                          <li key={holding.id} className="flex items-baseline gap-2 px-1 py-0.5">
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-[12px] font-semibold text-white">{holding.label}</p>
+                              {holding.detail && holding.detail !== holding.label && (
+                                <p className="truncate text-[10px] text-[#6B7280]">{holding.detail}</p>
+                              )}
+                            </div>
+                            <div className="flex-shrink-0 text-right">
+                              <p className="text-[12px] font-bold tabular-nums text-white">
+                                {privacyMoney(privacyMode, total)}
+                              </p>
+                              <p className="text-[10px] font-semibold tabular-nums text-[#9CA3AF]">
+                                {formatPercent(change, 1)}
+                              </p>
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         </div>
       </div>

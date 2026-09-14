@@ -29,6 +29,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { EmptyChartPlaceholder } from "./LoadingSpinner";
 import { formatCurrencyInput, formatNumber, parseCurrency, toFiniteNumber } from "../lib/money";
 import { readLocalItem } from "../lib/storage";
 import { clampAge, parseISODate, resolveUserAge, todayISODate } from "../lib/age";
@@ -298,9 +299,10 @@ function formatDollars(n: unknown): string {
 }
 
 function formatAxisMoney(n: number): string {
-  if (Math.abs(n) >= 1_000_000) return `$${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
-  if (Math.abs(n) >= 1_000) return `$${Math.round(n / 1000)}k`;
-  return `$${Math.round(n)}`;
+  const value = toFiniteNumber(n, 0);
+  if (Math.abs(value) >= 1_000_000) return `$${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}M`;
+  if (Math.abs(value) >= 1_000) return `$${Math.round(value / 1000)}k`;
+  return `$${Math.round(value)}`;
 }
 
 function monthsToTarget(
@@ -488,8 +490,9 @@ function ChartTooltip({
   active?: boolean;
   payload?: ReadonlyArray<{ payload?: ChartPoint }>;
 }) {
-  const point = payload?.[0]?.payload;
-  if (!active || !point) return null;
+  if (!active || !payload || !payload.length) return null;
+  const point = payload[0]?.payload;
+  if (!point) return null;
   return (
     <div className="rounded-xl border border-[#1F2937] bg-[#0A0A0A] px-3 py-2 shadow-[0_8px_24px_rgba(0,0,0,0.45)]">
       <p className="text-[10px] font-extrabold uppercase tracking-wider text-[#64748B]">Age {point.age}</p>
@@ -1354,10 +1357,12 @@ export default function RetirementPlanner({
         const actualPoint = actualSeries[i];
         return {
           ...point,
-          target: point.value,
-          actual: actualPoint?.value ?? point.value,
-          contributed: actualPoint?.contributed ?? point.contributed,
-          interest: actualPoint?.interest ?? point.interest,
+          age: toFiniteNumber(point?.age, 0),
+          value: toFiniteNumber(point?.value, 0),
+          target: toFiniteNumber(point?.value, 0),
+          actual: toFiniteNumber(actualPoint?.value ?? point?.value, 0),
+          contributed: toFiniteNumber(actualPoint?.contributed ?? point?.contributed, 0),
+          interest: toFiniteNumber(actualPoint?.interest ?? point?.interest, 0),
         };
       }),
     [targetSeries, actualSeries]
@@ -1924,6 +1929,7 @@ export default function RetirementPlanner({
                 </div>
               </div>
               <div className="h-44 -mx-1 sm:h-48">
+                {chartData && chartData.length > 0 ? (
                 <ResponsiveContainer width="100%" height="100%">
                   <ComposedChart data={chartData} margin={{ top: 8, right: 8, bottom: 4, left: 0 }}>
                   <defs>
@@ -1935,7 +1941,7 @@ export default function RetirementPlanner({
                   <YAxis
                     domain={yDomain}
                     width={46}
-                    tickFormatter={formatAxisMoney}
+                    tickFormatter={(val: any) => formatAxisMoney(val ?? 0)}
                     tick={{ fill: "#9CA3AF", fontSize: 10 }}
                     axisLine={false}
                     tickLine={false}
@@ -1944,7 +1950,7 @@ export default function RetirementPlanner({
                   <XAxis
                     dataKey="age"
                     ticks={xTicks}
-                    tickFormatter={(tickAge) => `${tickAge}`}
+                    tickFormatter={(tickAge: any) => `${tickAge ?? 0}`}
                     tick={{ fill: "#9CA3AF", fontSize: 10 }}
                     axisLine={false}
                     tickLine={false}
@@ -1983,6 +1989,12 @@ export default function RetirementPlanner({
                   />
                   </ComposedChart>
                 </ResponsiveContainer>
+                ) : (
+                  <EmptyChartPlaceholder
+                    title="Projection unavailable"
+                    message="Enter your age and savings to chart retirement growth."
+                  />
+                )}
               </div>
             </div>
           </div>

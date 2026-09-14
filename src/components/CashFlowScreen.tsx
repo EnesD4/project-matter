@@ -76,19 +76,23 @@ function isStockHolding(holding: Holding): holding is StockHolding {
 
 function mergePositions(items: DividendPosition[]): DividendPosition[] {
   const bySymbol = new Map<string, DividendPosition>();
-  for (const item of items) {
-    const symbol = item.symbol.trim().toUpperCase();
-    if (!symbol || item.shares <= 0) continue;
+  for (const item of items || []) {
+    const symbol = String(item?.symbol ?? "")
+      .trim()
+      .toUpperCase();
+    const shares = toFiniteNumber(item?.shares, 0);
+    const price = toFiniteNumber(item?.price, 0);
+    if (!symbol || shares <= 0) continue;
     const existing = bySymbol.get(symbol);
     if (!existing) {
-      bySymbol.set(symbol, { ...item, symbol });
+      bySymbol.set(symbol, { ...item, symbol, shares, price });
       continue;
     }
-    existing.shares += item.shares;
+    existing.shares += shares;
     if (!existing.name || existing.name === existing.symbol) existing.name = item.name;
     if (!existing.logo && item.logo) existing.logo = item.logo;
     if (!existing.domain && item.domain) existing.domain = item.domain;
-    if (item.price > 0) existing.price = item.price;
+    if (price > 0) existing.price = price;
   }
   return [...bySymbol.values()];
 }
@@ -144,8 +148,8 @@ export default function CashFlowScreen({
             items.map((item) => ({
               symbol: item.symbol,
               name: item.symbol,
-              shares: item.shares,
-              price: 0,
+              shares: toFiniteNumber(item?.shares, 0),
+              price: toFiniteNumber(item?.buyPrice, 0),
             }))
           )
         );
@@ -396,18 +400,24 @@ export default function CashFlowScreen({
                   style={{ maxHeight: DIVIDEND_LIST_MAX_HEIGHT }}
                 >
                   <ol className="m-0 list-none p-0">
-                    {grouped.map((group) => (
+                    {(grouped ?? []).map((group = {} as any) => {
+                      if (!group) return null;
+                      return (
                       <li key={group.heading} className="mb-3 last:mb-0">
                         <p className="mb-2 h-[18px] text-[10px] font-extrabold uppercase leading-[18px] tracking-[0.14em] text-neutral-500">
                           {group.heading}
                         </p>
                         <ul className="m-0 flex list-none flex-col gap-2 p-0">
-                          {group.items.map((payout) => (
+                          {(group.items ?? []).map((payout = {} as any) => {
+                            if (!payout) return null;
+                            return (
                             <PayoutRow key={payout.id} payout={payout} privacyMode={privacyMode} />
-                          ))}
+                            );
+                          })}
                         </ul>
                       </li>
-                    ))}
+                      );
+                    })}
                   </ol>
                 </div>
               </div>
@@ -431,6 +441,11 @@ function groupByMonth(payouts: UpcomingPayout[]): Array<{ heading: string; items
 }
 
 function PayoutRow({ payout, privacyMode }: { payout: UpcomingPayout; privacyMode: boolean }) {
+  if (!payout) return null;
+  const amount = toFiniteNumber(
+    (payout as any).total_value ?? (payout as any).value ?? payout.amount,
+    0
+  );
   const confirmed = payout.status === "confirmed";
   return (
     <li className="flex h-[52px] items-center gap-3 overflow-hidden rounded-xl border border-neutral-800 bg-black/35 px-2.5">
@@ -454,7 +469,7 @@ function PayoutRow({ payout, privacyMode }: { payout: UpcomingPayout; privacyMod
             <span className="text-neutral-600"> · {frequencyLabel(payout.frequency)}</span>
           </p>
           <p className="m-0 flex-shrink-0 text-[13px] font-extrabold text-emerald-400">
-            {privacyMoney(privacyMode, payout.amount)}
+            {privacyMoney(privacyMode, amount)}
           </p>
         </div>
       </div>
@@ -857,11 +872,22 @@ export function SafetyNetSection({
                   </p>
                 ) : (
                   <ul className="m-0 flex list-none flex-col gap-2 p-0">
-                    {config.bonds.map((bond) => {
+                    {(config.bonds ?? []).map((bond = {} as any) => {
+                      if (!bond) return null;
+                      const raw = bond as any;
+                      const price = toFiniteNumber(
+                        raw.price ?? raw.current_price ?? bondPrices[bond.symbol],
+                        0
+                      );
+                      const shares = toFiniteNumber(raw.shares ?? raw.quantity, 0);
+                      const total = toFiniteNumber(
+                        raw.total_value ?? raw.value ?? raw.amount ?? price * shares,
+                        0
+                      );
                       const value =
                         bond.kind === "ticker"
-                          ? Math.max(0, bond.shares) * Math.max(0, bondPrices[bond.symbol] ?? 0)
-                          : bond.amount;
+                          ? Math.max(0, shares) * Math.max(0, price)
+                          : total;
                       return (
                         <li
                           key={bond.id}
@@ -877,7 +903,7 @@ export function SafetyNetSection({
                             {bond.kind === "ticker" ? (
                               <div className="mt-1 flex items-center gap-2">
                                 <DecimalField
-                                  value={bond.shares}
+                                  value={shares}
                                   onValueChange={(next) => updateBond(bond.id, { shares: next })}
                                   aria-label={`${bond.symbol || bond.label} shares`}
                                   className="w-24"
@@ -1089,7 +1115,14 @@ function LinkedReserveList({
 
   return (
     <ul className="m-0 flex list-none flex-col gap-2 p-0">
-      {lines.map((line) => (
+      {(lines ?? []).map((line = {} as any) => {
+        if (!line) return null;
+        const raw = line as any;
+        const balance = toFiniteNumber(
+          raw.total_value ?? raw.value ?? raw.balance,
+          0
+        );
+        return (
         <li
           key={line.id}
           className="flex min-w-0 items-center justify-between gap-2 rounded-lg border border-neutral-800 bg-black/40 px-2.5 py-2"
@@ -1101,10 +1134,11 @@ function LinkedReserveList({
             </p>
           </div>
           <p className="m-0 flex-shrink-0 text-[12px] font-extrabold text-white">
-            {privacyMoney(privacyMode, line.balance, 0)}
+            {privacyMoney(privacyMode, balance, 0)}
           </p>
         </li>
-      ))}
+        );
+      })}
     </ul>
   );
 }

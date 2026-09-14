@@ -123,3 +123,16 @@ function supabaseAuthStorageKey() {
     return "sb-sprout-auth-token";
   }
 }
+
+/** Drop persisted Supabase auth + guest creds after invalid/expired session errors. */
+export function clearSupabaseAuthStorage() {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.removeItem(SUPABASE_GUEST_CREDS_KEY);
+    for (const key of Object.keys(localStorage)) {
+      if (isSupabaseClientKey(key)) localStorage.removeItem(key);
+    }
+  } catch {
+    // private mode
+  }
+}

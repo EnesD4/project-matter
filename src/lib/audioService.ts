@@ -68,18 +68,56 @@ function createEngine(): Engine | null {
 function getEngine(): Engine | null {
   if (typeof window === "undefined") return null;
   if (!engine) engine = createEngine();
-  if (engine && engine.ctx.state === "suspended") void engine.ctx.resume();
   return engine;
+}
+
+function isUserGestureActive(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const activation = (navigator as Navigator & { userActivation?: { isActive?: boolean } }).userActivation;
+  return Boolean(activation?.isActive);
+}
+
+/** Resume only from a user gesture to avoid autoplay policy warnings. */
+function resumeAudioOnGesture(ctx: AudioContext) {
+  if (ctx.state !== "suspended" || typeof window === "undefined") return;
+  const resumeAudio = () => {
+    void ctx.resume();
+    window.removeEventListener("click", resumeAudio);
+    window.removeEventListener("pointerdown", resumeAudio);
+    window.removeEventListener("keydown", resumeAudio);
+  };
+  window.addEventListener("click", resumeAudio);
+  window.addEventListener("pointerdown", resumeAudio);
+  window.addEventListener("keydown", resumeAudio);
 }
 
 function installUnlockGesture() {
   if (unlockInstalled || typeof window === "undefined") return;
   unlockInstalled = true;
   const unlock = () => {
-    getEngine();
+    const graph = getEngine();
+    if (!graph) return;
+    if (graph.ctx.state === "suspended") {
+      void graph.ctx.resume().then(() => {
+        if (engine?.ctx.state !== "running") return;
+        window.removeEventListener("click", unlock, true);
+        window.removeEventListener("pointerdown", unlock, true);
+        window.removeEventListener("keydown", unlock, true);
+        unlockInstalled = false;
+      });
+      return;
+    }
+    if (graph.ctx.state === "running") {
+      window.removeEventListener("click", unlock, true);
+      window.removeEventListener("pointerdown", unlock, true);
+      window.removeEventListener("keydown", unlock, true);
+      unlockInstalled = false;
+    }
   };
-  window.addEventListener("pointerdown", unlock, { once: true, capture: true });
-  window.addEventListener("keydown", unlock, { once: true, capture: true });
+  // Capture phase so resume runs before click handlers that play sounds.
+  window.addEventListener("click", unlock, { capture: true });
+  window.addEventListener("pointerdown", unlock, { capture: true });
+  window.addEventListener("keydown", unlock, { capture: true });
 }
 
 installUnlockGesture();
@@ -192,13 +230,48 @@ export function useSoundEnabled() {
 
 function withAudio(play: (ctx: AudioContext, dest: AudioNode) => void) {
   if (!enabled) return;
-  const graph = getEngine();
-  if (!graph) return;
-  try {
-    play(graph.ctx, graph.master);
-  } catch {
-    // Autoplay or closed context — fail silently.
+
+  const runPlay = (graph: Engine) => {
+    try {
+      play(graph.ctx, graph.master);
+    } catch {
+      // Autoplay or closed context — fail silently.
+    }
+  };
+
+  const resumeThenPlay = (graph: Engine) => {
+    void graph.ctx.resume().then(() => {
+      if (graph.ctx.state === "running") runPlay(graph);
+    });
+  };
+
+  // Create/resume only inside an active user gesture; otherwise wait for one.
+  if (!engine) {
+    if (!isUserGestureActive()) {
+      installUnlockGesture();
+      return;
+    }
+    const graph = getEngine();
+    if (!graph) return;
+    if (graph.ctx.state === "suspended") {
+      resumeThenPlay(graph);
+      return;
+    }
+    runPlay(graph);
+    return;
   }
+
+  if (engine.ctx.state === "suspended") {
+    if (isUserGestureActive()) {
+      resumeThenPlay(engine);
+      return;
+    }
+    resumeAudioOnGesture(engine.ctx);
+    installUnlockGesture();
+    return;
+  }
+
+  runPlay(engine);
 }
 
 /** High-pitch harmonic chime for finishing a lesson or answering a quiz correctly. */

@@ -1,5 +1,6 @@
 import { getApiBaseUrl } from "./auth";
 import { setCachedSpark } from "./marketCache";
+import { toFiniteNumber } from "./money";
 import { ChartCandle, formatChartLabel, RangeOption, SeriesPoint } from "./priceSimulation";
 
 const apiBase = () => getApiBaseUrl();
@@ -19,7 +20,7 @@ export type StockSlice = {
 export type BenchmarkChartPoint = SeriesPoint & {
   portfolioValue: number;
   portfolioPct: number;
-  spPct?: number;
+  spPct: number;
 };
 
 export async function fetchChartCandles(symbol: string, range: RangeOption): Promise<ChartCandle[]> {
@@ -133,22 +134,23 @@ export function buildBenchmarkChartData(args: {
     const portfolioValue = portfolioValues[i] ?? 0;
     const spPrice = spPrices[i] ?? 0;
     const portfolioPct = pctFromBase(portfolioValue, pBase);
-    const spPct = sBase ? pctFromBase(spPrice, sBase) : undefined;
+    const spPct = sBase ? pctFromBase(spPrice, sBase) : 0;
     return {
       t: i,
       timestamp: ts,
       label: formatChartLabel(ts, range),
-      value: portfolioPct,
-      portfolioValue,
-      portfolioPct,
-      spPct,
+      value: toFiniteNumber(portfolioPct, 0),
+      portfolioValue: toFiniteNumber(portfolioValue, 0),
+      portfolioPct: toFiniteNumber(portfolioPct, 0),
+      spPct: toFiniteNumber(spPct, 0),
     };
   });
 }
 
-export function formatSignedPct(n: number, digits = 1): string {
-  const abs = Math.abs(n).toFixed(digits);
-  if (n > 0) return `+${abs}%`;
-  if (n < 0) return `-${abs}%`;
+export function formatSignedPct(n: unknown, digits = 1): string {
+  const value = toFiniteNumber(n, 0);
+  const abs = Math.abs(value).toFixed(digits);
+  if (value > 0) return `+${abs}%`;
+  if (value < 0) return `-${abs}%`;
   return `${abs}%`;
 }

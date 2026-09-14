@@ -81,12 +81,12 @@ export function chartPointsToSeries(points: ChartCandle[], range: RangeOption): 
       t: i,
       timestamp: p.timestamp,
       label: formatChartLabel(p.timestamp, range),
-      value: p.price,
-      open: p.open,
-      high: p.high,
-      low: p.low,
-      close: p.close,
-      volume: p.volume,
+      value: Number.isFinite(p.price) ? p.price : 0,
+      open: p.open != null && Number.isFinite(p.open) ? p.open : undefined,
+      high: p.high != null && Number.isFinite(p.high) ? p.high : undefined,
+      low: p.low != null && Number.isFinite(p.low) ? p.low : undefined,
+      close: p.close != null && Number.isFinite(p.close) ? p.close : undefined,
+      volume: p.volume != null && Number.isFinite(p.volume) ? p.volume : undefined,
     }));
 }
 

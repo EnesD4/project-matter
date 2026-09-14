@@ -88,9 +88,130 @@ async function safeApiGet<T>(url: string, signal?: AbortSignal): Promise<T | nul
   }
 }
 
+export type NormalizedStockData = {
+  symbol: string;
+  name: string;
+  price: number;
+  change: number;
+  change_percent: number;
+  high: number;
+  low: number;
+  volume: number;
+  shares: number;
+  total_value: number;
+};
+
+/** Coerce API / form numerics so NaN/undefined never reach charts or formatters. */
+function finiteNumber(value: unknown, fallback = 0): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/**
+ * Mandatory sanitizer before any stock enters React state, tables, or Recharts.
+ * Guarantees finite numerics — never undefined/NaN on price/shares/change fields.
+ */
+export function sanitizeSafeStock<T extends Record<string, any>>(rawStock: T | null | undefined): T & {
+  price: number;
+  shares: number;
+  buy_price: number;
+  current_price: number;
+  change: number;
+  change_percent: number;
+  total_value: number;
+} {
+  const raw = (rawStock ?? {}) as Record<string, any>;
+  const shares = finiteNumber(raw?.shares ?? raw?.quantity ?? 0);
+  const buy_price = finiteNumber(
+    raw?.buy_price ?? raw?.buyPrice ?? raw?.avgCost ?? raw?.price ?? 0
+  );
+  const current_price = finiteNumber(
+    raw?.current_price ?? raw?.currentPrice ?? raw?.price ?? raw?.close ?? raw?.c ?? buy_price ?? 0
+  );
+  const price = finiteNumber(raw?.price ?? current_price ?? buy_price ?? 0);
+  const change = finiteNumber(raw?.change ?? raw?.d ?? 0);
+  const change_percent = finiteNumber(raw?.change_percent ?? raw?.dp ?? 0);
+  const total_value = finiteNumber(raw?.total_value ?? price * shares ?? 0);
+  return {
+    ...raw,
+    price,
+    shares,
+    buy_price,
+    buyPrice: buy_price,
+    current_price,
+    currentPrice: current_price,
+    change,
+    change_percent,
+    total_value,
+  } as T & {
+    price: number;
+    shares: number;
+    buy_price: number;
+    current_price: number;
+    change: number;
+    change_percent: number;
+    total_value: number;
+  };
+}
+
+/**
+ * Strict normalizer for Polygon / Yahoo / Finnhub / manual payloads.
+ * Always returns finite numbers and uppercase symbol — never undefined fields.
+ */
+export const normalizeStockData = (raw: any): NormalizedStockData => {
+  const safe = sanitizeSafeStock(raw);
+  const symbol = String(safe?.symbol || raw?.ticker || "")
+    .trim()
+    .toUpperCase();
+  const price = finiteNumber(safe.price ?? raw?.close ?? raw?.c ?? 0);
+  const shares = finiteNumber(safe.shares);
+  return {
+    symbol,
+    name: String(raw?.name || raw?.companyName || raw?.description || symbol || "Unknown Stock"),
+    price,
+    change: finiteNumber(safe.change),
+    change_percent: finiteNumber(safe.change_percent),
+    high: finiteNumber(raw?.high ?? raw?.h ?? 0),
+    low: finiteNumber(raw?.low ?? raw?.l ?? 0),
+    volume: finiteNumber(raw?.volume ?? raw?.v ?? 0),
+    shares,
+    total_value: finiteNumber(safe.total_value ?? price * shares),
+  };
+};
+
+/** Map mixed quote payloads into the Finnhub-shaped StockQuote used by the UI. */
+export function normalizeToStockQuote(raw: any, fallbackSymbol = ""): StockQuote | null {
+  if (!raw || typeof raw !== "object") return null;
+  const normalized = normalizeStockData({
+    ...raw,
+    symbol: raw.symbol || raw.ticker || fallbackSymbol,
+  });
+  if (!(normalized.price > 0)) return null;
+  const price = normalized.price;
+  const change = normalized.change;
+  const open = finiteNumber(raw.o ?? raw.open ?? price);
+  const prevClose = finiteNumber(raw.pc ?? raw.prevClose ?? raw.previousClose ?? price - change);
+  return {
+    c: price,
+    d: change,
+    dp: normalized.change_percent,
+    h: normalized.high > 0 ? normalized.high : price,
+    l: normalized.low > 0 ? normalized.low : price,
+    o: open > 0 ? open : price,
+    pc: prevClose > 0 ? prevClose : price,
+    t: finiteNumber(raw.t ?? Math.floor(Date.now() / 1000)),
+    dividendYield: raw.dividendYield ?? null,
+    dividendRate: raw.dividendRate ?? null,
+    exDividendDate: raw.exDividendDate ?? null,
+    dividendDate: raw.dividendDate ?? null,
+    source: typeof raw.source === "string" ? raw.source : undefined,
+  };
+}
+
 function cacheAndReturnQuote(ticker: string, data: StockQuote): StockQuote {
-  setCachedQuote(ticker, { price: data.c, changePct: data.dp ?? 0 });
-  return data;
+  const quote = normalizeToStockQuote(data, ticker) ?? data;
+  setCachedQuote(ticker, { price: quote.c, changePct: quote.dp ?? 0 });
+  return quote;
 }
 
 export async function fetchStockQuote(
@@ -100,11 +221,12 @@ export async function fetchStockQuote(
   const ticker = symbol.trim().toUpperCase();
   if (!ticker) return null;
   try {
-    const data = await safeApiGet<StockQuote>(
+    const data = await safeApiGet<unknown>(
       `${apiUrl("/api/stocks/quote")}?symbol=${encodeURIComponent(ticker)}`,
       signal
     );
-    if (data && data.c > 0) return cacheAndReturnQuote(ticker, data);
+    const quote = normalizeToStockQuote(data, ticker);
+    if (quote && quote.c > 0) return cacheAndReturnQuote(ticker, quote);
   } catch {
     // 404 / connection errors fall through to mock quotes
   }
@@ -122,15 +244,18 @@ export async function fetchStockQuotes(
 
   if (unique.length > 1) {
     try {
-      const data = await safeApiGet<{ items?: Array<StockQuote & { symbol?: string }> }>(
+      const data = await safeApiGet<{ items?: Array<Record<string, unknown> & { symbol?: string }> }>(
         `${apiUrl("/api/stocks/quotes")}?symbols=${encodeURIComponent(unique.join(","))}`,
         signal
       );
       for (const item of data?.items ?? []) {
-        const ticker = (item.symbol || "").toUpperCase();
-        if (!ticker || !(item.c > 0)) continue;
-        out.set(ticker, item);
-        setCachedQuote(ticker, { price: item.c, changePct: item.dp ?? 0 });
+        const ticker = String(item.symbol || item.ticker || "")
+          .trim()
+          .toUpperCase();
+        const quote = normalizeToStockQuote(item, ticker);
+        if (!ticker || !quote || !(quote.c > 0)) continue;
+        out.set(ticker, quote);
+        setCachedQuote(ticker, { price: quote.c, changePct: quote.dp ?? 0 });
       }
     } catch {
       // fall through to per-symbol fetches

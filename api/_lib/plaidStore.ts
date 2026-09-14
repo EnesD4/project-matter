@@ -198,8 +198,8 @@ export async function loadBankAccounts(userId: string): Promise<PlaidAccount[]> 
         balance: Number(rec.balance) || 0,
         availableBalance: Number(rec.available_balance ?? rec.balance) || 0,
         isoCurrency: String(rec.iso_currency || "USD"),
-        minPayment: rec.min_payment != null ? Number(rec.min_payment) || undefined : undefined,
-        apr: rec.apr != null ? Number(rec.apr) || undefined : undefined,
+        minPayment: rec.min_payment != null ? Number(rec.min_payment) || 0 : 0,
+        apr: rec.apr != null ? Number(rec.apr) || 0 : 0,
       };
     });
   } catch {

@@ -19,7 +19,7 @@ export default function Sparkline({
   className = "",
 }: SparklineProps) {
   const { path, stroke } = useMemo(() => {
-    const clean = values.filter((value) => Number.isFinite(value));
+    const clean = (values ?? []).map((value) => (Number.isFinite(value) ? value : 0));
     if (clean.length < 2) {
       return { path: "", stroke: color ?? GAIN_GREEN };
     }

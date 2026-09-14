@@ -1,11 +1,14 @@
 import React, { useState } from "react";
+import { toFiniteNumber } from "../lib/money";
 import type { Holding, StockHolding } from "./InvestmentPortfolioCard";
 import StockDetailPage from "./StockDetailPage";
 import WatchlistsSection, { type WatchlistStockPick } from "./WatchlistsSection";
 
 function stubHoldingFromWatchlist(pick: WatchlistStockPick): StockHolding {
-  const prevClose =
-    pick.changePct <= -99.9 ? pick.price : pick.price / (1 + pick.changePct / 100);
+  const price = toFiniteNumber(pick?.price, 0);
+  const changePct = toFiniteNumber(pick?.changePct, 0);
+  const prevClose = changePct <= -99.9 ? price : price / (1 + changePct / 100);
+  const safePrevClose = toFiniteNumber(prevClose, price);
   return {
     id: `watchlist:${pick.symbol}`,
     kind: "stock",
@@ -13,13 +16,13 @@ function stubHoldingFromWatchlist(pick: WatchlistStockPick): StockHolding {
     description: pick.name,
     quantity: 0,
     avgCost: 0,
-    currentPrice: pick.price,
-    dayChangePct: pick.changePct,
-    dayChangeAbs: pick.price - prevClose,
-    open: prevClose,
-    high: Math.max(pick.price, prevClose),
-    low: Math.min(pick.price, prevClose),
-    prevClose,
+    currentPrice: price,
+    dayChangePct: changePct,
+    dayChangeAbs: price - safePrevClose,
+    open: safePrevClose,
+    high: Math.max(price, safePrevClose),
+    low: Math.min(price, safePrevClose),
+    prevClose: safePrevClose,
     logo: pick.logo,
     domain: pick.domain,
     account: "paper",
@@ -49,10 +52,11 @@ export default function WatchlistScreen({
   onSellHolding,
 }: WatchlistScreenProps) {
   const [selectedHolding, setSelectedHolding] = useState<StockHolding | null>(null);
+  const safeHoldings = holdings || [];
 
   const openWatchlistStock = (pick: WatchlistStockPick) => {
-    const existing = holdings.find(
-      (h): h is StockHolding => h.kind === "stock" && h.symbol === pick.symbol
+    const existing = safeHoldings.find(
+      (h): h is StockHolding => h?.kind === "stock" && h.symbol === pick.symbol
     );
     setSelectedHolding(existing ?? stubHoldingFromWatchlist(pick));
   };
@@ -64,19 +68,23 @@ export default function WatchlistScreen({
       {selectedHolding && (
         <StockDetailPage
           holding={selectedHolding}
-          totalPortfolioValue={totalPortfolioValue}
+          totalPortfolioValue={toFiniteNumber(totalPortfolioValue, 0)}
           privacyMode={privacyMode}
           onBack={() => setSelectedHolding(null)}
           onAddMore={onAddHolding}
           onSell={
-            onSellHolding && selectedHolding.quantity > 0 && selectedHolding.account !== "verified"
+            onSellHolding &&
+            toFiniteNumber(selectedHolding.quantity, 0) > 0 &&
+            selectedHolding.account !== "verified"
               ? async (holding, shares, sellPrice) => {
                   const result = await onSellHolding(holding, shares, sellPrice);
                   if (result.remainingShares <= 1e-8) {
                     setSelectedHolding(null);
                   } else {
                     setSelectedHolding((prev) =>
-                      prev ? { ...prev, quantity: result.remainingShares } : prev
+                      prev
+                        ? { ...prev, quantity: toFiniteNumber(result.remainingShares, 0) }
+                        : prev
                     );
                   }
                   return result;

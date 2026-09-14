@@ -6,11 +6,17 @@ import {
   markClientMockMode,
 } from "./apiBase";
 import { resolveUserAge } from "./age";
+import { toFiniteNumber } from "./money";
 import { emptySafetyNet, parseSafetyNet, type SafetyNetConfig } from "./safetyNet";
 import { readLocalItem } from "./storage";
 import { isSupabaseClientKey, SUPABASE_GUEST_CREDS_KEY } from "./supabase";
 import {
+  AUTH_RATE_LIMIT_MESSAGE,
   fetchUserProfile,
+  invalidateSupabaseAuth,
+  isAuthRateLimitError,
+  isFatalAuthError,
+  messageForAuthError,
   nameFromUserMetadata,
   oauthNameFromSupabaseSession,
   persistUserProfile,
@@ -22,7 +28,14 @@ import {
   type SupabaseAuthInput,
 } from "./supabaseSync";
 
-export { queueFinancialSnapshotSync, signInWithGoogleOAuth } from "./supabaseSync";
+export {
+  AUTH_RATE_LIMIT_MESSAGE,
+  isAuthRateLimitError,
+  isFatalAuthError,
+  messageForAuthError,
+  queueFinancialSnapshotSync,
+  signInWithGoogleOAuth,
+} from "./supabaseSync";
 
 export type { SafetyNetConfig };
 export { getApiBaseUrl, isClientMockMode };
@@ -36,6 +49,9 @@ const SETTINGS_KEY = "sprout_user_settings";
 const LOCAL_ACCOUNTS_KEY = "sprout_local_accounts";
 const LEGACY_TOKEN_KEY = "matterpro_jwt";
 const LEGACY_USER_KEY = "matterpro_user";
+/** Explicit fail-safe keys requested by the onboarding / age step. */
+export const USER_AGE_KEY = "user_age";
+export const ONBOARDING_COMPLETE_KEY = "onboarding_complete";
 
 export type UserSettings = {
   hasCompletedOnboarding: boolean;
@@ -218,8 +234,12 @@ export function updateStoredUser(patch: Partial<AuthUser>): AuthUser | null {
 
 export function clearSession() {
   void signOutSupabase();
-  localStorage.removeItem(TOKEN_KEY);
-  localStorage.removeItem(USER_KEY);
+  try {
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(USER_KEY);
+  } catch {
+    // private mode
+  }
 }
 
 /** Wipe every client cache so the next visit is a true first-time session. */
@@ -333,13 +353,59 @@ function normalizeSettings(partial?: Partial<UserSettings> | null): UserSettings
   };
 }
 
+function readOnboardingFlag(): boolean {
+  try {
+    return localStorage.getItem(ONBOARDING_COMPLETE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function readStoredAgeKey(): number | null {
+  try {
+    const raw = localStorage.getItem(USER_AGE_KEY);
+    if (raw == null || raw === "") return null;
+    const age = Number(raw);
+    return Number.isFinite(age) && age > 0 ? age : null;
+  } catch {
+    return null;
+  }
+}
+
+function syncOnboardingLocalKeys(settings: UserSettings) {
+  try {
+    if (settings.hasCompletedOnboarding) {
+      localStorage.setItem(ONBOARDING_COMPLETE_KEY, "true");
+    } else {
+      localStorage.removeItem(ONBOARDING_COMPLETE_KEY);
+    }
+    const age = resolveUserAge(settings.age, settings.birthDate);
+    if (age != null) {
+      localStorage.setItem(USER_AGE_KEY, String(age));
+    }
+  } catch {
+    // ignore quota / private-mode failures
+  }
+}
+
 function readLocalSettings(): UserSettings {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
-    if (!raw) return { ...DEFAULT_USER_SETTINGS };
-    return normalizeSettings(JSON.parse(raw) as Partial<UserSettings>);
+    const parsed = raw ? (JSON.parse(raw) as Partial<UserSettings>) : {};
+    const flaggedComplete = readOnboardingFlag();
+    const ageKey = readStoredAgeKey();
+    return normalizeSettings({
+      ...parsed,
+      hasCompletedOnboarding: Boolean(parsed.hasCompletedOnboarding) || flaggedComplete,
+      age: parsed.age ?? ageKey,
+    });
   } catch {
-    return { ...DEFAULT_USER_SETTINGS };
+    const flaggedComplete = readOnboardingFlag();
+    const ageKey = readStoredAgeKey();
+    return normalizeSettings({
+      hasCompletedOnboarding: flaggedComplete,
+      age: ageKey,
+    });
   }
 }
 
@@ -349,6 +415,7 @@ function writeLocalSettings(settings: UserSettings) {
   } catch {
     // ignore quota / private-mode failures
   }
+  syncOnboardingLocalKeys(settings);
 }
 
 function isGuestUser(user: Pick<AuthUser, "id" | "email">) {
@@ -431,7 +498,10 @@ async function attachSupabaseProfile(
     }
     await persistUserProfile(profileInputFrom(namedUser, settings, { name: namedUser.name }));
     return { user: namedUser, settings: fallback.settings };
-  } catch {
+  } catch (err) {
+    // Interactive password auth must surface rate-limits / fatal errors to the Auth screen.
+    if (authInput.kind === "password" && isAuthRateLimitError(err)) throw err;
+    if (authInput.kind === "password" && isFatalAuthError(err)) throw err;
     return fallback;
   }
 }
@@ -443,7 +513,13 @@ async function tryCloudProfile(
 ): Promise<{ user: AuthUser; settings: UserSettings }> {
   try {
     return await withTimeout(attachSupabaseProfile(user, settings, authInput), 2500, "Supabase");
-  } catch {
+  } catch (err) {
+    if (authInput.kind === "password" && isAuthRateLimitError(err)) {
+      throw new Error(AUTH_RATE_LIMIT_MESSAGE);
+    }
+    if (authInput.kind === "password" && isFatalAuthError(err)) {
+      throw err instanceof Error ? err : new Error(messageForAuthError(err));
+    }
     return { user, settings: normalizeSettings(settings) };
   }
 }
@@ -460,25 +536,80 @@ export async function hydrateLocalSessionFromSupabase(): Promise<{ user: AuthUse
   });
 }
 
-function createLocalSession(user: { email: string; name: string; id?: string }): AuthResponse {
+function createLocalSession(user: {
+  email: string;
+  name: string;
+  id?: string;
+  authProvider?: AuthProvider;
+}): AuthResponse {
   markClientMockMode();
   const email = normalizeEmail(user.email);
   const settings = readLocalSettings();
+  const nextUser: AuthUser = {
+    id: user.id || `local-${email}`,
+    email,
+    name: user.name.trim() || displayNameFromEmail(email),
+    hasCompletedOnboarding: settings.hasCompletedOnboarding,
+    authProvider: user.authProvider ?? "password",
+  };
+  saveSession(LOCAL_DEMO_TOKEN, nextUser);
   return {
     token: LOCAL_DEMO_TOKEN,
-    user: {
-      id: user.id || `local-${email}`,
-      email,
-      name: user.name.trim() || displayNameFromEmail(email),
-      hasCompletedOnboarding: settings.hasCompletedOnboarding,
-      authProvider: "password",
-    },
+    user: nextUser,
     settings,
   };
 }
 
+/**
+ * Fail-open local session so auth/network/429 errors never blank the dashboard.
+ * Reuses a stored profile when present; otherwise creates a demo session with
+ * completed onboarding so the main UI can render immediately.
+ */
+export function ensureLocalMockSession(): AuthResponse {
+  markClientMockMode();
+  const stored = getStoredUser();
+  const token = getToken();
+  let settings = readLocalSettings();
+
+  if (!settings.hasCompletedOnboarding) {
+    settings = {
+      ...COMPLETED_USER_SETTINGS,
+      ...settings,
+      hasCompletedOnboarding: true,
+      hasCompletedBankSetup: true,
+      age: settings.age ?? readStoredAgeKey(),
+    };
+  }
+  writeLocalSettings(settings);
+
+  if (stored?.id) {
+    const user: AuthUser = {
+      ...stored,
+      hasCompletedOnboarding: true,
+      authProvider: stored.authProvider ?? (isDemoOrGuestSession(token, stored) ? "demo" : "password"),
+    };
+    const useDemoToken = !token || isDemoOrGuestSession(token, stored);
+    saveSession(useDemoToken ? LOCAL_DEMO_TOKEN : token, user);
+    return { token: getToken() || LOCAL_DEMO_TOKEN, user, settings };
+  }
+
+  return createLocalSession({
+    id: "local-demo",
+    email: "demo@sprout.local",
+    name: "Demo Investor",
+    authProvider: "demo",
+  });
+}
+
 function isUnreachableStatus(status: number) {
-  return status === 404 || status === 501 || status === 502 || status === 503 || status === 504;
+  return (
+    status === 404 ||
+    status === 429 ||
+    status === 501 ||
+    status === 502 ||
+    status === 503 ||
+    status === 504
+  );
 }
 
 function isUnreachableError(err: unknown) {
@@ -521,11 +652,16 @@ export async function authFetch(path: string, init: RequestInit = {}) {
 
 async function parseError(res: Response): Promise<string> {
   try {
-    const data = (await res.json()) as { error?: string };
+    const data = (await res.json()) as { error?: string; message?: string };
+    if (res.status === 429 || /rate.?limit|too many/i.test(`${data?.error || ""} ${data?.message || ""}`)) {
+      return AUTH_RATE_LIMIT_MESSAGE;
+    }
     if (data?.error) return data.error;
+    if (data?.message) return data.message;
   } catch {
     // ignore HTML / empty proxy failures
   }
+  if (res.status === 429) return AUTH_RATE_LIMIT_MESSAGE;
   if (isUnreachableStatus(res.status)) {
     return "Request failed — the API server is not reachable from this device. Start the backend and try again.";
   }
@@ -548,14 +684,20 @@ async function tryRemoteJson<T>(
   try {
     const res = await withTimeout(authed ? authFetch(path, init) : apiFetch(path, init), timeoutMs, "Request");
     if (res.ok) return { ok: true, data: (await res.json()) as T };
-    if (isUnreachableStatus(res.status) && allowClientMockFallback()) {
+    // 429 / gateway errors always fall open to local mock data.
+    if (res.status === 429 || (isUnreachableStatus(res.status) && allowClientMockFallback())) {
       markClientMockMode();
       return { ok: false, unreachable: true, error: new Error(await parseError(res)) };
     }
     return { ok: false, unreachable: false, error: new Error(await parseError(res)) };
   } catch (err) {
     const error = err instanceof Error ? err : new Error("Request failed");
-    if (allowClientMockFallback() && isUnreachableError(err)) {
+    if (isAuthRateLimitError(err) || (allowClientMockFallback() && isUnreachableError(err))) {
+      markClientMockMode();
+      return { ok: false, unreachable: true, error };
+    }
+    if (isUnreachableError(err)) {
+      // Network failures must never hard-block the UI — treat as unreachable always.
       markClientMockMode();
       return { ok: false, unreachable: true, error };
     }
@@ -593,70 +735,80 @@ export async function registerUser(input: {
 }): Promise<AuthResponse> {
   const name = input.name?.trim() || displayNameFromEmail(input.email);
   const payload = { name, email: input.email, password: input.password };
-  const remote = await tryRemoteJson<AuthResponse>("/api/auth/register", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  if (remote.ok) {
-    const cloud = await tryCloudProfile(
-      { ...remote.data.user, authProvider: remote.data.user.authProvider ?? "password" },
-      remote.data.settings,
-      {
-        kind: "password",
-        email: input.email,
-        password: input.password,
-        name,
-      }
-    );
-    return { ...remote.data, user: cloud.user, settings: cloud.settings };
-  }
-  if (remote.unreachable && allowClientMockFallback()) {
-    const local = localRegister(payload);
-    const cloud = await tryCloudProfile(local.user, local.settings, {
-      kind: "password",
-      email: input.email,
-      password: input.password,
-      name,
+  try {
+    const remote = await tryRemoteJson<AuthResponse>("/api/auth/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
     });
-    return { ...local, user: cloud.user, settings: cloud.settings };
+    if (remote.ok) {
+      const cloud = await tryCloudProfile(
+        { ...remote.data.user, authProvider: remote.data.user.authProvider ?? "password" },
+        remote.data.settings,
+        {
+          kind: "password",
+          email: input.email,
+          password: input.password,
+          name,
+        }
+      );
+      return { ...remote.data, user: cloud.user, settings: cloud.settings };
+    }
+    // Unreachable API, 429, or network errors → local mock immediately (never block UI).
+    if (remote.unreachable || isAuthRateLimitError(remote.error)) {
+      return localRegister(payload);
+    }
+    throw remote.error;
+  } catch (err) {
+    if (isAuthRateLimitError(err) || isUnreachableError(err) || isFatalAuthError(err)) {
+      try {
+        return localRegister(payload);
+      } catch {
+        return ensureLocalMockSession();
+      }
+    }
+    throw err instanceof Error ? err : new Error(messageForAuthError(err, "Sign up failed"));
   }
-  throw remote.error;
 }
 
 export async function loginUser(input: {
   email: string;
   password: string;
 }): Promise<AuthResponse> {
-  const remote = await tryRemoteJson<AuthResponse>("/api/auth/login", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(input),
-  });
-  if (remote.ok) {
-    const cloud = await tryCloudProfile(
-      { ...remote.data.user, authProvider: remote.data.user.authProvider ?? "password" },
-      remote.data.settings,
-      {
-        kind: "password",
-        email: input.email,
-        password: input.password,
-        name: remote.data.user.name,
-      }
-    );
-    return { ...remote.data, user: cloud.user, settings: cloud.settings };
-  }
-  if (remote.unreachable && allowClientMockFallback()) {
-    const local = localLogin(input);
-    const cloud = await tryCloudProfile(local.user, local.settings, {
-      kind: "password",
-      email: input.email,
-      password: input.password,
-      name: local.user.name,
+  try {
+    const remote = await tryRemoteJson<AuthResponse>("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
     });
-    return { ...local, user: cloud.user, settings: cloud.settings };
+    if (remote.ok) {
+      const cloud = await tryCloudProfile(
+        { ...remote.data.user, authProvider: remote.data.user.authProvider ?? "password" },
+        remote.data.settings,
+        {
+          kind: "password",
+          email: input.email,
+          password: input.password,
+          name: remote.data.user.name,
+        }
+      );
+      return { ...remote.data, user: cloud.user, settings: cloud.settings };
+    }
+    // Unreachable API, 429, or network errors → local mock immediately (never block UI).
+    if (remote.unreachable || isAuthRateLimitError(remote.error)) {
+      return localLogin(input);
+    }
+    throw remote.error;
+  } catch (err) {
+    if (isAuthRateLimitError(err) || isUnreachableError(err) || isFatalAuthError(err)) {
+      try {
+        return localLogin(input);
+      } catch {
+        return ensureLocalMockSession();
+      }
+    }
+    throw err instanceof Error ? err : new Error(messageForAuthError(err, "Login failed"));
   }
-  throw remote.error;
 }
 
 function authUserFromSupabaseSession(session: {
@@ -740,10 +892,19 @@ async function authResponseFromSupabaseSession(session: {
 /** Resume a Google (or other) Supabase session after OAuth redirect or refresh. */
 export async function restoreSupabaseAuthSession(): Promise<AuthResponse | null> {
   try {
-    const session = await waitForSupabaseSession();
+    // Keep well under the App bootstrap 1s fail-safe so loading never hangs.
+    const session = await waitForSupabaseSession(800);
     if (!session?.user) return null;
     return await authResponseFromSupabaseSession(session);
-  } catch {
+  } catch (err) {
+    if (isFatalAuthError(err) || isAuthRateLimitError(err)) {
+      try {
+        await invalidateSupabaseAuth(err);
+      } catch {
+        // ignore wipe failures — caller will show Auth
+      }
+    }
+    // Fail closed: never invent a mock session during restore.
     return null;
   }
 }
@@ -757,11 +918,19 @@ export function subscribeAuthSession(
       try {
         if (session?.user) {
           const restored = await authResponseFromSupabaseSession(session);
+          if (!restored?.user?.id) {
+            await invalidateSupabaseAuth();
+            onChange(null, event);
+            return;
+          }
           onChange(restored, event);
           return;
         }
         onChange(null, event);
-      } catch {
+      } catch (err) {
+        if (isFatalAuthError(err) || isAuthRateLimitError(err)) {
+          await invalidateSupabaseAuth(err);
+        }
         onChange(null, event);
       }
     })();
@@ -831,6 +1000,16 @@ export function persistLocalUserSettings(
 ): UserSettings {
   const next = normalizeSettings({ ...readLocalSettings(), ...input });
   writeLocalSettings(next);
+  // Always mirror age / onboarding into the explicit fail-safe keys.
+  try {
+    if (next.hasCompletedOnboarding) {
+      localStorage.setItem(ONBOARDING_COMPLETE_KEY, "true");
+    }
+    const age = resolveUserAge(next.age, next.birthDate);
+    if (age != null) localStorage.setItem(USER_AGE_KEY, String(age));
+  } catch {
+    // private mode
+  }
   if (input.name) {
     updateStoredUser({ name: input.name, hasCompletedOnboarding: next.hasCompletedOnboarding });
   }
@@ -849,24 +1028,31 @@ export async function saveUserSettings(
   const settings = persistLocalUserSettings(input);
   const user = getStoredUser();
   try {
-    await syncSupabaseAuth({
-      kind: "guest",
-      name: input.name ?? user?.name,
-      isDemo: user?.id === "local-demo",
-    });
-    await persistUserProfile(
-      profileInputFrom(
-        user ?? {
-          id: "anon",
-          email: "",
-          name: input.name ?? "",
-        },
-        settings,
-        { name: input.name }
-      )
+    await withTimeout(
+      (async () => {
+        await syncSupabaseAuth({
+          kind: "guest",
+          name: input.name ?? user?.name,
+          isDemo: user?.id === "local-demo",
+        });
+        await persistUserProfile(
+          profileInputFrom(
+            user ?? {
+              id: "anon",
+              email: "",
+              name: input.name ?? "",
+            },
+            settings,
+            { name: input.name }
+          )
+        );
+      })(),
+      3000,
+      "Supabase"
     );
-  } catch {
-    // local settings still apply when the cloud write is unavailable
+  } catch (err) {
+    // local settings still apply when the cloud write is unavailable or hangs
+    console.warn("Supabase update failed, continuing with local state", err);
   }
   return settings;
 }
@@ -902,14 +1088,48 @@ export type PortfolioApiItem = {
   createdAt: string;
 };
 
+/** Normalize portfolio lots so missing/NaN numerics never reach render maps. */
+function normalizePortfolioItem(raw: unknown): PortfolioApiItem | null {
+  if (!raw || typeof raw !== "object") return null;
+  const item = raw as Record<string, unknown>;
+  const id = typeof item.id === "string" && item.id.trim() ? item.id.trim() : "";
+  const symbol = typeof item.symbol === "string" && item.symbol.trim() ? item.symbol.trim().toUpperCase() : "";
+  if (!id || !symbol) return null;
+  return {
+    id,
+    userId: typeof item.userId === "string" && item.userId ? item.userId : currentUserId(),
+    symbol,
+    shares: toFiniteNumber(item.shares, 0),
+    buyPrice: toFiniteNumber(item.buyPrice, 0),
+    purchasedAt:
+      typeof item.purchasedAt === "string" || item.purchasedAt === null
+        ? (item.purchasedAt as string | null)
+        : null,
+    accountType:
+      typeof item.accountType === "string" || item.accountType === null
+        ? (item.accountType as string | null)
+        : "paper",
+    createdAt:
+      typeof item.createdAt === "string" && item.createdAt
+        ? item.createdAt
+        : new Date().toISOString(),
+  };
+}
+
+function normalizePortfolioItems(items: unknown): PortfolioApiItem[] {
+  if (!Array.isArray(items)) return [];
+  return items.map(normalizePortfolioItem).filter((item): item is PortfolioApiItem => Boolean(item));
+}
+
 export async function fetchPortfolio(): Promise<PortfolioApiItem[]> {
   try {
     const remote = await tryRemoteJson<PortfolioApiItem[]>("/api/portfolio", {}, AUTH_TIMEOUT_MS, true);
     if (remote.ok && Array.isArray(remote.data)) {
+      const items = normalizePortfolioItems(remote.data);
       const cached = readPortfolioCache()?.items || [];
-      if (remote.data.length === 0 && cached.length > 0) return cached;
-      writePortfolioCache(remote.data);
-      return remote.data;
+      if (items.length === 0 && cached.length > 0) return cached;
+      writePortfolioCache(items);
+      return items;
     }
   } catch {
     // Missing /api/portfolio must not throw in the UI.
@@ -930,7 +1150,10 @@ export function readPortfolioCache(userId?: string | null): {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as { items?: PortfolioApiItem[]; updatedAt?: number };
     if (!Array.isArray(parsed.items)) return { items: [], updatedAt: Number(parsed.updatedAt) || 0 };
-    return { items: parsed.items.filter(Boolean), updatedAt: Number(parsed.updatedAt) || 0 };
+    return {
+      items: normalizePortfolioItems(parsed.items),
+      updatedAt: Number(parsed.updatedAt) || 0,
+    };
   } catch {
     return null;
   }
@@ -940,7 +1163,7 @@ export function writePortfolioCache(items: PortfolioApiItem[], userId?: string |
   try {
     localStorage.setItem(
       portfolioCacheKey(userId),
-      JSON.stringify({ items, updatedAt: Date.now() })
+      JSON.stringify({ items: normalizePortfolioItems(items), updatedAt: Date.now() })
     );
   } catch {
     // ignore quota / private-mode failures
@@ -957,18 +1180,30 @@ function createLocalPortfolioItem(input: {
   buyPrice: number;
   purchasedAt?: string | null;
 }): PortfolioApiItem {
-  const symbol = input.symbol.trim().toUpperCase();
+  const symbol = String(input.symbol || "")
+    .trim()
+    .toUpperCase();
+  if (!symbol) {
+    throw new Error("Symbol is required");
+  }
+  const inputShares = toFiniteNumber(input.shares ?? 0, 0);
+  const inputBuyPrice = toFiniteNumber(input.buyPrice ?? 0, 0);
   const items = mockPortfolioItems();
   const existing = items.find(
-    (item) => item.symbol.toUpperCase() === symbol && (item.accountType || "paper") !== "verified"
+    (item) =>
+      String(item.symbol || "")
+        .toUpperCase() === symbol && (item.accountType || "paper") !== "verified"
   );
   if (existing) {
-    const shares = existing.shares + input.shares;
-    const buyPrice = (existing.shares * existing.buyPrice + input.shares * input.buyPrice) / shares;
+    const existingShares = toFiniteNumber(existing.shares, 0);
+    const existingBuyPrice = toFiniteNumber(existing.buyPrice, 0);
+    const shares = existingShares + inputShares;
+    const buyPrice =
+      shares > 0 ? (existingShares * existingBuyPrice + inputShares * inputBuyPrice) / shares : inputBuyPrice;
     const updated: PortfolioApiItem = {
       ...existing,
-      shares,
-      buyPrice,
+      shares: toFiniteNumber(shares, 0),
+      buyPrice: toFiniteNumber(buyPrice, 0),
       purchasedAt: existing.purchasedAt || input.purchasedAt || null,
     };
     writePortfolioCache(items.map((item) => (item.id === existing.id ? updated : item)));
@@ -978,8 +1213,8 @@ function createLocalPortfolioItem(input: {
     id: newLocalId("lot"),
     userId: currentUserId(),
     symbol,
-    shares: input.shares,
-    buyPrice: input.buyPrice,
+    shares: inputShares,
+    buyPrice: inputBuyPrice,
     purchasedAt: input.purchasedAt ?? null,
     accountType: "paper",
     createdAt: new Date().toISOString(),
@@ -995,25 +1230,36 @@ export async function createPortfolioItem(input: {
   buyPrice: number;
   purchasedAt?: string | null;
 }): Promise<PortfolioApiItem> {
+  const safeInput = {
+    symbol: String(input.symbol || "")
+      .trim()
+      .toUpperCase(),
+    shares: toFiniteNumber(input.shares ?? 0, 0),
+    buyPrice: toFiniteNumber(input.buyPrice ?? 0, 0),
+    purchasedAt: input.purchasedAt ?? null,
+  };
   const remote = await tryRemoteJson<PortfolioApiItem>(
     "/api/portfolio",
     {
       method: "POST",
-      body: JSON.stringify(input),
+      body: JSON.stringify(safeInput),
     },
     AUTH_TIMEOUT_MS,
     true
   );
   if (remote.ok) {
-    try {
-      const items = mockPortfolioItems();
-      writePortfolioCache([remote.data, ...items.filter((item) => item.id !== remote.data.id)]);
-    } catch {
-      // keep going with the remote item
+    const normalized = normalizePortfolioItem(remote.data);
+    if (normalized) {
+      try {
+        const items = mockPortfolioItems();
+        writePortfolioCache([normalized, ...items.filter((item) => item.id !== normalized.id)]);
+      } catch {
+        // keep going with the remote item
+      }
+      return normalized;
     }
-    return remote.data;
   }
-  return createLocalPortfolioItem(input);
+  return createLocalPortfolioItem(safeInput);
 }
 
 export async function deletePortfolioItem(id: string): Promise<void> {
@@ -1081,12 +1327,12 @@ export async function sellPortfolioItem(
   if (!existing) {
     return { deleted: true, id, sharesSold: input.shares, sellPrice: input.sellPrice };
   }
-  const remaining = existing.shares - input.shares;
+  const remaining = toFiniteNumber(existing.shares, 0) - toFiniteNumber(input.shares, 0);
   if (remaining <= 1e-8) {
     writePortfolioCache(items.filter((item) => item.id !== id));
     return { deleted: true, id, sharesSold: input.shares, sellPrice: input.sellPrice };
   }
-  const item = { ...existing, shares: remaining };
+  const item = { ...existing, shares: toFiniteNumber(remaining, 0) };
   writePortfolioCache(items.map((row) => (row.id === id ? item : row)));
   return { deleted: false, item, sharesSold: input.shares, sellPrice: input.sellPrice };
 }

@@ -62,6 +62,9 @@ import {
   fetchStockSearch,
   localTickerMatches,
   mockQuoteForSymbol,
+  normalizeStockData,
+  normalizeToStockQuote,
+  sanitizeSafeStock,
   type StockProfile,
   type StockQuote,
   type StockSearchResult,
@@ -99,6 +102,7 @@ import AllocationRing from "./AllocationRing";
 import DailyReportScreen from "./DailyReportScreen";
 import DarkCalendar from "./DarkCalendar";
 import LiveStatusBadge from "./LiveStatusBadge";
+import LoadingSpinner, { EmptyChartPlaceholder } from "./LoadingSpinner";
 import PlaidConnectButton from "./PlaidConnectButton";
 import SocratesPortfolioReport from "./SocratesPortfolioReport";
 import Sparkline from "./Sparkline";
@@ -142,6 +146,48 @@ type BrokerHolding = {
 };
 
 export type Holding = StockHolding | BrokerHolding;
+
+/** Hard-guard StockHolding numerics so Recharts/tables never see undefined/NaN. */
+function sanitizeStockHolding(holding: StockHolding): StockHolding {
+  const safeStock = sanitizeSafeStock({
+    ...holding,
+    price: Number(holding?.currentPrice ?? (holding as any)?.price ?? (holding as any)?.current_price) || 0,
+    shares: Number(holding?.quantity ?? (holding as any)?.shares) || 0,
+    buy_price: Number(holding?.avgCost ?? (holding as any)?.buy_price ?? (holding as any)?.buyPrice) || 0,
+    current_price: Number(holding?.currentPrice ?? (holding as any)?.current_price) || 0,
+    total_value:
+      Number(
+        (holding as any)?.total_value ??
+          (Number(holding?.quantity) || 0) * (Number(holding?.currentPrice) || 0)
+      ) || 0,
+    change: Number(holding?.dayChangeAbs ?? (holding as any)?.change) || 0,
+    change_percent: Number(holding?.dayChangePct ?? (holding as any)?.change_percent) || 0,
+  });
+  const price = Number(safeStock.current_price ?? safeStock.price) || 0;
+  const shares = Number(safeStock.shares) || 0;
+  const buyPrice = Number(holding?.avgCost ?? safeStock.buy_price) || 0;
+  return {
+    ...holding,
+    symbol: String(holding?.symbol || safeStock.symbol || "—").toUpperCase(),
+    description: String(holding?.description || safeStock.name || holding?.symbol || "—"),
+    quantity: shares,
+    avgCost: buyPrice,
+    currentPrice: price,
+    dayChangePct: Number(safeStock.change_percent) || 0,
+    dayChangeAbs: Number(safeStock.change) || 0,
+    open: toFiniteNumber(holding?.open, price),
+    high: toFiniteNumber(holding?.high, price),
+    low: toFiniteNumber(holding?.low, price),
+    prevClose: toFiniteNumber(holding?.prevClose, price),
+  };
+}
+
+/** Ensure every entry in holdings arrays is numeric-safe before charts/state consumers. */
+function guardHoldings(list: Holding[] | null | undefined): Holding[] {
+  return (list || [])
+    .filter((h): h is Holding => Boolean(h))
+    .map((h) => (h.kind === "stock" ? sanitizeStockHolding(h) : { ...h, balance: toFiniteNumber(h.balance, 0) }));
+}
 
 const HOLDING_ORDER_KEY = "sprout_portfolio_holding_order";
 const LEGACY_HOLDING_ORDER_KEY = "matterpro:portfolio-holding-order";
@@ -357,7 +403,7 @@ function BenchmarkTooltip({
   privacyMode: boolean;
   startValue: number;
 }) {
-  if (!active || !payload?.length) return null;
+  if (!active || !payload || !payload.length) return null;
   const point = payload[0]?.payload;
   if (!point) return null;
   const portfolioPct = point.portfolioPct ?? 0;
@@ -446,25 +492,55 @@ function PortfolioActionButtons({
 }
 
 function stockHoldingFromItem(item: PortfolioApiItem, name?: string): StockHolding {
-  const currentPrice = toFiniteNumber(item?.buyPrice, 0);
-  const quantity = toFiniteNumber(item?.shares, 0);
-  return {
-    id: item.id,
-    kind: "stock",
+  if (!item) {
+    return sanitizeStockHolding({
+      id: `missing-${Date.now()}`,
+      kind: "stock",
+      symbol: "—",
+      description: "—",
+      quantity: 0,
+      avgCost: 0,
+      currentPrice: 0,
+      dayChangePct: 0,
+      dayChangeAbs: 0,
+      open: 0,
+      high: 0,
+      low: 0,
+      prevClose: 0,
+      account: "paper",
+    });
+  }
+  // Mandatory sanitizer before any holding is built from API/raw payloads.
+  const safeStock = sanitizeSafeStock({
+    ...item,
     symbol: item.symbol,
-    description: name || item.symbol,
-    quantity,
-    avgCost: currentPrice,
+    name,
+    price: (item as any).price ?? (item as any).current_price ?? item.buyPrice,
+    shares: (item as any).quantity ?? item.shares,
+    change: (item as any).change,
+    change_percent: (item as any).change_percent,
+  });
+  const normalized = normalizeStockData(safeStock);
+  const currentPrice = Number(normalized.price) || 0;
+  const shares = Number(normalized.shares) || 0;
+  const buyPrice = Number(item.buyPrice ?? currentPrice) || 0;
+  return sanitizeStockHolding({
+    id: item.id || `lot-${Date.now()}`,
+    kind: "stock",
+    symbol: normalized.symbol || "—",
+    description: normalized.name || normalized.symbol || "—",
+    quantity: shares,
+    avgCost: buyPrice,
     currentPrice,
-    dayChangePct: 0,
-    dayChangeAbs: 0,
+    dayChangePct: normalized.change_percent,
+    dayChangeAbs: normalized.change,
     open: currentPrice,
-    high: currentPrice,
-    low: currentPrice,
+    high: normalized.high > 0 ? normalized.high : currentPrice,
+    low: normalized.low > 0 ? normalized.low : currentPrice,
     prevClose: currentPrice,
     purchasedAt: isoDateFromApi(item.purchasedAt),
     account: parseAccountKind(item.accountType),
-  };
+  });
 }
 
 function holdingsFromApiItems(items: PortfolioApiItem[] | null | undefined): StockHolding[] {
@@ -476,14 +552,14 @@ function holdingsFromApiItems(items: PortfolioApiItem[] | null | undefined): Sto
 }
 
 function persistHoldingsCache(holdings: Holding[]) {
-  const items: PortfolioApiItem[] = holdings
-    .filter((holding): holding is StockHolding => holding.kind === "stock")
+  const items: PortfolioApiItem[] = (holdings || [])
+    .filter((holding): holding is StockHolding => holding?.kind === "stock")
     .map((holding) => ({
       id: holding.id,
       userId: getStoredUser()?.id ?? "local",
       symbol: holding.symbol,
-      shares: holding.quantity,
-      buyPrice: holding.avgCost,
+      shares: Number(holding.quantity) || 0,
+      buyPrice: Number(holding.avgCost) || 0,
       purchasedAt: holding.purchasedAt,
       accountType: holding.account,
       createdAt: new Date().toISOString(),
@@ -497,25 +573,44 @@ async function enrichStockHolding(item: PortfolioApiItem): Promise<StockHolding>
     withTimeout(fetchStockProfile(item.symbol), 12000, "Profile"),
   ]);
 
-  const quote = quoteResult.status === "fulfilled" ? quoteResult.value : null;
+  const rawQuote = quoteResult.status === "fulfilled" ? quoteResult.value : null;
+  const quote = normalizeToStockQuote(rawQuote, item.symbol);
   const profile = profileResult.status === "fulfilled" ? profileResult.value : null;
-  const buyPrice = toFiniteNumber(item?.buyPrice, 0);
-  const quantity = toFiniteNumber(item?.shares, 0);
-  const currentPrice = quote && quote.c > 0 ? toFiniteNumber(quote.c, buyPrice) : buyPrice;
+  const safeStock = sanitizeSafeStock({
+    symbol: item.symbol,
+    name: profile?.name || item.symbol,
+    shares: Number(item?.shares) || 0,
+    price: Number(quote && quote.c > 0 ? quote.c : item?.buyPrice) || 0,
+    current_price: Number(quote?.c) || 0,
+    buy_price: Number(item?.buyPrice) || 0,
+    change: Number(quote?.d) || 0,
+    change_percent: Number(quote?.dp) || 0,
+    high: Number(quote?.h) || 0,
+    low: Number(quote?.l) || 0,
+    c: Number(quote?.c) || 0,
+    d: Number(quote?.d) || 0,
+    dp: Number(quote?.dp) || 0,
+    h: Number(quote?.h) || 0,
+    l: Number(quote?.l) || 0,
+  });
+  const normalized = normalizeStockData(safeStock);
+  const buyPrice = Number(item?.buyPrice) || 0;
+  const currentPrice = Number(normalized.price > 0 ? normalized.price : buyPrice) || 0;
+  const shares = Number(normalized.shares) || 0;
 
-  return {
+  return sanitizeStockHolding({
     id: item.id,
     kind: "stock",
-    symbol: item.symbol,
-    description: profile?.name || item.symbol,
-    quantity,
+    symbol: normalized.symbol || item.symbol,
+    description: normalized.name || item.symbol,
+    quantity: shares,
     avgCost: buyPrice,
     currentPrice,
-    dayChangePct: toFiniteNumber(quote?.dp, 0),
-    dayChangeAbs: toFiniteNumber(quote?.d, 0),
+    dayChangePct: normalized.change_percent,
+    dayChangeAbs: normalized.change,
     open: toFiniteNumber(quote?.o, currentPrice),
-    high: toFiniteNumber(quote?.h, currentPrice),
-    low: toFiniteNumber(quote?.l, currentPrice),
+    high: normalized.high > 0 ? normalized.high : currentPrice,
+    low: normalized.low > 0 ? normalized.low : currentPrice,
     prevClose: toFiniteNumber(quote?.pc, currentPrice),
     logo: profile?.logo,
     domain: profile?.domain || extractDomain(profile?.weburl),
@@ -525,7 +620,7 @@ async function enrichStockHolding(item: PortfolioApiItem): Promise<StockHolding>
     dividendYield: quote?.dividendYield ?? null,
     purchasedAt: isoDateFromApi(item.purchasedAt),
     account: parseAccountKind(item.accountType),
-  };
+  });
 }
 
 function isoDateFromApi(value: string | null | undefined): string | null {
@@ -535,14 +630,19 @@ function isoDateFromApi(value: string | null | undefined): string | null {
 }
 
 function isPaperTicker(h: Holding, symbol: string): h is StockHolding {
-  return h.kind === "stock" && h.symbol.toUpperCase() === symbol.toUpperCase() && h.account === "paper";
+  if (h?.kind !== "stock" || h.account !== "paper") return false;
+  const left = String(h.symbol || "").toUpperCase();
+  const right = String(symbol || "").toUpperCase();
+  return Boolean(left && right && left === right);
 }
 
 /** Replace the paper row for this ticker (or insert it) so adding shares never creates a duplicate. */
 function upsertPaperHolding(prev: Holding[], next: StockHolding): Holding[] {
+  if (!next?.symbol) return (prev || []).filter(Boolean);
   let replaced = false;
   const out: Holding[] = [];
-  for (const h of prev) {
+  for (const h of prev || []) {
+    if (!h) continue;
     if (!isPaperTicker(h, next.symbol)) {
       out.push(h);
       continue;
@@ -585,18 +685,38 @@ async function fetchHistoricalPrice(
 }
 
 function applyQuoteToHolding(holding: StockHolding, quote: StockQuote): StockHolding {
-  if (!(quote.c > 0)) return holding;
-  return {
+  const safe = normalizeToStockQuote(quote, holding.symbol);
+  if (!safe || !(safe.c > 0)) return sanitizeStockHolding(holding);
+  const safeStock = sanitizeSafeStock({
+    symbol: holding.symbol,
+    name: holding.description,
+    shares: Number(holding.quantity) || 0,
+    price: Number(safe.c) || 0,
+    current_price: Number(safe.c) || 0,
+    buy_price: Number(holding.avgCost) || 0,
+    change: Number(safe.d) || 0,
+    change_percent: Number(safe.dp) || 0,
+    high: Number(safe.h) || 0,
+    low: Number(safe.l) || 0,
+    c: Number(safe.c) || 0,
+    d: Number(safe.d) || 0,
+    dp: Number(safe.dp) || 0,
+    h: Number(safe.h) || 0,
+    l: Number(safe.l) || 0,
+  });
+  const normalized = normalizeStockData(safeStock);
+  const currentPrice = Number(normalized.price) || 0;
+  return sanitizeStockHolding({
     ...holding,
-    currentPrice: quote.c,
-    dayChangePct: quote.dp ?? holding.dayChangePct,
-    dayChangeAbs: quote.d ?? holding.dayChangeAbs,
-    open: quote.o ?? holding.open,
-    high: quote.h ?? holding.high,
-    low: quote.l ?? holding.low,
-    prevClose: quote.pc ?? holding.prevClose,
-    dividendYield: quote.dividendYield ?? holding.dividendYield,
-  };
+    currentPrice,
+    dayChangePct: Number(normalized.change_percent) || 0,
+    dayChangeAbs: Number(normalized.change) || 0,
+    open: toFiniteNumber(safe.o, toFiniteNumber(holding.open, currentPrice)),
+    high: normalized.high > 0 ? Number(normalized.high) || currentPrice : currentPrice,
+    low: normalized.low > 0 ? Number(normalized.low) || currentPrice : currentPrice,
+    prevClose: toFiniteNumber(safe.pc, toFiniteNumber(holding.prevClose, currentPrice)),
+    dividendYield: safe.dividendYield ?? holding.dividendYield ?? null,
+  });
 }
 
 
@@ -614,10 +734,19 @@ export default function InvestmentPortfolioCard({
   const [benchmarkLoading, setBenchmarkLoading] = useState(false);
   const [spCandles, setSpCandles] = useState<ChartCandle[]>([]);
   const [holdingCandles, setHoldingCandles] = useState<Map<string, ChartCandle[]>>(new Map());
-  const [holdings, setHoldings] = useState<Holding[]>(() => {
+  const [holdings, setHoldingsState] = useState<Holding[]>(() => {
     const cached = readPortfolioCache();
-    return cached ? holdingsFromApiItems(cached.items || []) : [];
+    return guardHoldings(cached ? holdingsFromApiItems(cached.items || []) : []);
   });
+  const setHoldings = (
+    updater: Holding[] | ((prev: Holding[]) => Holding[])
+  ) => {
+    setHoldingsState((prev) => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      // Pass safeStock-only arrays into React state / Recharts consumers.
+      return guardHoldings(next);
+    });
+  };
   const [assetsPerfMode, setAssetsPerfMode] = useState<AssetsPerfMode>(readAssetsPerfMode);
   const [hoverPoint, setHoverPoint] = useState<SeriesPoint | null>(null);
   const [portfolioLoading, setPortfolioLoading] = useState(() => !readPortfolioCache());
@@ -675,7 +804,7 @@ export default function InvestmentPortfolioCard({
   const [pressingId, setPressingId] = useState<string | null>(null);
 
   // Guard mapped portfolio arrays so undefined never reaches charts/tables.
-  const safeHoldings = holdings || [];
+  const safeHoldings = useMemo(() => guardHoldings(holdings), [holdings]);
   const stocks = safeHoldings.filter((h): h is StockHolding => h?.kind === "stock");
   const hasStockHoldings = stocks.length > 0;
   const canReorderHoldings = safeHoldings.length > 1;
@@ -836,6 +965,7 @@ export default function InvestmentPortfolioCard({
       } catch (err) {
         if (!cancelled && !cached) {
           setPortfolioError(err instanceof Error ? err.message : "Couldn't load portfolio");
+          setHoldings((prev) => prev.filter((h): h is BrokerHolding => h?.kind === "broker"));
         } else if (!cancelled && cached) {
           const stocks = await Promise.all((cached.items || []).map((item) => enrichStockHolding(item)));
           if (cancelled || holdingsEpochRef.current !== epoch) return;
@@ -955,7 +1085,7 @@ export default function InvestmentPortfolioCard({
   const portfolioDayChangePct = useMemo(() => {
     if (totalValue <= 0) return 0;
     const weightedSum = safeHoldings.reduce((sum, h) => {
-      const dp = h.kind === "stock" ? h.dayChangePct : 0;
+      const dp = h?.kind === "stock" ? toFiniteNumber(h?.dayChangePct, 0) : 0;
       return sum + holdingValue(h) * dp;
     }, 0);
     return weightedSum / totalValue;
@@ -1015,13 +1145,33 @@ export default function InvestmentPortfolioCard({
   const benchmarkReady = benchmarkOn && spCandles.length > 0;
 
   const chartData = useMemo(() => {
+    const sanitizePoint = (p: {
+      value?: number;
+      portfolioValue?: number;
+      portfolioPct?: number;
+      spPct?: number;
+      t?: number;
+      label?: string;
+      [key: string]: unknown;
+    }) => ({
+      ...p,
+      value: toFiniteNumber(p?.value, 0),
+      portfolioValue: toFiniteNumber(p?.portfolioValue ?? p?.value, 0),
+      portfolioPct: toFiniteNumber(p?.portfolioPct, 0),
+      spPct: toFiniteNumber(p?.spPct, 0),
+      t: toFiniteNumber(p?.t, 0),
+      label: typeof p?.label === "string" ? p.label : "",
+    });
+
     const fallback = () => {
       const first = simulatedChartData[0]?.value ?? 0;
-      return simulatedChartData.map((p) => ({
-        ...p,
-        portfolioValue: p.value,
-        portfolioPct: first > 0 ? ((p.value - first) / first) * 100 : 0,
-      }));
+      return simulatedChartData.map((p) =>
+        sanitizePoint({
+          ...p,
+          portfolioValue: p.value,
+          portfolioPct: first > 0 ? ((p.value - first) / first) * 100 : 0,
+        })
+      );
     };
 
     const liveCandles = [...holdingCandles.values()].filter((pts) => pts.length > 0);
@@ -1033,8 +1183,8 @@ export default function InvestmentPortfolioCard({
 
     const stockLots = stocks.map((h) => ({
       symbol: h.symbol,
-      quantity: h.quantity,
-      currentPrice: h.currentPrice,
+      quantity: h.quantity ?? 0,
+      currentPrice: h.currentPrice ?? 0,
     }));
     const reconstructed = reconstructPortfolioValues(stockLots, holdingCandles, cashValue, timestamps);
     const hasLivePath = reconstructed.some((v) => v > 0);
@@ -1046,8 +1196,8 @@ export default function InvestmentPortfolioCard({
     }
     const spPrices = pricesOnTimestamps(spCandles, timestamps);
     const built = buildBenchmarkChartData({ range, timestamps, portfolioValues, spPrices });
-    if (benchmarkReady) return built;
-    return built.map((p) => ({ ...p, value: p.portfolioValue }));
+    if (benchmarkReady) return built.map(sanitizePoint);
+    return built.map((p) => sanitizePoint({ ...p, value: p.portfolioValue }));
   }, [
     benchmarkReady,
     simulatedChartData,
@@ -1090,13 +1240,13 @@ export default function InvestmentPortfolioCard({
     return [Math.max(0, min - pad), max + pad] as [number, number];
   }, [chartData, benchmarkReady]);
 
-  const startPortfolioValue = chartData[0]?.portfolioValue ?? chartData[0]?.value ?? 0;
-  const displayValue = benchmarkReady
-    ? (hoverPoint?.portfolioValue ?? totalValue)
-    : (hoverPoint?.value ?? totalValue);
-  const displayGainAbs = hoverPoint
-    ? (hoverPoint.portfolioValue ?? hoverPoint.value) - startPortfolioValue
-    : gainAbs;
+  const startPortfolioValue = Number(chartData[0]?.portfolioValue ?? chartData[0]?.value) || 0;
+  const displayValue =
+    Number(benchmarkReady ? (hoverPoint?.portfolioValue ?? totalValue) : (hoverPoint?.value ?? totalValue)) ||
+    0;
+  const displayGainAbs = Number(
+    hoverPoint ? (hoverPoint.portfolioValue ?? hoverPoint.value) - startPortfolioValue : gainAbs
+  ) || 0;
   const displayGainPct = toFiniteNumber(
     hoverPoint
       ? hoverPoint.portfolioPct ??
@@ -1164,8 +1314,9 @@ export default function InvestmentPortfolioCard({
 
     const applyLive = (reason: "live" | "fallback") => {
       if (!(live && live.c > 0)) return false;
-      if (!priceTouchedRef.current) setPurchasePrice(live.c.toFixed(2));
-      setHistoryMeta({ requestedDate: useDate, sessionDate: today, source: reason, closePrice: live.c });
+      const livePrice = Number(live.c) || 0;
+      if (!priceTouchedRef.current) setPurchasePrice(livePrice.toFixed(2));
+      setHistoryMeta({ requestedDate: useDate, sessionDate: today, source: reason, closePrice: livePrice });
       setQuoteError(null);
       return true;
     };
@@ -1182,7 +1333,7 @@ export default function InvestmentPortfolioCard({
       const hist = await fetchHistoricalPrice(symbol, useDate);
       if (seq !== historySeqRef.current) return;
       if (hist && hist.source !== "fallback") {
-        const closePrice = hist.price ?? 0;
+        const closePrice = Number(hist.price) || 0;
         if (!priceTouchedRef.current) setPurchasePrice(closePrice.toFixed(2));
         setHistoryMeta({
           requestedDate: useDate,
@@ -1192,7 +1343,7 @@ export default function InvestmentPortfolioCard({
         });
         setQuoteError(null);
       } else if (hist) {
-        const closePrice = hist.price ?? 0;
+        const closePrice = Number(hist.price) || 0;
         if (!priceTouchedRef.current) setPurchasePrice(closePrice.toFixed(2));
         setHistoryMeta({
           requestedDate: useDate,
@@ -1263,13 +1414,16 @@ export default function InvestmentPortfolioCard({
     ]);
 
     const liveQuote =
-      quoteResult.status === "fulfilled" && quoteResult.value && quoteResult.value.c > 0
-        ? quoteResult.value
+      quoteResult.status === "fulfilled" && quoteResult.value
+        ? normalizeToStockQuote(quoteResult.value, symbol)
         : null;
-    const quote = liveQuote ?? mockQuoteForSymbol(symbol);
+    const quote =
+      liveQuote && liveQuote.c > 0
+        ? liveQuote
+        : normalizeToStockQuote(mockQuoteForSymbol(symbol), symbol);
     if (quote) {
       setSelectedQuote(quote);
-      if (!liveQuote) {
+      if (!liveQuote || !(liveQuote.c > 0)) {
         setQuoteError("Using an estimated price. Enter your fill if this isn't right.");
       }
     } else {
@@ -1327,11 +1481,11 @@ export default function InvestmentPortfolioCard({
     historySeqRef.current += 1;
   };
 
-  const parsedQuantity = Number(quantity);
-  const parsedPrice = Number(purchasePrice);
+  const parsedQuantity = Number(quantity) || 0;
+  const parsedPrice = Number(purchasePrice) || 0;
   const manualValue =
     Number.isFinite(parsedQuantity) && Number.isFinite(parsedPrice) ? parsedQuantity * parsedPrice : 0;
-  const liveMark = selectedQuote && selectedQuote.c > 0 ? selectedQuote.c : null;
+  const liveMark = selectedQuote && selectedQuote.c > 0 ? Number(selectedQuote.c) || 0 : null;
   const previewMarketValue =
     liveMark != null && Number.isFinite(parsedQuantity) && parsedQuantity > 0 ? parsedQuantity * liveMark : 0;
   const previewReturnAbs =
@@ -1351,7 +1505,14 @@ export default function InvestmentPortfolioCard({
       }
       return;
     }
-    if (!canSubmitManual) return;
+
+    // Never pass unparsed form strings into state/API — coerce explicitly.
+    const shares = parseFloat(quantity) || 0;
+    const price = parseFloat(purchasePrice) || 0;
+    if (shares <= 0 || price <= 0) {
+      setQuoteError("Enter a valid share quantity and price greater than zero.");
+      return;
+    }
 
     const purchaseIso = parseToIsoDate(purchaseDate) || (purchaseDate.trim() ? null : todayISODate());
     if (purchaseDate.trim() && !purchaseIso) {
@@ -1362,50 +1523,124 @@ export default function InvestmentPortfolioCard({
     setSavingAsset(true);
     setQuoteError(null);
     try {
-      const saved = await createPortfolioItem({
+      // Mandatory sanitizer before any DB write or React state update.
+      const safeStock = sanitizeSafeStock({
         symbol: selectedTicker.symbol,
-        shares: parsedQuantity,
-        buyPrice: parsedPrice,
+        ticker: selectedTicker.symbol,
+        name: selectedTicker.description || selectedProfile?.name,
+        companyName: selectedProfile?.name,
+        price: Number(price) || 0,
+        current_price: Number(selectedQuote?.c) || 0,
+        buy_price: Number(price) || 0,
+        close: Number(selectedQuote?.c) || 0,
+        c: Number(selectedQuote?.c) || 0,
+        change: Number(selectedQuote?.d) || 0,
+        d: Number(selectedQuote?.d) || 0,
+        change_percent: Number(selectedQuote?.dp) || 0,
+        dp: Number(selectedQuote?.dp) || 0,
+        high: Number(selectedQuote?.h) || 0,
+        h: Number(selectedQuote?.h) || 0,
+        low: Number(selectedQuote?.l) || 0,
+        l: Number(selectedQuote?.l) || 0,
+        shares: Number(shares) || 0,
+        total_value: (Number(shares) || 0) * (Number(price) || 0),
+      });
+      const draft = normalizeStockData(safeStock);
+
+      if (!draft.symbol) {
+        setQuoteError("Couldn't save this asset — missing ticker symbol.");
+        return;
+      }
+
+      const safeShares = Number(draft.shares) || 0;
+      const safeBuyPrice = Number(draft.price ?? safeStock.buy_price) || 0;
+      const saved = await createPortfolioItem({
+        symbol: draft.symbol,
+        shares: safeShares,
+        buyPrice: safeBuyPrice,
         purchasedAt: purchaseIso || null,
       });
 
-      const existing = holdings.find((h) => isPaperTicker(h, selectedTicker.symbol));
-      const currentPrice = toFiniteNumber(
-        selectedQuote && selectedQuote.c > 0
-          ? selectedQuote.c
-          : existing?.currentPrice && existing.currentPrice > 0
-            ? existing.currentPrice
-            : parsedPrice,
-        0
-      );
-      const holding: StockHolding = {
-        id: saved.id,
+      const existing = holdings.find((h) => isPaperTicker(h, draft.symbol));
+      const quote = normalizeToStockQuote(selectedQuote, draft.symbol);
+      const markSafe = sanitizeSafeStock({
+        ...safeStock,
+        ...draft,
+        symbol: saved?.symbol || draft.symbol,
+        name:
+          existing?.description ||
+          selectedTicker.description ||
+          selectedProfile?.name ||
+          draft.name,
+        shares: Number(saved?.shares ?? safeShares) || 0,
+        buy_price: Number(saved?.buyPrice ?? safeBuyPrice) || 0,
+        buyPrice: Number(saved?.buyPrice ?? safeBuyPrice) || 0,
+        price:
+          Number(
+            quote && quote.c > 0
+              ? quote.c
+              : existing?.currentPrice && existing.currentPrice > 0
+                ? existing.currentPrice
+                : draft.price
+          ) || 0,
+        current_price: Number(quote?.c ?? existing?.currentPrice ?? draft.price) || 0,
+        change: Number(quote?.d ?? existing?.dayChangeAbs ?? draft.change) || 0,
+        change_percent: Number(quote?.dp ?? existing?.dayChangePct ?? draft.change_percent) || 0,
+        high: Number(quote?.h ?? existing?.high ?? draft.high) || 0,
+        low: Number(quote?.l ?? existing?.low ?? draft.low) || 0,
+        c: Number(quote?.c) || 0,
+        d: Number(quote?.d) || 0,
+        dp: Number(quote?.dp) || 0,
+        h: Number(quote?.h) || 0,
+        l: Number(quote?.l) || 0,
+        total_value:
+          (Number(saved?.shares ?? safeShares) || 0) *
+          (Number(
+            quote && quote.c > 0
+              ? quote.c
+              : existing?.currentPrice && existing.currentPrice > 0
+                ? existing.currentPrice
+                : draft.price
+          ) || 0),
+      });
+      const markData = normalizeStockData(markSafe);
+      const buyPrice = Number(saved?.buyPrice ?? markSafe.buy_price ?? draft.price) || 0;
+      const currentPrice =
+        Number(markData.price > 0 ? markData.price : markSafe.current_price ?? buyPrice) || 0;
+
+      // ONLY sanitized safeStock output enters React state / chart paths.
+      // shares / buy_price / current_price / total_value are all finite before setState.
+      const holding = sanitizeStockHolding({
+        id: saved?.id || `lot-${Date.now()}`,
         kind: "stock",
-        symbol: selectedTicker.symbol,
-        description:
-          existing?.description || selectedTicker.description || selectedProfile?.name || selectedTicker.symbol,
-        quantity: toFiniteNumber(saved?.shares, parsedQuantity),
-        avgCost: toFiniteNumber(saved?.buyPrice, parsedPrice),
+        symbol: markData.symbol,
+        description: markData.name || markData.symbol || "Unknown Stock",
+        quantity: Number(markData.shares) || 0,
+        avgCost: buyPrice,
         currentPrice,
-        dayChangePct: toFiniteNumber(selectedQuote?.dp, existing?.dayChangePct),
-        dayChangeAbs: toFiniteNumber(selectedQuote?.d, existing?.dayChangeAbs),
-        open: toFiniteNumber(selectedQuote?.o, existing?.open ?? currentPrice),
-        high: toFiniteNumber(selectedQuote?.h, existing?.high ?? currentPrice),
-        low: toFiniteNumber(selectedQuote?.l, existing?.low ?? currentPrice),
-        prevClose: toFiniteNumber(selectedQuote?.pc, existing?.prevClose ?? currentPrice),
+        dayChangePct: markData.change_percent ?? 0,
+        dayChangeAbs: markData.change ?? 0,
+        open: toFiniteNumber(quote?.o ?? existing?.open ?? currentPrice, currentPrice),
+        high: markData.high > 0 ? markData.high : currentPrice,
+        low: markData.low > 0 ? markData.low : currentPrice,
+        prevClose: toFiniteNumber(quote?.pc ?? existing?.prevClose ?? currentPrice, currentPrice),
         logo: selectedProfile?.logo ?? existing?.logo,
         domain: selectedProfile?.domain ?? extractDomain(selectedProfile?.weburl) ?? existing?.domain,
         marketCap: selectedProfile?.marketCapitalization ?? existing?.marketCap,
         instrumentType: selectedTicker.type || existing?.instrumentType,
         industry: selectedProfile?.finnhubIndustry ?? existing?.industry,
-        dividendYield: selectedQuote?.dividendYield ?? existing?.dividendYield ?? null,
-        purchasedAt: isoDateFromApi(saved.purchasedAt) ?? purchaseIso ?? existing?.purchasedAt ?? null,
+        dividendYield: quote?.dividendYield ?? existing?.dividendYield ?? null,
+        purchasedAt: isoDateFromApi(saved?.purchasedAt) ?? purchaseIso ?? existing?.purchasedAt ?? null,
         account: "paper",
-      };
+      });
 
-      setHoldings((prev) => upsertPaperHolding(prev, holding));
+      // Upsert keeps one paper row per ticker; still guard empty/undefined prev.
+      setHoldings((prev) => upsertPaperHolding([...(prev || [])], holding));
       setSelectedHolding((prev) =>
-        prev && prev.symbol.toUpperCase() === holding.symbol.toUpperCase() ? { ...prev, ...holding } : prev
+        prev &&
+        String(prev.symbol || "").toUpperCase() === holding.symbol.toUpperCase()
+          ? sanitizeStockHolding({ ...prev, ...holding })
+          : prev
       );
       markUpdated();
       resetManualForm();
@@ -1576,18 +1811,26 @@ export default function InvestmentPortfolioCard({
       return { remainingShares: 0 };
     }
 
-    const remaining = result.item.shares;
-    const avgCost = result.item.buyPrice;
+    const remaining = Number(result.item.shares) || 0;
+    const avgCost = Number(result.item.buyPrice) || 0;
     setHoldings((prev) =>
       prev.map((h) =>
         h.kind === "stock" && h.id === holding.id ? { ...h, quantity: remaining, avgCost } : h
       )
     );
     setSelectedHolding((prev) =>
-      prev && prev.id === holding.id ? { ...prev, quantity: remaining, avgCost } : prev
+      prev && prev.id === holding.id
+        ? sanitizeStockHolding({ ...prev, quantity: remaining, avgCost })
+        : prev
     );
     return { remainingShares: remaining };
   };
+
+  // Strict render guard: never paint charts/tables until portfolio bootstrap finishes
+  // (or we already have cached holdings to show).
+  if (portfolioLoading && safeHoldings.length === 0) {
+    return <LoadingSpinner label="Loading your portfolio…" />;
+  }
 
   return (
     <article className="rounded-2xl border border-[#1F2937] bg-[#000000] p-4 sm:p-5 shadow-[0_12px_40px_rgba(0,0,0,0.35)]">
@@ -1659,8 +1902,7 @@ export default function InvestmentPortfolioCard({
             className="mt-1.5 text-sm font-bold tabular-nums"
             style={{ color: displayGainColor }}
           >
-            {privacySignedMoney(privacyMode, displayGainAbs)} ({displayPositive ? "+" : ""}
-            {displayGainPct.toFixed(2)}%)
+            {privacySignedMoney(privacyMode, displayGainAbs)} ({formatSignedPct(displayGainPct)})
             {hoverPoint ? (
               <span className="ml-1.5 text-[11px] font-semibold text-[#9CA3AF]">
                 · {hoverPoint.label}
@@ -1737,7 +1979,9 @@ export default function InvestmentPortfolioCard({
                 )}
               </div>
               <div className="flex gap-0.5 rounded-lg border border-[#1F2937] bg-black/40 p-0.5">
-                {RANGE_OPTIONS.map((opt) => (
+                {RANGE_OPTIONS.map((opt) => {
+                  if (!opt) return null;
+                  return (
                   <button
                     key={opt}
                     type="button"
@@ -1753,7 +1997,8 @@ export default function InvestmentPortfolioCard({
                   >
                     {opt}
                   </button>
-                ))}
+                  );
+                })}
               </div>
             </div>
 
@@ -1771,6 +2016,7 @@ export default function InvestmentPortfolioCard({
                   Couldn&apos;t load S&amp;P 500
                 </p>
               )}
+              {chartData && chartData.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart
                   data={chartData}
@@ -1788,11 +2034,12 @@ export default function InvestmentPortfolioCard({
                   <YAxis
                     domain={yDomain}
                     width={benchmarkReady ? 56 : 46}
-                    tickFormatter={(v) =>
-                      benchmarkReady
-                        ? formatSignedPct(Number(v), Math.abs(Number(v)) < 10 ? 1 : 0)
-                        : privacyAxis(privacyMode, formatAxisMoney(Number(v)))
-                    }
+                    tickFormatter={(v: any) => {
+                      const val = v ?? 0;
+                      return benchmarkReady
+                        ? formatSignedPct(Number(val), Math.abs(Number(val)) < 10 ? 1 : 0)
+                        : privacyAxis(privacyMode, formatAxisMoney(Number(val)));
+                    }}
                     tick={{ fill: "#9CA3AF", fontSize: 10 }}
                     axisLine={false}
                     tickLine={false}
@@ -1804,7 +2051,7 @@ export default function InvestmentPortfolioCard({
                     axisLine={false}
                     tickLine={false}
                     ticks={xTickIndexes}
-                    tickFormatter={(t) => chartData[Number(t)]?.label ?? ""}
+                    tickFormatter={(t: any) => chartData[Number(t ?? 0)]?.label ?? ""}
                     minTickGap={20}
                   />
                   <Tooltip
@@ -1860,6 +2107,12 @@ export default function InvestmentPortfolioCard({
                   )}
                 </ComposedChart>
               </ResponsiveContainer>
+              ) : (
+                <EmptyChartPlaceholder
+                  title="Portfolio chart unavailable"
+                  message="Chart data will appear once your portfolio finishes loading."
+                />
+              )}
             </div>
           </div>
 
@@ -1896,6 +2149,7 @@ export default function InvestmentPortfolioCard({
                 className="flex flex-shrink-0 rounded-full border border-[#1F2937] bg-[#0A0A0A] p-0.5"
               >
                 {(["daily", "total"] as const).map((mode) => {
+                  if (!mode) return null;
                   const active = assetsPerfMode === mode;
                   return (
                     <button
@@ -1944,16 +2198,25 @@ export default function InvestmentPortfolioCard({
                   if (draggingIdRef.current || pendingDragRef.current) e.preventDefault();
                 }}
               >
-                {safeHoldings.map((h) => {
+                {(safeHoldings ?? []).map((h = {} as any) => {
                   if (!h) return null;
+                  const raw = h as any;
                   const highlight = h.id === justAddedId;
-                  const quantity = h.kind === "stock" ? toFiniteNumber(h.quantity, 0) : 0;
-                  const currentPrice = h.kind === "stock" ? toFiniteNumber(h.currentPrice, 0) : 0;
-                  const avgCost = h.kind === "stock" ? toFiniteNumber(h.avgCost, 0) : 0;
-                  const prevClose = h.kind === "stock" ? toFiniteNumber(h.prevClose, 0) : 0;
-                  const dayChangeAbs = h.kind === "stock" ? toFiniteNumber(h.dayChangeAbs, 0) : 0;
-                  const dayChangePct = h.kind === "stock" ? toFiniteNumber(h.dayChangePct, 0) : 0;
-                  const value = holdingValue(h);
+                  const price = Number(raw.price ?? raw.current_price ?? raw.currentPrice) || 0;
+                  const shares = Number(raw.shares ?? raw.quantity) || 0;
+                  const buyPrice = Number(raw.buy_price ?? raw.buyPrice ?? raw.avgCost) || 0;
+                  const change = Number(raw.change ?? raw.change_percent ?? raw.dayChangePct) || 0;
+                  const quantity = h.kind === "stock" ? shares : 0;
+                  const currentPrice = h.kind === "stock" ? price : 0;
+                  const avgCost = h.kind === "stock" ? buyPrice : 0;
+                  const prevClose = h.kind === "stock" ? Number(raw.prevClose) || 0 : 0;
+                  const dayChangeAbs = h.kind === "stock" ? Number(raw.dayChangeAbs) || 0 : 0;
+                  const dayChangePct = h.kind === "stock" ? change : 0;
+                  const total =
+                    Number(raw.total_value ?? raw.value ?? price * shares) ||
+                    Number(holdingValue(h)) ||
+                    0;
+                  const value = h.kind === "stock" ? total : Number(holdingValue(h)) || 0;
                   const isStock = h.kind === "stock";
                   let perfAbs: number | null = null;
                   let perfPct: number | null = null;
@@ -2022,7 +2285,7 @@ export default function InvestmentPortfolioCard({
                             ignoreHoldingClickRef.current = false;
                             return;
                           }
-                          if (isStock) setSelectedHolding(h);
+                          if (isStock) setSelectedHolding(sanitizeStockHolding(h as StockHolding));
                         }}
                         disabled={!isStock}
                         className={`flex min-w-0 flex-1 items-center gap-3 text-left transition ${
@@ -2072,7 +2335,7 @@ export default function InvestmentPortfolioCard({
                             <p className="text-[11px] font-bold tabular-nums" style={{ color: dayColor }}>
                               {perfAbs == null || perfPct == null
                                 ? "—"
-                                : `${privacySignedMoney(privacyMode, perfAbs)} (${dayUp ? "+" : ""}${perfPct.toFixed(2)}%)`}
+                                : `${privacySignedMoney(privacyMode, perfAbs)} (${formatSignedPct(perfPct, 2)})`}
                               {h.kind === "stock" &&
                               assetsPerfMode === "total" &&
                               h.purchasedAt ? (
@@ -2171,6 +2434,7 @@ export default function InvestmentPortfolioCard({
                   Portfolio, so investment achievement badges stay locked until API sync is connected.
                 </div>
                 {BROKER_PLATFORMS.map((platform) => {
+                  if (!platform) return null;
                   const isLinked = connectedPlatformNames.has(platform.name);
                   return (
                     <div
@@ -2248,22 +2512,26 @@ export default function InvestmentPortfolioCard({
 
                       {searchResults.length > 0 && (
                         <div className="mt-1.5 max-h-52 overflow-y-auto rounded-xl border border-[#1F1F1F] bg-black/40">
-                          {searchResults.map((result) => (
+                          {(searchResults ?? []).map((result = {} as any) => {
+                            if (!result) return null;
+                            const symbol = result.displaySymbol || result.symbol || "";
+                            return (
                             <button
-                              key={result.symbol}
+                              key={result.symbol || symbol}
                               type="button"
                               onClick={() => void selectTicker(result)}
                               className="flex w-full items-center justify-between gap-2 border-b border-[#1F1F1F]/60 px-3 py-2 text-left transition last:border-b-0 hover:bg-emerald-500/10"
                             >
                               <div className="flex min-w-0 items-center gap-2">
-                                <StockLogo symbol={result.displaySymbol || result.symbol} size={32} />
+                                <StockLogo symbol={symbol} size={32} />
                                 <span className="flex-shrink-0 rounded-md bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-extrabold text-emerald-300">
-                                  {result.displaySymbol || result.symbol}
+                                  {symbol}
                                 </span>
                                 <span className="truncate text-[11px] text-slate-300">{result.description}</span>
                               </div>
                             </button>
-                          ))}
+                            );
+                          })}
                         </div>
                       )}
 
@@ -2450,8 +2718,8 @@ export default function InvestmentPortfolioCard({
                           }`}
                         >
                           Total return: {privacySignedMoney(privacyMode, previewReturnAbs)} (
-                          {previewReturnPct > 0 ? "+" : ""}
-                          {previewReturnPct.toFixed(2)}%)
+                          {(Number(previewReturnPct) || 0) > 0 ? "+" : ""}
+                          {(Number(previewReturnPct) || 0).toFixed(2)}%)
                           {purchaseDate && parseToIsoDate(purchaseDate)
                             ? ` since ${formatSessionDate(parseToIsoDate(purchaseDate)!)}`
                             : ""}

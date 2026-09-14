@@ -13,12 +13,13 @@ import {
   X,
 } from "lucide-react";
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { EmptyChartPlaceholder } from "./LoadingSpinner";
 import { playTransactionClick } from "../lib/audioService";
 import { getApiBaseUrl } from "../lib/auth";
 import { isEtfAsset } from "../lib/etfIcons";
 import { getCachedChart, getCachedQuote, setCachedChart, setCachedQuote } from "../lib/marketCache";
 import { fetchStockChart, fetchStockQuote, isLiveChartSource } from "../lib/stockService";
-import { formatNumber } from "../lib/money";
+import { formatNumber, formatPercent, toFiniteNumber } from "../lib/money";
 import { privacyMoney, privacyShares, privacySignedMoney } from "../lib/privacy";
 import {
   buildHistoricalSeries,
@@ -97,7 +98,7 @@ function formatUsd(amount: unknown, digits = 0) {
 }
 
 function isHeldPosition(holding: StockHolding) {
-  return holding.quantity > 0 && !holding.id.startsWith("watchlist:");
+  return toFiniteNumber(holding?.quantity, 0) > 0 && !holding.id.startsWith("watchlist:");
 }
 
 function sentimentTone(sentiment: SproutAnalysis["sentiment"]) {
@@ -135,7 +136,7 @@ function ChartTooltip({
   payload?: ReadonlyArray<{ value?: number | string; payload?: SeriesPoint }>;
   label?: string;
 }) {
-  if (!active || !payload?.length) return null;
+  if (!active || !payload || !payload.length) return null;
   const point = payload[0]?.payload;
   const value = payload[0]?.value ?? point?.value;
   const timestamp = point?.label ?? label;
@@ -252,11 +253,18 @@ export default function StockDetailPage({
     name: holding.description,
     type: holding.instrumentType,
   });
-  const price = liveQuote && liveQuote.c > 0 ? liveQuote.c : holding.currentPrice;
-  const dayChangePct = liveQuote?.dp ?? holding.dayChangePct;
-  const open = liveQuote?.o ?? holding.open;
-  const high = liveQuote?.h ?? holding.high;
-  const low = liveQuote?.l ?? holding.low;
+  const holdingPrice = toFiniteNumber(holding?.currentPrice, 0);
+  const holdingDayChangePct = toFiniteNumber(holding?.dayChangePct, 0);
+  const holdingOpen = toFiniteNumber(holding?.open, holdingPrice);
+  const holdingHigh = toFiniteNumber(holding?.high, holdingPrice);
+  const holdingLow = toFiniteNumber(holding?.low, holdingPrice);
+  const quantity = toFiniteNumber(holding?.quantity, 0);
+  const avgCost = toFiniteNumber(holding?.avgCost, 0);
+  const price = liveQuote && liveQuote.c > 0 ? toFiniteNumber(liveQuote.c, holdingPrice) : holdingPrice;
+  const dayChangePct = toFiniteNumber(liveQuote?.dp, holdingDayChangePct);
+  const open = toFiniteNumber(liveQuote?.o, holdingOpen);
+  const high = toFiniteNumber(liveQuote?.h, holdingHigh);
+  const low = toFiniteNumber(liveQuote?.l, holdingLow);
 
   const fallbackSeries = useMemo(
     () =>
@@ -267,7 +275,19 @@ export default function StockDetailPage({
       }),
     [holding.symbol, range, price, dayChangePct, open, high, low]
   );
-  const series = liveSeries && liveSeries.length > 0 ? liveSeries : fallbackSeries;
+  const series = useMemo(() => {
+    const raw = liveSeries && liveSeries.length > 0 ? liveSeries : fallbackSeries;
+    return (raw ?? []).map((p) => ({
+      ...p,
+      t: toFiniteNumber(p?.t, 0),
+      value: toFiniteNumber(p?.value, 0),
+      open: p?.open != null ? toFiniteNumber(p.open, 0) : undefined,
+      high: p?.high != null ? toFiniteNumber(p.high, 0) : undefined,
+      low: p?.low != null ? toFiniteNumber(p.low, 0) : undefined,
+      close: p?.close != null ? toFiniteNumber(p.close, 0) : undefined,
+      volume: p?.volume != null ? toFiniteNumber(p.volume, 0) : undefined,
+    }));
+  }, [liveSeries, fallbackSeries]);
 
   const rangeChangePct = useMemo(() => seriesChangePct(series), [series]);
   const rangeChangeAbs = useMemo(() => seriesChangeAbs(series), [series]);
@@ -295,20 +315,22 @@ export default function StockDetailPage({
     return [min - pad, max + pad] as [number, number];
   }, [series, range, low, high, open, price]);
 
-  const displayPrice = hoverPoint?.value ?? price;
+  const displayPrice = toFiniteNumber(hoverPoint?.value, price);
   const displayGainAbs = hoverPoint
-    ? hoverPoint.value - (series[0]?.value ?? 0)
-    : rangeChangeAbs;
+    ? toFiniteNumber(hoverPoint.value, 0) - toFiniteNumber(series[0]?.value, 0)
+    : toFiniteNumber(rangeChangeAbs, 0);
   const displayGainPct = hoverPoint
     ? series[0]?.value
-      ? ((hoverPoint.value - series[0].value) / series[0].value) * 100
+      ? ((toFiniteNumber(hoverPoint.value, 0) - toFiniteNumber(series[0].value, 0)) /
+          toFiniteNumber(series[0].value, 1)) *
+        100
       : 0
-    : rangeChangePct;
+    : toFiniteNumber(rangeChangePct, 0);
   const displayUp = displayGainPct > 0;
   const displayDown = displayGainPct < 0;
 
-  const equity = holding.quantity * price;
-  const weightPct = held && totalPortfolioValue > 0 ? (equity / totalPortfolioValue) * 100 : 0;
+  const equity = quantity * price;
+  const weightPct = held && totalPortfolioValue > 0 ? (equity / toFiniteNumber(totalPortfolioValue, 1)) * 100 : 0;
 
   const dayLow = Math.min(low, high, price);
   const dayHigh = Math.max(low, high, price);
@@ -465,7 +487,7 @@ export default function StockDetailPage({
           price,
           changePct: dayChangePct,
           positionNote: held
-            ? `User holds ${holding.quantity} shares worth $${formatUsd(equity)} (${weightPct.toFixed(1)}% of portfolio).`
+            ? `User holds ${quantity} shares worth $${formatUsd(equity)} (${formatPercent(weightPct, 1)} of portfolio).`
             : "User is watching this name and does not currently hold a position.",
         }),
       });
@@ -490,17 +512,17 @@ export default function StockDetailPage({
   const sellQtyValid = Number.isFinite(parsedSellShares) && parsedSellShares > 0;
   const sellPriceValid = Number.isFinite(parsedSellPrice) && parsedSellPrice > 0;
   const sellingAll =
-    sellQtyValid && roundShares(holding.quantity - parsedSellShares) <= 1e-8;
-  const sellOverQty = sellQtyValid && parsedSellShares > holding.quantity + 1e-8;
+    sellQtyValid && roundShares(quantity - parsedSellShares) <= 1e-8;
+  const sellOverQty = sellQtyValid && parsedSellShares > quantity + 1e-8;
   const sellProceeds =
     sellQtyValid && sellPriceValid ? parsedSellShares * parsedSellPrice : 0;
   const sellRealized =
-    sellQtyValid && sellPriceValid && holding.avgCost > 0
-      ? (parsedSellPrice - holding.avgCost) * parsedSellShares
+    sellQtyValid && sellPriceValid && avgCost > 0
+      ? (parsedSellPrice - avgCost) * parsedSellShares
       : null;
   const remainingAfterSell = sellQtyValid
-    ? Math.max(0, roundShares(holding.quantity - parsedSellShares))
-    : holding.quantity;
+    ? Math.max(0, roundShares(quantity - parsedSellShares))
+    : quantity;
 
   const openSell = () => {
     setSellError(null);
@@ -523,7 +545,7 @@ export default function StockDetailPage({
       return;
     }
     if (sellOverQty) {
-      setSellError(`You only own ${holding.quantity} shares.`);
+      setSellError(`You only own ${quantity} shares.`);
       return;
     }
     if (!sellPriceValid) {
@@ -591,7 +613,7 @@ export default function StockDetailPage({
           <div className="flex items-start justify-between gap-3">
             <div>
               <p className="text-4xl font-extrabold tracking-tight text-white tabular-nums">
-                ${displayPrice.toFixed(2)}
+                ${toFiniteNumber(displayPrice, 0).toFixed(2)}
               </p>
               <p
                 className="mt-1.5 flex flex-wrap items-center gap-x-1.5 text-sm font-bold tabular-nums"
@@ -600,8 +622,8 @@ export default function StockDetailPage({
                 {displayDown ? <TrendingDown size={15} /> : <TrendingUp size={15} />}
                 <span>
                   {displayUp ? "+" : displayDown ? "-" : ""}
-                  ${Math.abs(displayGainAbs).toFixed(2)} ({displayUp ? "+" : ""}
-                  {displayGainPct.toFixed(2)}%)
+                  ${Math.abs(toFiniteNumber(displayGainAbs, 0)).toFixed(2)} ({displayUp ? "+" : ""}
+                  {formatPercent(displayGainPct)})
                 </span>
                 {hoverPoint ? (
                   <span className="text-[11px] font-semibold text-[#9CA3AF]">· {hoverPoint.label}</span>
@@ -668,6 +690,7 @@ export default function StockDetailPage({
                 <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-400" />
               </div>
             )}
+            {series && series.length > 0 ? (
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart
                 data={series}
@@ -711,6 +734,13 @@ export default function StockDetailPage({
                 />
               </AreaChart>
             </ResponsiveContainer>
+            ) : (
+              <EmptyChartPlaceholder
+                heightClassName="h-56 sm:h-64"
+                title="Chart unavailable"
+                message="Price history will appear when market data loads."
+              />
+            )}
           </div>
           <p className="mt-1 text-[10px] text-[#4B5563]">
             {chartLive
@@ -730,7 +760,7 @@ export default function StockDetailPage({
               <div className="rounded-xl border border-[#1F1F1F] bg-[#121212] px-3.5 py-3">
                 <p className="text-[10px] font-semibold uppercase tracking-wide text-[#6B7280]">Shares</p>
                 <p className="mt-0.5 text-base font-extrabold tabular-nums text-white">
-                  {held ? privacyShares(privacyMode, holding.quantity) : "—"}
+                  {held ? privacyShares(privacyMode, quantity) : "—"}
                 </p>
               </div>
               <div className="rounded-xl border border-[#1F1F1F] bg-[#121212] px-3.5 py-3">
@@ -746,7 +776,7 @@ export default function StockDetailPage({
                   Portfolio Weight
                 </p>
                 <p className="mt-0.5 text-base font-extrabold tabular-nums text-white">
-                  {held ? `${weightPct.toFixed(1)}%` : "—"}
+                  {held ? formatPercent(weightPct, 1) : "—"}
                 </p>
               </div>
               <div className="rounded-xl border border-[#1F1F1F] bg-[#121212] px-3.5 py-3">
@@ -754,7 +784,7 @@ export default function StockDetailPage({
                   Average Cost
                 </p>
                 <p className="mt-0.5 text-base font-extrabold tabular-nums text-white">
-                  {held ? privacyMoney(privacyMode, holding.avgCost) : "—"}
+                  {held ? privacyMoney(privacyMode, avgCost) : "—"}
                 </p>
                 {held && holding.purchasedAt ? (
                   <p className="mt-0.5 text-[10px] font-semibold text-[#6B7280]">
@@ -766,7 +796,7 @@ export default function StockDetailPage({
                   </p>
                 ) : null}
               </div>
-              {held && holding.avgCost > 0 ? (
+              {held && avgCost > 0 ? (
                 <div className="col-span-2 rounded-xl border border-[#1F1F1F] bg-[#121212] px-3.5 py-3">
                   <p className="text-[10px] font-semibold uppercase tracking-wide text-[#6B7280]">
                     Total Return
@@ -775,13 +805,13 @@ export default function StockDetailPage({
                     className="mt-0.5 text-base font-extrabold tabular-nums"
                     style={{
                       color:
-                        price === holding.avgCost ? "#FFFFFF" : price > holding.avgCost ? "#10B981" : "#EF4444",
+                        price === avgCost ? "#FFFFFF" : price > avgCost ? "#10B981" : "#EF4444",
                     }}
                   >
-                    {privacySignedMoney(privacyMode, (price - holding.avgCost) * holding.quantity)}
+                    {privacySignedMoney(privacyMode, (price - avgCost) * quantity)}
                     <span className="ml-1 text-sm">
-                      ({price >= holding.avgCost ? "+" : ""}
-                      {(((price - holding.avgCost) / holding.avgCost) * 100).toFixed(2)}%)
+                      ({price >= avgCost ? "+" : ""}
+                      {formatPercent(((price - avgCost) / avgCost) * 100)})
                     </span>
                   </p>
                   <p className="mt-0.5 text-[10px] font-semibold text-[#6B7280]">
@@ -802,9 +832,9 @@ export default function StockDetailPage({
             <h2 className="text-xs font-bold uppercase tracking-wide text-[#9CA3AF]">Day's Range</h2>
             <div className="mt-2 rounded-xl border border-[#1F1F1F] bg-[#121212] px-4 py-4">
               <div className="flex items-center justify-between text-xs font-bold tabular-nums text-white">
-                <span>${dayLow.toFixed(2)}</span>
-                <span className="text-[#9CA3AF]">${price.toFixed(2)}</span>
-                <span>${dayHigh.toFixed(2)}</span>
+                <span>${toFiniteNumber(dayLow, 0).toFixed(2)}</span>
+                <span className="text-[#9CA3AF]">${toFiniteNumber(price, 0).toFixed(2)}</span>
+                <span>${toFiniteNumber(dayHigh, 0).toFixed(2)}</span>
               </div>
               <div className="relative mt-2 h-1.5 w-full rounded-full bg-gradient-to-r from-rose-500/40 via-[#2A2A2A] to-emerald-500/40">
                 <span
@@ -977,7 +1007,7 @@ export default function StockDetailPage({
                       Growth Drivers & Highlights
                     </p>
                     <ul className="mt-2 space-y-1.5">
-                      {analysis.growthDrivers.map((item, index) => (
+                      {(analysis.growthDrivers ?? []).map((item = "", index) => (
                         <li key={`growth-${index}`} className="flex gap-2 text-[13px] leading-relaxed text-[#D1D5DB]">
                           <span className="mt-2 h-1 w-1 flex-shrink-0 rounded-full bg-emerald-400" />
                           <span>{item}</span>
@@ -991,7 +1021,7 @@ export default function StockDetailPage({
                       Key Risks to Watch
                     </p>
                     <ul className="mt-2 space-y-1.5">
-                      {analysis.keyRisks.map((item, index) => (
+                      {(analysis.keyRisks ?? []).map((item = "", index) => (
                         <li key={`risk-${index}`} className="flex gap-2 text-[13px] leading-relaxed text-[#D1D5DB]">
                           <span className="mt-2 h-1 w-1 flex-shrink-0 rounded-full bg-amber-400" />
                           <span>{item}</span>
@@ -1079,11 +1109,11 @@ export default function StockDetailPage({
                   Shares owned
                 </p>
                 <p className="mt-0.5 text-sm font-extrabold tabular-nums text-white">
-                  {formatNumber(holding?.quantity, { maximumFractionDigits: 8 })}
+                  {formatNumber(quantity, { maximumFractionDigits: 8 })}
                 </p>
-                {holding.avgCost > 0 ? (
+                {avgCost > 0 ? (
                   <p className="mt-0.5 text-[11px] text-slate-500">
-                    Avg cost {privacyMoney(privacyMode, holding.avgCost)}
+                    Avg cost {privacyMoney(privacyMode, avgCost)}
                   </p>
                 ) : null}
               </div>
@@ -1105,7 +1135,7 @@ export default function StockDetailPage({
                       setSellShares(e.target.value.replace(/[^0-9.]/g, ""));
                       setSellError(null);
                     }}
-                    placeholder={String(holding.quantity)}
+                    placeholder={String(quantity)}
                     className={`mt-1 w-full rounded-xl border bg-black/20 px-3 py-2 text-xs font-semibold text-white outline-none placeholder:text-slate-600 focus:border-rose-500/50 ${
                       sellOverQty ? "border-rose-500/60" : "border-[#1F1F1F]"
                     }`}
@@ -1113,7 +1143,7 @@ export default function StockDetailPage({
                   <button
                     type="button"
                     onClick={() => {
-                      setSellShares(String(holding.quantity));
+                      setSellShares(String(quantity));
                       setSellError(null);
                     }}
                     className="mt-1 text-[10px] font-bold uppercase tracking-wide text-rose-300 transition hover:text-rose-200"
@@ -1171,7 +1201,7 @@ export default function StockDetailPage({
                   ) : (
                     <p className="text-[11px] text-slate-400">
                       Remaining: {formatNumber(remainingAfterSell, { maximumFractionDigits: 8 })}{" "}
-                      sh @ {privacyMoney(privacyMode, holding.avgCost)} avg cost
+                      sh @ {privacyMoney(privacyMode, avgCost)} avg cost
                     </p>
                   )}
                 </div>

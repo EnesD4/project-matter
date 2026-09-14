@@ -203,8 +203,8 @@ export function bankAccountFromRow(row: BankAccountRow): LinkedBankAccount {
     institution: row.institution || undefined,
     mask: row.mask || undefined,
     balance: Number(row.balance) || 0,
-    minPayment: row.min_payment != null ? Number(row.min_payment) : undefined,
-    apr: row.apr != null ? Number(row.apr) : undefined,
+    minPayment: row.min_payment != null ? Number(row.min_payment) || 0 : 0,
+    apr: row.apr != null ? Number(row.apr) || 0 : 0,
   };
 }
 

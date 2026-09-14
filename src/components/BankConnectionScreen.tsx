@@ -55,8 +55,8 @@ export default function BankConnectionScreen({
         <p style={styles.eyebrow}>Connect Bank</p>
         <h1 style={styles.headline}>Link your money</h1>
         <p style={styles.subhead}>
-          Connect a US bank with Plaid. Checking, savings, and credit balances sync into your
-          profile so cash flow and safety net stay live.
+          Connect your financial accounts to automatically sync and track your entire portfolio in
+          real time.
         </p>
 
         <div style={styles.card}>

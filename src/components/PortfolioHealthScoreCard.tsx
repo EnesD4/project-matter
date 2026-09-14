@@ -1,6 +1,7 @@
 import React, { useEffect, useId, useMemo, useState } from "react";
 import { ChevronRight, Shield, Target, X, Zap, type LucideIcon } from "lucide-react";
 import { analyzePortfolioHealth, type HealthTone, type PortfolioHealthReport } from "../lib/portfolioHealth";
+import { formatPercent, toFiniteNumber } from "../lib/money";
 import type { Holding } from "./InvestmentPortfolioCard";
 
 type PortfolioHealthScoreCardProps = {
@@ -213,7 +214,7 @@ function HealthBreakdownModal({
               label={
                 report.empty
                   ? report.defensive.label
-                  : `${report.defensive.label} · ${report.defensive.cushionPct.toFixed(0)}%`
+                  : `${report.defensive.label} · ${formatPercent(report.defensive.cushionPct, 0)}`
               }
               detail={report.defensive.detail}
               meter={report.defensive.meter}
@@ -226,12 +227,15 @@ function HealthBreakdownModal({
               Actionable AI Recommendations
             </p>
             <ul className="mt-2 space-y-2">
-              {report.insights.map((insight) => (
+              {(report.insights ?? []).map((insight = "") => {
+                if (!insight) return null;
+                return (
                 <li key={insight} className="flex gap-2 text-[12px] leading-relaxed text-[#D1D5DB]">
                   <span className="mt-1.5 h-1 w-1 flex-shrink-0 rounded-full bg-emerald-400" aria-hidden="true" />
                   <span>{insight}</span>
                 </li>
-              ))}
+                );
+              })}
             </ul>
           </div>
         </div>
@@ -248,7 +252,7 @@ export default function PortfolioHealthScoreCard({
   const dialogId = useId();
   const titleId = useId();
   const report = useMemo(
-    () => analyzePortfolioHealth(holdings, cashBalance),
+    () => analyzePortfolioHealth(holdings || [], toFiniteNumber(cashBalance, 0)),
     [holdings, cashBalance]
   );
 

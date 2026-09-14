@@ -1,37 +1,38 @@
+import { safeToLocaleString } from "../utils/formatters";
+
 /** Coerce unknown input into a finite number, falling back when invalid. */
 export function toFiniteNumber(val: unknown, fallback = 0): number {
+  const resolveFallback = (): number => {
+    if (typeof fallback === "number" && Number.isFinite(fallback)) return fallback;
+    const n = Number(fallback);
+    return Number.isFinite(n) ? n : 0;
+  };
+
   if (typeof val === "number" && Number.isFinite(val)) return val;
   if (typeof val === "string" && val.trim() !== "") {
     const n = Number(val);
     if (Number.isFinite(n)) return n;
   }
-  return fallback;
+  return resolveFallback();
 }
 
 /**
  * Mandatory safe locale number formatting for display.
  * Never throws on `undefined`, `null`, NaN, non-finite, or non-numeric values.
+ * Delegates to the central `safeToLocaleString` helper.
  */
 export function safeFormatNumber(
   val: any,
   options?: Intl.NumberFormatOptions
 ): string {
-  const fallback = (): string => {
-    try {
-      return (0).toLocaleString(undefined, options);
-    } catch {
-      return "0";
-    }
-  };
-
-  if (val === null || val === undefined) return fallback();
-  const num = typeof val === "number" ? val : Number(val);
-  if (Number.isNaN(num) || !Number.isFinite(num)) return fallback();
-  try {
-    return num.toLocaleString(undefined, options);
-  } catch {
-    return fallback();
+  if (val === null || val === undefined || isNaN(Number(val))) {
+    return safeToLocaleString(0, "en-US", options);
   }
+  const num = typeof val === "number" ? val : Number(val);
+  if (Number.isNaN(num) || !Number.isFinite(num)) {
+    return safeToLocaleString(0, "en-US", options);
+  }
+  return safeToLocaleString(num, "en-US", options);
 }
 
 /**
@@ -41,6 +42,9 @@ export function formatNumber(
   val: unknown,
   options?: Intl.NumberFormatOptions
 ): string {
+  if (val === undefined || val === null || isNaN(Number(val))) {
+    return safeFormatNumber(0, options);
+  }
   return safeFormatNumber(val, options);
 }
 
@@ -49,16 +53,35 @@ export function formatNumber(
  * Pass `{ symbol: false }` for the numeric portion only.
  */
 export function formatCurrency(
-  val: unknown,
+  val: any,
   options?: { digits?: number; symbol?: boolean }
 ): string {
+  if (val === undefined || val === null || isNaN(Number(val))) {
+    return options?.symbol === false ? "0.00" : "$0.00";
+  }
   const digits = options?.digits ?? 2;
-  const formatted = safeFormatNumber(val, {
+  const formatted = safeToLocaleString(val, "en-US", {
+    style: "currency",
+    currency: "USD",
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
   });
-  if (options?.symbol === false) return formatted;
-  return `$${formatted}`;
+  if (options?.symbol === false) {
+    return formatted.replace(/^\$/, "");
+  }
+  return formatted;
+}
+
+/** Safe percent display (`12.34%`). Never throws on undefined/null/NaN. */
+export function formatPercent(val: any, digits = 2): string {
+  if (val === undefined || val === null || isNaN(Number(val))) {
+    return `${(0).toFixed(digits)}%`;
+  }
+  const n = toFiniteNumber(val, 0);
+  return `${safeToLocaleString(n, "en-US", {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  })}%`;
 }
 
 /** Strip currency formatting and parse a typed money string into a finite number. */
@@ -102,3 +125,5 @@ export function formatCurrencyValue(amount: unknown, options?: { symbol?: boolea
   if (options?.symbol) return `$${formatted}`;
   return formatted;
 }
+
+export { safeToLocaleString } from "../utils/formatters";

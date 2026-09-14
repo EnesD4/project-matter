@@ -25,6 +25,7 @@ import {
 import { getCachedQuote, getCachedSpark } from "../lib/marketCache";
 import { privacyMoney } from "../lib/privacy";
 import { toFiniteNumber } from "../lib/money";
+import { formatPercent } from "../utils/formatters";
 import { sparklineValues } from "../lib/priceSimulation";
 import { readLocalItem } from "../lib/storage";
 import {
@@ -284,8 +285,9 @@ function WatchlistCard({
 
               {searchResults.length > 0 && (
                 <div className="matter-touch-scroll absolute z-10 mt-1.5 max-h-56 w-full overflow-y-auto overscroll-contain rounded-xl border border-[#1F2937] bg-[#0A0A0A]">
-                  {searchResults.map((result) => {
-                    const symbol = result.displaySymbol || result.symbol;
+                  {(searchResults ?? []).map((result = {} as any) => {
+                    if (!result) return null;
+                    const symbol = result.displaySymbol || result.symbol || "";
                     return (
                       <button
                         key={result.symbol}
@@ -324,11 +326,25 @@ function WatchlistCard({
                   This list is empty. Add a ticker to start tracking it.
                 </p>
               ) : (
-                watchlistItems(list).map((item) => {
+                (watchlistItems(list) ?? []).map((item = {} as any) => {
+                  if (!item) return null;
                   if (!item?.symbol) return null;
+                  const raw = item as any;
                   const quote = quotes[item.symbol] ?? cachedOrPendingQuote(item.symbol);
-                  const price = toFiniteNumber(quote?.price, 0);
-                  const changePct = toFiniteNumber(quote?.changePct, 0);
+                  const price = toFiniteNumber(
+                    raw.price ?? raw.current_price ?? quote?.price,
+                    0
+                  );
+                  const shares = toFiniteNumber(raw.shares ?? raw.quantity, 0);
+                  const change = toFiniteNumber(
+                    raw.change ?? raw.change_percent ?? quote?.changePct,
+                    0
+                  );
+                  const total = toFiniteNumber(
+                    raw.total_value ?? raw.value ?? price * shares,
+                    0
+                  );
+                  const changePct = change;
                   const up = changePct > 0;
                   const down = changePct < 0;
                   const changeColor = down ? LOSS_RED : up ? GAIN_GREEN : "#9CA3AF";
@@ -366,10 +382,14 @@ function WatchlistCard({
                         />
                         <div className="flex-shrink-0 text-right">
                           <p className="text-sm font-bold tabular-nums text-white">
-                            {price > 0 ? privacyMoney(privacyMode, price) : "—"}
+                            {price > 0
+                              ? privacyMoney(privacyMode, price)
+                              : total > 0
+                                ? privacyMoney(privacyMode, total)
+                                : "—"}
                           </p>
                           <p className="text-[11px] font-bold tabular-nums" style={{ color: changeColor }}>
-                            {price > 0 ? `${up ? "+" : ""}${changePct.toFixed(2)}%` : "—"}
+                            {price > 0 ? formatPercent(changePct) : "—"}
                           </p>
                         </div>
                         <ChevronRight size={14} className="flex-shrink-0 text-[#9CA3AF]" />
@@ -802,7 +822,9 @@ export default function WatchlistsSection({
 
       {watchlists.length > 0 && (
         <div className="mt-3 space-y-2">
-          {watchlists.map((list) => (
+          {(watchlists ?? []).map((list = {} as any) => {
+            if (!list) return null;
+            return (
             <WatchlistCard
               key={list.id}
               list={list}
@@ -818,7 +840,8 @@ export default function WatchlistsSection({
               deletingList={deletingList}
               privacyMode={privacyMode}
             />
-          ))}
+            );
+          })}
         </div>
       )}
       </div>

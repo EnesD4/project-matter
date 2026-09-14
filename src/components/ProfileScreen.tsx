@@ -293,8 +293,8 @@ export default function ProfileScreen({
   const persistAge = async (age: number, birthDate: string) => {
     if (!settings) return;
     setAgeError(null);
-    const previous = settings;
-    const optimistic: UserSettings = { ...settings, age, birthDate };
+    const ageNum = Number.isFinite(age) ? age : parseInt(String(age), 10) || 20;
+    const optimistic: UserSettings = { ...settings, age: ageNum, birthDate };
     onSettingsChange(optimistic);
     setSavingAge(true);
     try {
@@ -305,13 +305,13 @@ export default function ProfileScreen({
         wantsFinancialLiteracy: optimistic.wantsFinancialLiteracy,
         hasCompletedOnboarding: true,
         hasCompletedBankSetup: optimistic.hasCompletedBankSetup,
-        age,
+        age: ageNum,
         birthDate,
       });
       onSettingsChange(saved);
     } catch (err) {
-      onSettingsChange(previous);
-      setAgeError(err instanceof Error ? err.message : "Couldn't save your age.");
+      // Keep optimistic local age — cloud failures must not freeze or roll back the UI.
+      console.warn("Supabase update failed, continuing with local state", err);
     } finally {
       setSavingAge(false);
     }
@@ -339,12 +339,8 @@ export default function ProfileScreen({
   };
 
   const commitAge = (raw: string) => {
-    const parsed = Number(raw.replace(/[^0-9]/g, ""));
-    if (!Number.isFinite(parsed) || raw.trim() === "") {
-      setAgeDraft(settings?.age != null ? String(settings.age) : "");
-      return;
-    }
-    const clamped = clampAge(parsed);
+    const ageNum = parseInt(raw.replace(/[^0-9]/g, ""), 10) || 20;
+    const clamped = clampAge(ageNum);
     const existingIso = parseToIsoDate(birthDraft, "MDY") || settings?.birthDate || null;
     const birthDate = applyAgeToBirthDate(clamped, existingIso);
     setAgeDraft(String(clamped));
@@ -445,7 +441,7 @@ export default function ProfileScreen({
               <span style={styles.ageHint}>
                 {savingAge
                   ? "Saving…"
-                  : "Enter MM/DD/YYYY. Used for Sprout AI advice and compound growth projections. Edit anytime."}
+                  : ""}
               </span>
               {ageError ? <span style={styles.prefError}>{ageError}</span> : null}
             </span>

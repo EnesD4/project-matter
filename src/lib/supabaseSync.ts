@@ -1,7 +1,8 @@
-import type { AuthChangeEvent, Session } from "@supabase/supabase-js";
+import type { AuthChangeEvent, AuthError, Session } from "@supabase/supabase-js";
 import { ageFromBirthDate } from "./age";
 import {
   canReachSupabase,
+  clearSupabaseAuthStorage,
   getSupabase,
   isSupabaseClientKey,
   isSupabaseTableUnavailable,
@@ -11,6 +12,77 @@ import {
   type FinancialSnapshotRow,
   type ProfileRow,
 } from "./supabase";
+
+export const AUTH_RATE_LIMIT_MESSAGE = "Too many attempts, please wait a minute";
+
+/** Auth HTTP / API failures that should drop the user to the login screen. */
+export function isFatalAuthError(error: unknown): boolean {
+  if (!error) return false;
+  const status =
+    typeof error === "object" && error !== null && "status" in error
+      ? Number((error as { status?: number }).status)
+      : NaN;
+  if (status === 400 || status === 401 || status === 403 || status === 422 || status === 429) {
+    return true;
+  }
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === "object" && error !== null && "message" in error
+        ? String((error as { message?: unknown }).message || "")
+        : String(error);
+  return /invalid (jwt|token|refresh|login credentials)|jwt expired|refresh_token|session.*expired|user not found|email not confirmed|rate.?limit|too many (requests|attempts)|422|429/i.test(
+    message
+  );
+}
+
+export function isAuthRateLimitError(error: unknown): boolean {
+  if (!error) return false;
+  const status =
+    typeof error === "object" && error !== null && "status" in error
+      ? Number((error as { status?: number }).status)
+      : NaN;
+  if (status === 429) return true;
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === "object" && error !== null && "message" in error
+        ? String((error as { message?: unknown }).message || "")
+        : String(error);
+  return /rate.?limit|too many (requests|attempts)|over_request_rate_limit/i.test(message);
+}
+
+export function messageForAuthError(error: unknown, fallback = "Authentication failed"): string {
+  if (isAuthRateLimitError(error)) return AUTH_RATE_LIMIT_MESSAGE;
+  if (error instanceof Error && error.message.trim()) return error.message;
+  if (typeof error === "object" && error !== null && "message" in error) {
+    const msg = String((error as { message?: unknown }).message || "").trim();
+    if (msg) return msg;
+  }
+  return fallback;
+}
+
+function throwAuthError(error: AuthError | null | undefined): never {
+  if (isAuthRateLimitError(error)) {
+    throw new Error(AUTH_RATE_LIMIT_MESSAGE);
+  }
+  throw new Error(messageForAuthError(error, "Authentication failed"));
+}
+
+/** Clear bad tokens and force a local sign-out when the session is unusable. */
+export async function invalidateSupabaseAuth(reason?: unknown) {
+  if (reason) {
+    console.warn("Clearing Supabase auth after failure:", messageForAuthError(reason));
+  }
+  clearSupabaseAuthStorage();
+  const client = getSupabase();
+  if (!client) return;
+  try {
+    await client.auth.signOut({ scope: "local" });
+  } catch {
+    // already cleared / offline
+  }
+}
 
 export type SupabaseAuthKind = "password" | "guest" | "oauth";
 
@@ -88,8 +160,16 @@ export async function waitForSupabaseSession(timeoutMs = 4000): Promise<Session 
 
   try {
     const existing = await client.auth.getSession();
+    if (existing.error && isFatalAuthError(existing.error)) {
+      await invalidateSupabaseAuth(existing.error);
+      return null;
+    }
     if (existing.data.session?.user) return existing.data.session;
-  } catch {
+  } catch (err) {
+    if (isFatalAuthError(err)) {
+      await invalidateSupabaseAuth(err);
+      return null;
+    }
     // Hash exchange may still be in flight — keep waiting instead of aborting.
   }
 
@@ -116,7 +196,11 @@ export async function waitForSupabaseSession(timeoutMs = 4000): Promise<Session 
         if (session?.user) finish(session);
       });
       unsubscribe = () => data.subscription.unsubscribe();
-    } catch {
+    } catch (err) {
+      if (isFatalAuthError(err)) {
+        void invalidateSupabaseAuth(err).finally(() => finish(null));
+        return;
+      }
       finish(null);
       return;
     }
@@ -124,8 +208,18 @@ export async function waitForSupabaseSession(timeoutMs = 4000): Promise<Session 
     const timer = window.setTimeout(() => {
       void client.auth
         .getSession()
-        .then(({ data: next }) => finish(next.session ?? null))
-        .catch(() => finish(null));
+        .then(async ({ data: next, error }) => {
+          if (error && isFatalAuthError(error)) {
+            await invalidateSupabaseAuth(error);
+            finish(null);
+            return;
+          }
+          finish(next.session ?? null);
+        })
+        .catch(async (err) => {
+          if (isFatalAuthError(err)) await invalidateSupabaseAuth(err);
+          finish(null);
+        });
     }, timeoutMs);
   });
 }
@@ -157,17 +251,26 @@ export function subscribeSupabaseAuth(
 }
 
 export async function signInWithGoogleOAuth(): Promise<void> {
-  const { error } = await supabase.auth.signInWithOAuth({
-    provider: "google",
-    options: {
-      redirectTo: `${window.location.origin}/`,
-    },
-  });
-  if (error) throw new Error(error.message || "Google sign-in failed");
+  try {
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo: `${window.location.origin}/`,
+      },
+    });
+    if (error) throwAuthError(error);
+  } catch (err) {
+    if (isAuthRateLimitError(err)) {
+      throw new Error(AUTH_RATE_LIMIT_MESSAGE);
+    }
+    throw err instanceof Error ? err : new Error(messageForAuthError(err, "Google sign-in failed"));
+  }
 }
 
-function asMoney(value: number | undefined): number {
-  return Number.isFinite(value) && (value as number) >= 0 ? Number(value) : 0;
+function asMoney(value: number | undefined | null): number {
+  if (value === undefined || value === null) return 0;
+  const n = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
 }
 
 function guestEmail(id: string) {
@@ -210,17 +313,35 @@ function clearGuestCreds() {
 async function currentUser() {
   const client = getSupabase();
   if (!client) return null;
-  const { data } = await client.auth.getUser();
-  return data.user ?? null;
+  try {
+    const { data, error } = await client.auth.getUser();
+    if (error) {
+      if (isFatalAuthError(error)) {
+        await invalidateSupabaseAuth(error);
+      }
+      return null;
+    }
+    return data.user ?? null;
+  } catch (err) {
+    if (isFatalAuthError(err)) {
+      await invalidateSupabaseAuth(err);
+    }
+    return null;
+  }
 }
 
 export async function getSupabaseAccessToken(): Promise<string | null> {
   const client = getSupabase();
   if (!client) return null;
   try {
-    const { data } = await client.auth.getSession();
+    const { data, error } = await client.auth.getSession();
+    if (error && isFatalAuthError(error)) {
+      await invalidateSupabaseAuth(error);
+      return null;
+    }
     return data.session?.access_token ?? null;
-  } catch {
+  } catch (err) {
+    if (isFatalAuthError(err)) await invalidateSupabaseAuth(err);
     return null;
   }
 }
@@ -248,6 +369,13 @@ export async function syncSupabaseAuth(input: SupabaseAuthInput): Promise<string
         email: input.email.trim().toLowerCase(),
         password: input.password,
       });
+      if (signedIn.error) {
+        if (isAuthRateLimitError(signedIn.error)) throwAuthError(signedIn.error);
+        // Wrong password / no account — try sign-up once, but never loop on fatal auth errors.
+        if (signedIn.error.status && ![400, 422].includes(signedIn.error.status)) {
+          throwAuthError(signedIn.error);
+        }
+      }
       if (signedIn.data.user) return signedIn.data.user.id;
 
       const signedUp = await client.auth.signUp({
@@ -261,6 +389,10 @@ export async function syncSupabaseAuth(input: SupabaseAuthInput): Promise<string
           },
         },
       });
+      if (signedUp.error) {
+        if (isFatalAuthError(signedUp.error)) throwAuthError(signedUp.error);
+        return null;
+      }
       return signedUp.data.session?.user.id ?? signedUp.data.user?.id ?? null;
     }
 
@@ -274,6 +406,9 @@ export async function syncSupabaseAuth(input: SupabaseAuthInput): Promise<string
         },
       },
     });
+    if (anonymous.error && isAuthRateLimitError(anonymous.error)) {
+      throwAuthError(anonymous.error);
+    }
     if (anonymous.data.user) return anonymous.data.user.id;
 
     const creds = readGuestCreds() ?? {
@@ -281,6 +416,9 @@ export async function syncSupabaseAuth(input: SupabaseAuthInput): Promise<string
       password: newGuestPassword(),
     };
     const guestIn = await client.auth.signInWithPassword(creds);
+    if (guestIn.error && isAuthRateLimitError(guestIn.error)) {
+      throwAuthError(guestIn.error);
+    }
     if (guestIn.data.user) {
       writeGuestCreds(creds);
       return guestIn.data.user.id;
@@ -296,12 +434,25 @@ export async function syncSupabaseAuth(input: SupabaseAuthInput): Promise<string
         },
       },
     });
+    if (guestUp.error && isFatalAuthError(guestUp.error)) {
+      throwAuthError(guestUp.error);
+    }
     if (guestUp.data.session?.user) {
       writeGuestCreds(creds);
       return guestUp.data.session.user.id;
     }
     return null;
-  } catch {
+  } catch (err) {
+    if (isAuthRateLimitError(err)) {
+      throw new Error(AUTH_RATE_LIMIT_MESSAGE);
+    }
+    if (isFatalAuthError(err)) {
+      await invalidateSupabaseAuth(err);
+      // Only interactive password flows must bubble fatal auth errors to the UI.
+      if (input.kind === "password") {
+        throw new Error(messageForAuthError(err));
+      }
+    }
     return null;
   }
 }
@@ -389,7 +540,14 @@ export async function fetchFinancialSnapshot(): Promise<FinancialSnapshotRow | n
       return null;
     }
     if (!data) return null;
-    return data as FinancialSnapshotRow;
+    const row = data as FinancialSnapshotRow;
+    return {
+      ...row,
+      cash_balance: asMoney(row.cash_balance),
+      debt: asMoney(row.debt),
+      investment_assets: asMoney(row.investment_assets),
+      monthly_income: asMoney(row.monthly_income),
+    };
   } catch {
     return null;
   }
@@ -446,6 +604,7 @@ export function queueFinancialSnapshotSync(input: FinancialSnapshotInput) {
 export async function signOutSupabase() {
   const client = getSupabase();
   clearGuestCreds();
+  clearSupabaseAuthStorage();
   if (!client) return;
   try {
     await client.auth.signOut({ scope: "local" });
