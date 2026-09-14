@@ -892,8 +892,8 @@ async function authResponseFromSupabaseSession(session: {
 /** Resume a Google (or other) Supabase session after OAuth redirect or refresh. */
 export async function restoreSupabaseAuthSession(): Promise<AuthResponse | null> {
   try {
-    // Keep well under the App bootstrap 1s fail-safe so loading never hangs.
-    const session = await waitForSupabaseSession(800);
+    // Allow detectSessionInUrl / OAuth hash exchange to finish before treating as logged out.
+    const session = await waitForSupabaseSession(4000);
     if (!session?.user) return null;
     return await authResponseFromSupabaseSession(session);
   } catch (err) {

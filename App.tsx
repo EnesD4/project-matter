@@ -464,10 +464,11 @@ const App: React.FC = () => {
       setAuthChecking(false);
     };
 
-    // Hard fail-safe: never leave the UI on "Checking your session…" longer than 1s.
+    // Last-resort only. Must stay above OAuth / getSession restore time so we never
+    // clearSession → signOut while Supabase is still restoring (redirect loop).
     const safetyTimer = window.setTimeout(() => {
-      settleUnauthenticated();
-    }, 1000);
+      if (!cancelled && !settled) settleUnauthenticated();
+    }, 10000);
 
     try {
       clearGuestSessionFallbacks();
@@ -488,21 +489,18 @@ const App: React.FC = () => {
         }
         return;
       }
-      // Ignore INITIAL_SESSION null while still resolving; explicit sign-out always clears.
-      if (event === "SIGNED_OUT") {
-        if (!settled) {
-          settleUnauthenticated();
-        } else {
-          setAuthUser(null);
-          setUserSettings(null);
-          setAuthChecking(false);
-        }
+      // Ignore INITIAL_SESSION / transient null while still restoring; only sign-out clears.
+      if (event === "SIGNED_OUT" && settled) {
+        setAuthUser(null);
+        setUserSettings(null);
+        setAuthChecking(false);
       }
     });
 
     void (async () => {
       try {
-        const restored = await withTimeout(restoreSupabaseAuthSession(), 900, "Session");
+        // Await full restore — do not race a short withTimeout that kicks to login early.
+        const restored = await restoreSupabaseAuthSession();
         if (cancelled || settled) return;
         if (restored?.user?.id) {
           settleAuthenticated(restored);
@@ -519,6 +517,13 @@ const App: React.FC = () => {
 
         settleUnauthenticated();
       } catch {
+        if (cancelled || settled) return;
+        const token = getToken();
+        const stored = getStoredUser();
+        if (token && stored?.id && !isDemoOrGuestSession(token, stored)) {
+          settleAuthenticated({ token, user: stored, settings: getStoredSettings() });
+          return;
+        }
         settleUnauthenticated();
       }
     })();
