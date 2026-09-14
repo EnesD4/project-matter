@@ -424,6 +424,12 @@ const App: React.FC = () => {
   const [holdings, setHoldings] = useState<Holding[]>([]);
   const [holdingsReady, setHoldingsReady] = useState(false);
 
+  // Guard mapped dashboard arrays so undefined never reaches charts/tables.
+  const stocks = holdings?.filter((h): h is Extract<Holding, { kind: "stock" }> => h?.kind === "stock") || [];
+  const safeHoldings = holdings || [];
+  const safeExpenses = expenses || [];
+  const safeDebts = debts || [];
+
   const userName = authUser?.name?.trim() || "Investor";
   const firstName = firstNameOf(userName);
   const profileInitials = (authUser?.name || authUser?.email || "?")
@@ -782,10 +788,12 @@ const App: React.FC = () => {
       }));
       setDebts(linkedDebts);
       setMonthlyIncome(detail.monthlyIncome);
-      setExpenses(detail.expenses);
+      const portfolioStocks = detail?.holdings || [];
+      const linkedExpenses = detail?.expenses || [];
+      setExpenses(linkedExpenses);
       setCashFlowLinked(true);
-      const investments = detail.holdings.reduce((sum, lot) => sum + lot.shares * lot.buyPrice, 0);
-      const monthlyEssentialExpenses = detail.expenses.reduce((sum, item) => sum + item.amount, 0);
+      const investments = portfolioStocks.reduce((sum, lot) => sum + lot.shares * lot.buyPrice, 0);
+      const monthlyEssentialExpenses = linkedExpenses.reduce((sum, item) => sum + item.amount, 0);
       saveFinancialProfile(
         inferProfileFromBalances({
           cash: detail.chaseChecking,
@@ -801,7 +809,7 @@ const App: React.FC = () => {
         const next = {
           ...(prev ?? DEFAULT_USER_SETTINGS),
           hasActiveDebts: linkedDebts.length > 0,
-          hasActiveInvestments: detail.holdings.length > 0,
+          hasActiveInvestments: portfolioStocks.length > 0,
           hasCompletedOnboarding: true,
           hasCompletedBankSetup: true,
         };
@@ -952,11 +960,11 @@ const App: React.FC = () => {
   const emergencyGoal = 1000;
 
   const categoryExpenses = useMemo(
-    () => expenses.reduce((sum, item) => sum + item.amount, 0),
-    [expenses]
+    () => safeExpenses.reduce((sum, item) => sum + item.amount, 0),
+    [safeExpenses]
   );
-  const totalDebt = useMemo(() => debts.reduce((sum, d) => sum + d.balance, 0), [debts]);
-  const activeDebts = useMemo(() => debts.filter((d) => d.balance > 0), [debts]);
+  const totalDebt = useMemo(() => safeDebts.reduce((sum, d) => sum + d.balance, 0), [safeDebts]);
+  const activeDebts = useMemo(() => safeDebts.filter((d) => d.balance > 0), [safeDebts]);
   const totalMinPayment = useMemo(
     () => activeDebts.reduce((sum, d) => sum + d.minPayment, 0),
     [activeDebts]
@@ -966,7 +974,7 @@ const App: React.FC = () => {
 
   const netCashFlow = monthlyIncome - monthlyExpenses;
   const isSurplus = netCashFlow >= 0;
-  const hasCashFlowInputs = monthlyIncome > 0 || expenses.length > 0 || totalMinPayment > 0;
+  const hasCashFlowInputs = monthlyIncome > 0 || safeExpenses.length > 0 || totalMinPayment > 0;
   const flowTone = !hasCashFlowInputs
     ? { value: "#F8FAFC", text: "#94A3B8", bg: "rgba(255,255,255,0.04)", border: "#1F1F1F" }
     : isSurplus
@@ -976,26 +984,26 @@ const App: React.FC = () => {
 
   const avgApr = useMemo(() => {
     if (totalDebt <= 0) return 0;
-    return debts.reduce((sum, d) => sum + d.balance * d.apr, 0) / totalDebt;
-  }, [debts, totalDebt]);
+    return safeDebts.reduce((sum, d) => sum + d.balance * d.apr, 0) / totalDebt;
+  }, [safeDebts, totalDebt]);
 
   // Snowball focus: every extra dollar lands on the smallest remaining balance.
   const focusDebt = useMemo(
     () =>
-      debts
+      safeDebts
         .filter((d) => d.balance > 0)
         .sort((a, b) => a.balance - b.balance || b.apr - a.apr)[0] ?? null,
-    [debts]
+    [safeDebts]
   );
 
   // Live portfolio context — real holdings, so Socrates can answer "which stocks do I own?" accurately.
   const portfolioContext = useMemo(() => {
-    if (holdings.length === 0) return "No investments or connected accounts yet.";
-    const totalValue = holdings.reduce(
+    if (safeHoldings.length === 0) return "No investments or connected accounts yet.";
+    const totalValue = safeHoldings.reduce(
       (sum, h) => sum + (h.kind === "stock" ? h.quantity * h.currentPrice : h.balance),
       0
     );
-    const lines = holdings.map((h) =>
+    const lines = safeHoldings.map((h) =>
       h.kind === "stock"
         ? `${h.symbol} (${h.description}, ${h.account === "verified" ? "Verified Brokerage" : "Paper Account"}): ${h.quantity} shares @ $${h.currentPrice.toFixed(2)} = $${money(
             h.quantity * h.currentPrice
@@ -1003,18 +1011,15 @@ const App: React.FC = () => {
         : `${h.name} (${h.account === "verified" ? "Verified Brokerage" : "Paper Account"} balance): $${money(h.balance)}`
     );
     return `Total portfolio value: $${money(totalValue)}. Investment achievement badges only count Verified Brokerage holdings; Paper Account lots are excluded. Holdings:\n- ${lines.join("\n- ")}`;
-  }, [holdings]);
+  }, [safeHoldings]);
 
   const stockHoldingsValue = useMemo(
-    () =>
-      holdings
-        .filter((h): h is Extract<Holding, { kind: "stock" }> => h.kind === "stock")
-        .reduce((sum, h) => sum + h.quantity * h.currentPrice, 0),
-    [holdings]
+    () => stocks.reduce((sum, h) => sum + h.quantity * h.currentPrice, 0),
+    [stocks]
   );
   const brokerCashValue = useMemo(
-    () => holdings.filter((h) => h.kind === "broker").reduce((sum, h) => sum + h.balance, 0),
-    [holdings]
+    () => safeHoldings.filter((h) => h.kind === "broker").reduce((sum, h) => sum + h.balance, 0),
+    [safeHoldings]
   );
   const { goldPricePerOz, bondPrices, loading: safetyQuotesLoading } = useSafetyNetQuotes(safetyNet);
   const safetyTotals = useMemo(
@@ -1050,7 +1055,7 @@ const App: React.FC = () => {
     const refresh = () => {
       evaluateTrophies({
         userId,
-        holdings,
+        holdings: safeHoldings,
         netWorth,
         portfolioValue: stockHoldingsValue,
         retirementDeposits: getRetirementDepositCount(userId),
@@ -1068,23 +1073,23 @@ const App: React.FC = () => {
       window.removeEventListener(STREAK_UPDATED_EVENT, refresh);
       window.removeEventListener("storage", refresh);
     };
-  }, [authUser, holdings, holdingsReady, netWorth, stockHoldingsValue, safetyTotals.total, monthlyExpenses]);
+  }, [authUser, safeHoldings, holdingsReady, netWorth, stockHoldingsValue, safetyTotals.total, monthlyExpenses]);
 
   // Live debt context — real debts, so Socrates can answer "how's my debt payoff going?" accurately.
   const debtContext = useMemo(() => {
-    if (debts.length === 0) return "No active debts — currently debt-free.";
-    const lines = debts.map(
+    if (safeDebts.length === 0) return "No active debts — currently debt-free.";
+    const lines = safeDebts.map(
       (d) => `${d.title}: $${money(d.balance)} remaining of $${money(d.originalBalance)}, ${d.apr}% APR, $${money(d.minPayment)}/mo minimum`
     );
-    return `Total remaining debt: $${money(totalDebt)} across ${debts.length} debt(s):\n- ${lines.join("\n- ")}`;
-  }, [debts, totalDebt]);
+    return `Total remaining debt: $${money(totalDebt)} across ${safeDebts.length} debt(s):\n- ${lines.join("\n- ")}`;
+  }, [safeDebts, totalDebt]);
 
   // Live cash-flow context from the Cash Flow & Debt Management module.
   const cashFlowContext = useMemo(() => {
     const categoryBreakdown =
-      expenses.length === 0
+      safeExpenses.length === 0
         ? "No spending categories tracked yet."
-        : `Spending breakdown: ${expenses
+        : `Spending breakdown: ${safeExpenses
             .map((item) => `${item.label} $${money(item.amount)}/mo`)
             .join(", ")}.`;
     const debtBreakdown =
@@ -1101,7 +1106,7 @@ const App: React.FC = () => {
       isSurplus ? "surplus" : "deficit"
     }). ${categoryBreakdown}${debtBreakdown}`;
   }, [
-    expenses,
+    safeExpenses,
     monthlyIncome,
     monthlyExpenses,
     categoryExpenses,
@@ -1113,7 +1118,7 @@ const App: React.FC = () => {
 
   const educationalSnapshot = useMemo<SproutAiFinancialSnapshot>(() => {
     const safetyNetMonths = monthlyExpenses > 0 ? safetyTotals.total / monthlyExpenses : null;
-    const highestApr = debts.length === 0 ? null : Math.max(...debts.map((d) => d.apr));
+    const highestApr = safeDebts.length === 0 ? null : Math.max(...safeDebts.map((d) => d.apr));
     return {
       userName: firstName,
       cash: {
@@ -1128,7 +1133,7 @@ const App: React.FC = () => {
       },
       debt: {
         total: totalDebt,
-        count: debts.length,
+        count: safeDebts.length,
         highestApr,
         focusTitle: focusDebt?.title ?? null,
         summary: debtContext,
@@ -1138,7 +1143,7 @@ const App: React.FC = () => {
         monthlyExpenses,
         netCashFlow,
         isSurplus,
-        categories: expenses.map((item) => ({ label: item.label, amount: item.amount })),
+        categories: safeExpenses.map((item) => ({ label: item.label, amount: item.amount })),
         summary: cashFlowContext,
       },
     };
@@ -1149,14 +1154,14 @@ const App: React.FC = () => {
     safetyTotals.total,
     monthlyExpenses,
     emergencyGoal,
-    debts,
+    safeDebts,
     totalDebt,
     focusDebt?.title,
     debtContext,
     monthlyIncome,
     netCashFlow,
     isSurplus,
-    expenses,
+    safeExpenses,
     cashFlowContext,
   ]);
 
@@ -1748,7 +1753,7 @@ const App: React.FC = () => {
         >
           <InvestmentScreen
             key={authUser.id}
-            holdings={holdings}
+            holdings={safeHoldings}
             totalPortfolioValue={stockHoldingsValue}
             onHoldingsChange={(next) => {
               setHoldings(next);
@@ -1785,7 +1790,7 @@ const App: React.FC = () => {
         {activeTab === "snowball" && (
           <div className="matter-tab-panel" style={styles.tabPanel} aria-busy={!cashFlowReady}>
             <CashFlowScreen
-              holdings={holdings}
+              holdings={safeHoldings}
               privacyMode={privacyMode}
             />
 
@@ -1859,11 +1864,11 @@ const App: React.FC = () => {
                     <ChevronRight size={18} strokeWidth={2.5} className="matter-spend-trigger-arrow" aria-hidden />
                   </button>
                   <p style={styles.flowCellHint}>
-                    {expenses.length === 0 && totalMinPayment <= 0
+                    {safeExpenses.length === 0 && totalMinPayment <= 0
                       ? "No categories yet"
                       : [
-                          expenses.length > 0
-                            ? `${expenses.length} ${expenses.length === 1 ? "category" : "categories"}`
+                          safeExpenses.length > 0
+                            ? `${safeExpenses.length} ${safeExpenses.length === 1 ? "category" : "categories"}`
                             : null,
                           totalMinPayment > 0 ? "debt payments included" : null,
                         ]
@@ -1944,7 +1949,7 @@ const App: React.FC = () => {
                   </div>
 
                   <div style={styles.spendingModalBody}>
-                    {expenses.length === 0 && activeDebts.length === 0 ? (
+                    {safeExpenses.length === 0 && activeDebts.length === 0 ? (
                       <div style={styles.emptyExpenses}>
                         Nothing tracked yet. Add rent, groceries, utilities, subscriptions — anything
                         that leaves your account each month. Debt minimums from Active Debt Payoff are
@@ -1952,7 +1957,7 @@ const App: React.FC = () => {
                       </div>
                     ) : (
                       <ul style={styles.expenseList}>
-                        {expenses.map((item) => (
+                        {safeExpenses.map((item) => (
                           <ExpenseRow
                             key={item.id}
                             item={item}
@@ -2092,7 +2097,7 @@ const App: React.FC = () => {
                         <span className="hidden min-[400px]:inline">Avg Interest</span>
                       </p>
                       <p className="mt-1 truncate text-sm font-extrabold tracking-tight text-[#10B981]">
-                        {debts.length === 0 ? "—" : `${avgApr.toFixed(1)}%`}
+                        {safeDebts.length === 0 ? "—" : `${avgApr.toFixed(1)}%`}
                       </p>
                     </div>
                   </div>
@@ -2111,11 +2116,11 @@ const App: React.FC = () => {
                     <div className="space-y-3 border-t border-neutral-800 px-4 pb-4 pt-3">
                       <div className="flex min-w-0 items-center justify-between gap-2">
                         <p className="min-w-0 text-[11px] font-semibold text-neutral-500">
-                          {debts.length > 0
+                          {safeDebts.length > 0
                             ? "From connected cards & loans"
                             : "Balances sync from your bank"}
                         </p>
-                        {debts.length > 0 ? (
+                        {safeDebts.length > 0 ? (
                           <span className="flex-shrink-0 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wide text-emerald-300">
                             Auto
                           </span>
@@ -2150,14 +2155,14 @@ const App: React.FC = () => {
                         </p>
                       </article>
 
-                      {debts.length === 0 ? (
+                      {safeDebts.length === 0 ? (
                         <div style={styles.emptyDebts}>
                           No credit cards or loans on your connected accounts. Active Debt Payoff
                           fills in automatically when a card or loan is linked.
                         </div>
                       ) : (
                         <div style={styles.debtList}>
-                          {debts.map((debt) => (
+                          {safeDebts.map((debt) => (
                             <DebtPayoffCard
                               key={debt.id}
                               debt={debt}
@@ -2184,7 +2189,7 @@ const App: React.FC = () => {
 
             {/* 4. Multi-asset safety net, sized off the real spending total. */}
             <SafetyNetSection
-              holdings={holdings}
+              holdings={safeHoldings}
               monthlyExpenses={monthlyExpenses}
               cash={emergencyFund}
               onCashChange={setEmergencyFund}
@@ -2229,7 +2234,7 @@ const App: React.FC = () => {
             onSettingsChange={setUserSettings}
             onLogout={handleLogout}
             onResetAppState={handleResetAppState}
-            holdings={holdings}
+            holdings={safeHoldings}
             holdingsReady={holdingsReady}
             netWorth={netWorth}
             portfolioValue={stockHoldingsValue}

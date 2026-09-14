@@ -469,9 +469,12 @@ export default function WatchlistsSection({
     }
   });
 
+  // Guard mapped watchlist arrays so undefined never reaches child rows/charts.
+  const watchlists = lists || [];
+
   const activeList = useMemo(
-    () => lists.find((list) => list.id === activeId) ?? lists[0] ?? null,
-    [lists, activeId]
+    () => watchlists.find((list) => list.id === activeId) ?? watchlists[0] ?? null,
+    [watchlists, activeId]
   );
 
   useEffect(() => {
@@ -513,10 +516,10 @@ export default function WatchlistsSection({
 
   const allSymbolsKey = useMemo(
     () =>
-      Array.from(new Set(lists.flatMap((list) => watchlistItems(list).map((item) => item.symbol))))
+      Array.from(new Set(watchlists.flatMap((list) => watchlistItems(list).map((item) => item.symbol))))
         .sort()
         .join(","),
-    [lists]
+    [watchlists]
   );
 
   useEffect(() => {
@@ -679,16 +682,16 @@ export default function WatchlistsSection({
   };
 
   const totalItems = useMemo(
-    () => lists.reduce((sum, list) => sum + watchlistItems(list).length, 0),
-    [lists]
+    () => watchlists.reduce((sum, list) => sum + watchlistItems(list).length, 0),
+    [watchlists]
   );
 
   const seededOpenLists = useRef(false);
 
   useEffect(() => {
-    if (lists.length === 0) return;
+    if (watchlists.length === 0) return;
     setOpenListIds((ids) => {
-      const valid = ids.filter((id) => lists.some((list) => list.id === id));
+      const valid = ids.filter((id) => watchlists.some((list) => list.id === id));
       if (valid.length > 0) {
         seededOpenLists.current = true;
         const unchanged = valid.length === ids.length && valid.every((id, i) => id === ids[i]);
@@ -696,11 +699,11 @@ export default function WatchlistsSection({
       }
       if (!seededOpenLists.current) {
         seededOpenLists.current = true;
-        return [lists[0].id];
+        return [watchlists[0].id];
       }
       return valid;
     });
-  }, [lists]);
+  }, [watchlists]);
 
   return (
     <section>
@@ -735,14 +738,14 @@ export default function WatchlistsSection({
 
       <div id="watchlists-panel">
 
-      {loading && lists.length === 0 && (
+      {loading && watchlists.length === 0 && (
         <p className="mt-3 flex items-center gap-2 text-[11px] font-semibold text-[#9CA3AF]">
           <Loader2 size={13} className="animate-spin text-emerald-400" />
           Loading watchlists…
         </p>
       )}
 
-      {error && lists.length === 0 && (
+      {error && watchlists.length === 0 && (
         <p className="mt-3 text-[11px] font-semibold text-rose-300">{error}</p>
       )}
 
@@ -788,7 +791,7 @@ export default function WatchlistsSection({
         </form>
       )}
 
-      {lists.length === 0 && !loading && !createOpen && (
+      {watchlists.length === 0 && !loading && !createOpen && (
         <div className="mt-3 rounded-2xl border border-dashed border-[#1F2937] bg-black/20 px-4 py-6 text-center">
           <p className="text-sm font-bold text-white">No watchlists yet</p>
           <p className="mt-1 text-[11px] leading-relaxed text-[#9CA3AF]">
@@ -797,9 +800,9 @@ export default function WatchlistsSection({
         </div>
       )}
 
-      {lists.length > 0 && (
+      {watchlists.length > 0 && (
         <div className="mt-3 space-y-2">
-          {lists.map((list) => (
+          {watchlists.map((list) => (
             <WatchlistCard
               key={list.id}
               list={list}

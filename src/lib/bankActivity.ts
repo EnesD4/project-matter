@@ -78,14 +78,14 @@ export function detectRetirementAssets(
   };
 }
 
-export function summarizeBankActivity(transactions: BankTransaction[]): {
+export function summarizeBankActivity(transactions: BankTransaction[] | null | undefined): {
   monthlyIncome: number;
   expenses: CashFlowExpense[];
 } {
   let monthlyIncome = 0;
   const byCategory = new Map<string, number>();
 
-  for (const txn of transactions) {
+  for (const txn of transactions || []) {
     if (!(Math.abs(txn.amount) > 0)) continue;
     if (txn.amount > 0) {
       monthlyIncome += txn.amount;

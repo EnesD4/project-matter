@@ -673,8 +673,12 @@ export default function InvestmentPortfolioCard({
   const ignoreHoldingClickRef = useRef(false);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [pressingId, setPressingId] = useState<string | null>(null);
-  const hasStockHoldings = holdings.some((h) => h.kind === "stock");
-  const canReorderHoldings = holdings.length > 1;
+
+  // Guard mapped portfolio arrays so undefined never reaches charts/tables.
+  const safeHoldings = holdings || [];
+  const stocks = safeHoldings.filter((h): h is StockHolding => h?.kind === "stock");
+  const hasStockHoldings = stocks.length > 0;
+  const canReorderHoldings = safeHoldings.length > 1;
 
   const { markUpdated, marketOpen } = useMarketPolling({
     enabled: hasStockHoldings,
@@ -722,7 +726,8 @@ export default function InvestmentPortfolioCard({
     const onPlaidSandbox = (event: Event) => {
       const detail = (event as CustomEvent<PlaidLinkResult>).detail;
       if (!detail?.holdings) return;
-      const stocks = detail.holdings.map((item) => ({
+      const portfolioStocks = detail?.holdings || [];
+      const stocks = portfolioStocks.map((item) => ({
         ...stockHoldingFromItem(item, item.name),
         account: "verified" as const,
         description: item.name || item.symbol,
@@ -733,7 +738,7 @@ export default function InvestmentPortfolioCard({
         setJustAddedId(first.id);
         window.setTimeout(() => setJustAddedId(null), 2000);
       }
-      void Promise.all(detail.holdings.map((item) => enrichStockHolding(item)))
+      void Promise.all(portfolioStocks.map((item) => enrichStockHolding(item)))
         .then((enriched) => {
           setHoldings((prev) =>
             prev.map((holding) => {
@@ -748,7 +753,8 @@ export default function InvestmentPortfolioCard({
     const onDemo = (event: Event) => {
       const detail = (event as CustomEvent<DemoScenarioApplyDetail>).detail;
       if (!detail) return;
-      const stocks = detail.holdings.map((item) => {
+      const portfolioStocks = detail?.holdings || [];
+      const stocks = portfolioStocks.map((item) => {
         const lot =
           detail.lots?.find((row) => row.symbol === item.symbol) ??
           (detail.id !== "custom" ? DEMO_SCENARIOS[detail.id]?.lots.find((row) => row.symbol === item.symbol) : undefined);
@@ -757,7 +763,7 @@ export default function InvestmentPortfolioCard({
       holdingsEpochRef.current += 1;
       setPortfolioLoading(false);
       setHoldings(stocks);
-      writePortfolioCache(detail.holdings);
+      writePortfolioCache(portfolioStocks);
       setHoldingsExpanded(true);
       if (stocks.length > 0) markUpdated();
     };
@@ -897,23 +903,22 @@ export default function InvestmentPortfolioCard({
 
   const allocationExtra =
     typeof belowAllocation === "function"
-      ? belowAllocation({ holdings, cashBalance })
+      ? belowAllocation({ holdings: safeHoldings, cashBalance })
       : belowAllocation;
-  const hasHoldings = holdings.length > 0;
+  const hasHoldings = safeHoldings.length > 0;
   const investmentValue = useMemo(
-    () => holdings.filter((h) => h.kind === "stock").reduce((sum, h) => sum + holdingValue(h), 0),
-    [holdings]
+    () => stocks.reduce((sum, h) => sum + holdingValue(h), 0),
+    [stocks]
   );
   const brokerCash = useMemo(
-    () => holdings.filter((h) => h.kind === "broker").reduce((sum, h) => sum + holdingValue(h), 0),
-    [holdings]
+    () => safeHoldings.filter((h) => h.kind === "broker").reduce((sum, h) => sum + holdingValue(h), 0),
+    [safeHoldings]
   );
   const cashValue = brokerCash + Math.max(0, cashBalance);
   const totalValue = investmentValue + cashValue;
 
   const allocationSlices = useMemo(() => {
-    const items = holdings
-      .filter((h): h is StockHolding => h.kind === "stock")
+    const items = stocks
       .map((h) => ({
         bucket: classifyHolding({
           kind: "stock",
@@ -929,9 +934,9 @@ export default function InvestmentPortfolioCard({
       }))
       .filter((item) => item.bucket !== "Cash" && item.value > 0);
     return buildAllocationSlices(items);
-  }, [holdings]);
+  }, [stocks]);
 
-  const holdingOrderKey = holdings.map((h) => h.id).join("\0");
+  const holdingOrderKey = safeHoldings.map((h) => h.id).join("\0");
   useEffect(() => {
     if (portfolioLoading || !holdingOrderKey) return;
     writeHoldingOrder(holdingOrderKey.split("\0"));
@@ -949,21 +954,20 @@ export default function InvestmentPortfolioCard({
   // total portfolio value (broker/cash-style holdings contribute 0% change and dilute it).
   const portfolioDayChangePct = useMemo(() => {
     if (totalValue <= 0) return 0;
-    const weightedSum = holdings.reduce((sum, h) => {
+    const weightedSum = safeHoldings.reduce((sum, h) => {
       const dp = h.kind === "stock" ? h.dayChangePct : 0;
       return sum + holdingValue(h) * dp;
     }, 0);
     return weightedSum / totalValue;
-  }, [holdings, totalValue]);
+  }, [safeHoldings, totalValue]);
 
   const stockSymbolsKey = useMemo(
     () =>
-      holdings
-        .filter((h): h is StockHolding => h.kind === "stock")
+      stocks
         .map((h) => h.symbol)
         .sort()
         .join(","),
-    [holdings]
+    [stocks]
   );
 
   useEffect(() => {
@@ -1027,10 +1031,12 @@ export default function InvestmentPortfolioCard({
     );
     if (timestamps.length < 2) return fallback();
 
-    const stocks = holdings
-      .filter((h): h is StockHolding => h.kind === "stock")
-      .map((h) => ({ symbol: h.symbol, quantity: h.quantity, currentPrice: h.currentPrice }));
-    const reconstructed = reconstructPortfolioValues(stocks, holdingCandles, cashValue, timestamps);
+    const stockLots = stocks.map((h) => ({
+      symbol: h.symbol,
+      quantity: h.quantity,
+      currentPrice: h.currentPrice,
+    }));
+    const reconstructed = reconstructPortfolioValues(stockLots, holdingCandles, cashValue, timestamps);
     const hasLivePath = reconstructed.some((v) => v > 0);
     if (!hasLivePath) return fallback();
 
@@ -1047,7 +1053,7 @@ export default function InvestmentPortfolioCard({
     simulatedChartData,
     spCandles,
     holdingCandles,
-    holdings,
+    stocks,
     cashValue,
     totalValue,
     range,
@@ -1114,8 +1120,8 @@ export default function InvestmentPortfolioCard({
   }, [chartData.length, range]);
 
   const connectedPlatformNames = useMemo(
-    () => new Set(holdings.filter((h): h is BrokerHolding => h.kind === "broker").map((h) => h.name)),
-    [holdings]
+    () => new Set(safeHoldings.filter((h): h is BrokerHolding => h.kind === "broker").map((h) => h.name)),
+    [safeHoldings]
   );
 
   const resetManualForm = () => {
@@ -1935,7 +1941,7 @@ export default function InvestmentPortfolioCard({
                   if (draggingIdRef.current || pendingDragRef.current) e.preventDefault();
                 }}
               >
-                {holdings.map((h) => {
+                {safeHoldings.map((h) => {
                   if (!h) return null;
                   const highlight = h.id === justAddedId;
                   const quantity = h.kind === "stock" ? toFiniteNumber(h.quantity, 0) : 0;

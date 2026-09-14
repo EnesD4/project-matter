@@ -297,6 +297,9 @@ export default function WebDashboard({
   cashFlowExtra,
   sproutExtra,
 }: WebDashboardProps) {
+  // Guard mapped dashboard arrays so undefined never reaches child charts/tables.
+  const safeHoldings = holdings || [];
+
   const [view, setView] = useState<WebDashboardNavId>("investments");
   const [streak, setStreak] = useState(() => getLessonStreak(user.id).current);
   const [completed, setCompleted] = useState(() => readLessonProgress(user.id).completed);
@@ -347,13 +350,13 @@ export default function WebDashboard({
         monthlyExpenses,
         monthlyIncome,
         totalDebt,
-        holdingsCount: holdings.length,
+        holdingsCount: safeHoldings.length,
         netWorth,
         age,
         lessonPct: gold.pct,
         streak,
       }),
-    [safetyMonths, monthlyExpenses, monthlyIncome, totalDebt, holdings.length, netWorth, age, gold.pct, streak]
+    [safetyMonths, monthlyExpenses, monthlyIncome, totalDebt, safeHoldings.length, netWorth, age, gold.pct, streak]
   );
 
   const showDashboard = view === "dashboard";
@@ -649,10 +652,10 @@ export default function WebDashboard({
 
       <div className={view === "cashflow" ? "matter-dividend-scroll min-w-0 flex-1 overflow-y-auto px-6 py-6" : "hidden"}>
         <div className="mx-auto w-full max-w-3xl">
-          <CashFlowScreen holdings={holdings} privacyMode={privacyMode} />
+          <CashFlowScreen holdings={safeHoldings} privacyMode={privacyMode} />
           {cashFlowExtra}
           <SafetyNetSection
-            holdings={holdings}
+            holdings={safeHoldings}
             monthlyExpenses={monthlyExpenses}
             cash={cashBalance}
             onCashChange={onCashChange}
@@ -679,7 +682,7 @@ export default function WebDashboard({
             settings={settings}
             onSettingsChange={onSettingsChange}
             onLogout={onLogout}
-            holdings={holdings}
+            holdings={safeHoldings}
             holdingsReady={holdingsReady}
             netWorth={netWorth}
             portfolioValue={stockHoldingsValue}
@@ -694,7 +697,7 @@ export default function WebDashboard({
         <div className="mx-auto w-full max-w-3xl">
           <InvestmentScreen
             key={user.id}
-            holdings={holdings}
+            holdings={safeHoldings}
             totalPortfolioValue={stockHoldingsValue}
             onHoldingsChange={onHoldingsChange}
             onConsultSocrates={openSprout}

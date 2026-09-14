@@ -110,7 +110,8 @@ export default function CashFlowScreen({
   holdings,
   privacyMode = false,
 }: CashFlowScreenProps) {
-  const parentPositions = useMemo(() => positionsFromHoldings(holdings), [holdings]);
+  const safeHoldings = holdings || [];
+  const parentPositions = useMemo(() => positionsFromHoldings(safeHoldings), [safeHoldings]);
   const [fallbackPositions, setFallbackPositions] = useState<DividendPosition[]>([]);
   const [metaBySymbol, setMetaBySymbol] = useState<Record<string, DividendDetails>>({});
   const [loading, setLoading] = useState(false);
@@ -503,7 +504,8 @@ export function SafetyNetSection({
   const [bondShares, setBondShares] = useState("");
   const [bondError, setBondError] = useState("");
 
-  const portfolioValue = useMemo(() => stockPortfolioValue(holdings), [holdings]);
+  const safeHoldings = holdings || [];
+  const portfolioValue = useMemo(() => stockPortfolioValue(safeHoldings), [safeHoldings]);
   const totals = useMemo(
     () =>
       computeSafetyNetTotals({

@@ -24,6 +24,8 @@ export default function InvestmentScreen({
   privacyMode,
   onTogglePrivacy,
 }: InvestmentScreenProps) {
+  const safeHoldings = holdings || [];
+
   return (
     <InvestmentPortfolioCard
       onHoldingsChange={onHoldingsChange}
@@ -32,11 +34,11 @@ export default function InvestmentScreen({
       privacyMode={privacyMode}
       onTogglePrivacy={onTogglePrivacy}
       belowAllocation={({ holdings: liveHoldings, cashBalance: liveCash }) => (
-        <PortfolioHealthScoreCard holdings={liveHoldings} cashBalance={liveCash} />
+        <PortfolioHealthScoreCard holdings={liveHoldings || []} cashBalance={liveCash} />
       )}
       belowHoldings={({ onAddHolding, onSellHolding }) => (
         <WatchlistScreen
-          holdings={holdings}
+          holdings={safeHoldings}
           totalPortfolioValue={totalPortfolioValue}
           privacyMode={privacyMode}
           embedded
