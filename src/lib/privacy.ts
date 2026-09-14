@@ -1,4 +1,4 @@
-import { formatNumber, toFiniteNumber } from "./money";
+import { safeFormatNumber, toFiniteNumber } from "./money";
 
 /** Masked stand-ins used when privacy mode is on. */
 export const MASK_MONEY = "$••••••";
@@ -6,7 +6,7 @@ export const MASK_SHARES = "•••• shares";
 export const MASK_COMPACT = "••••";
 
 export function formatMoney(amount: unknown, digits = 2) {
-  return formatNumber(amount, {
+  return safeFormatNumber(amount, {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
   });
@@ -31,7 +31,7 @@ export function privacySignedMoney(hidden: boolean, amount: unknown, digits = 2)
 /** `12.5 sh` or `•••• shares` when hidden. */
 export function privacyShares(hidden: boolean, quantity: unknown): string {
   if (hidden) return MASK_SHARES;
-  const q = formatNumber(quantity, { maximumFractionDigits: 4 });
+  const q = safeFormatNumber(quantity, { maximumFractionDigits: 4 });
   return `${q} sh`;
 }
 

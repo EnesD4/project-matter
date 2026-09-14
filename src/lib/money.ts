@@ -9,14 +9,39 @@ export function toFiniteNumber(val: unknown, fallback = 0): number {
 }
 
 /**
- * Safe locale number formatting for display.
- * Handles `undefined`, `null`, NaN, and numeric strings without throwing.
+ * Mandatory safe locale number formatting for display.
+ * Never throws on `undefined`, `null`, NaN, non-finite, or non-numeric values.
+ */
+export function safeFormatNumber(
+  val: any,
+  options?: Intl.NumberFormatOptions
+): string {
+  const fallback = (): string => {
+    try {
+      return (0).toLocaleString(undefined, options);
+    } catch {
+      return "0";
+    }
+  };
+
+  if (val === null || val === undefined) return fallback();
+  const num = typeof val === "number" ? val : Number(val);
+  if (Number.isNaN(num) || !Number.isFinite(num)) return fallback();
+  try {
+    return num.toLocaleString(undefined, options);
+  } catch {
+    return fallback();
+  }
+}
+
+/**
+ * @deprecated Prefer `safeFormatNumber` — kept as an alias for existing call sites.
  */
 export function formatNumber(
   val: unknown,
   options?: Intl.NumberFormatOptions
 ): string {
-  return (toFiniteNumber(val, 0) ?? 0).toLocaleString("en-US", options);
+  return safeFormatNumber(val, options);
 }
 
 /**
@@ -28,7 +53,7 @@ export function formatCurrency(
   options?: { digits?: number; symbol?: boolean }
 ): string {
   const digits = options?.digits ?? 2;
-  const formatted = formatNumber(val, {
+  const formatted = safeFormatNumber(val, {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
   });
@@ -62,7 +87,7 @@ export function formatCurrencyInput(raw: string, options?: { symbol?: boolean })
   const intRaw = hasDot ? cleaned.slice(0, firstDot) : cleaned;
   const fracRaw = hasDot ? cleaned.slice(firstDot + 1).replace(/\./g, "") : "";
   const intNum = intRaw === "" ? 0 : Number(intRaw);
-  const formattedInt = Number.isFinite(intNum) ? formatNumber(intNum) : "0";
+  const formattedInt = Number.isFinite(intNum) ? safeFormatNumber(intNum) : "0";
   const formatted = hasDot ? `${formattedInt}.${fracRaw}` : formattedInt;
 
   if (options?.symbol) return `$${formatted}`;
@@ -73,7 +98,7 @@ export function formatCurrencyInput(raw: string, options?: { symbol?: boolean })
 export function formatCurrencyValue(amount: unknown, options?: { symbol?: boolean }): string {
   const n = toFiniteNumber(amount, 0);
   if (n === 0) return "";
-  const formatted = formatNumber(n, { maximumFractionDigits: 2 });
+  const formatted = safeFormatNumber(n, { maximumFractionDigits: 2 });
   if (options?.symbol) return `$${formatted}`;
   return formatted;
 }

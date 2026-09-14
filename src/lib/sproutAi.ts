@@ -1,3 +1,5 @@
+import { safeFormatNumber, toFiniteNumber } from "./money";
+
 /** Legal / educational notice appended to every Sprout AI recommendation and chat reply. */
 export const EDUCATIONAL_DISCLAIMER =
   "For educational purposes only. Not financial or tax advice.";
@@ -47,9 +49,7 @@ export function withEducationalDisclaimer(text: string): string {
 }
 
 function usd(amount: unknown): string {
-  const n = typeof amount === "number" && Number.isFinite(amount) ? amount : Number(amount);
-  const safe = Number.isFinite(n) ? n : 0;
-  return (Math.round(safe) ?? 0).toLocaleString("en-US");
+  return safeFormatNumber(Math.round(toFiniteNumber(amount, 0)));
 }
 
 export type SproutSpendingCategory = {

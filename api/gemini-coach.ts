@@ -139,10 +139,29 @@ function stripEducationalDisclaimer(text: string): string {
   return String(text || "").replace(DISCLAIMER_TAIL, "").trim();
 }
 
+/** Local safe formatter — mirrors src/lib/money.safeFormatNumber (API bundle isolation). */
+function safeFormatNumber(val: unknown, options?: Intl.NumberFormatOptions): string {
+  const fallback = (): string => {
+    try {
+      return (0).toLocaleString(undefined, options);
+    } catch {
+      return "0";
+    }
+  };
+  if (val === null || val === undefined) return fallback();
+  const num = typeof val === "number" ? val : Number(val);
+  if (Number.isNaN(num) || !Number.isFinite(num)) return fallback();
+  try {
+    return num.toLocaleString(undefined, options);
+  } catch {
+    return fallback();
+  }
+}
+
 function usd(amount: unknown): string {
   const n = typeof amount === "number" && Number.isFinite(amount) ? amount : Number(amount);
   const safe = Number.isFinite(n) ? n : 0;
-  return (Math.round(safe) ?? 0).toLocaleString("en-US");
+  return safeFormatNumber(Math.round(safe));
 }
 
 function firstNameOf(name: string, fallback = "Investor"): string {

@@ -28,7 +28,7 @@ import {
 } from "lucide-react";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { type Debt } from "./src/components/DebtSnowballManager";
-import { formatCurrencyInput, formatCurrencyValue, formatNumber, parseCurrency, toFiniteNumber } from "./src/lib/money";
+import { formatCurrencyInput, formatCurrencyValue, safeFormatNumber, parseCurrency, toFiniteNumber } from "./src/lib/money";
 import { privacyMoney } from "./src/lib/privacy";
 import { categoryIcon } from "./src/lib/categoryIcons";
 import AuthScreen from "./src/components/AuthScreen";
@@ -43,6 +43,7 @@ import ProfileScreen from "./src/components/ProfileScreen";
 import FinancialOnboardingModal from "./src/components/FinancialOnboardingModal";
 import AchievementBanner from "./src/components/AchievementBanner";
 import CertificateCelebration from "./src/components/CertificateCelebration";
+import { ErrorBoundary } from "./src/components/ErrorBoundary";
 import { evaluateTrophies } from "./src/lib/achievements";
 import { STREAK_UPDATED_EVENT } from "./src/lib/streakService";
 import {
@@ -238,7 +239,7 @@ function SproutChatMarkdown({ text }: { text: string }) {
 }
 
 function money(amount: unknown) {
-  return formatNumber(Math.round(toFiniteNumber(amount, 0)));
+  return safeFormatNumber(Math.round(toFiniteNumber(amount, 0)));
 }
 
 const MAX_PAYOFF_MONTHS = 600;
@@ -1473,6 +1474,7 @@ const App: React.FC = () => {
   );
 
   return (
+    <ErrorBoundary label="your dashboard">
     <div className={`${MOBILE_FRAME_CLASS}${activeTab === "socrates" ? " h-[100dvh] overflow-hidden" : ""}`}>
       <div
         style={{
@@ -2273,6 +2275,7 @@ const App: React.FC = () => {
       </div>
       </div>
     </div>
+    </ErrorBoundary>
   );
 };
 
