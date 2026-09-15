@@ -90,7 +90,6 @@ export const TICKER_DOMAINS: Record<string, string> = {
   SPOT: "spotify.com",
   ROKU: "roku.com",
   HOOD: "robinhood.com",
-  SOFI: "sofi.com",
   DKNG: "draftkings.com",
   RBLX: "roblox.com",
   U: "unity.com",
