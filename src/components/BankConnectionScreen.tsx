@@ -1,7 +1,7 @@
-import { Landmark, Sparkles } from "lucide-react";
+import { Landmark } from "lucide-react";
 import React, { useState } from "react";
 import { getStoredUser, saveUserSettings, type UserSettings } from "../lib/auth";
-import { applyDemoScenario, inferProfileFromBalances } from "../lib/demoScenarios";
+import { inferProfileFromBalances } from "../lib/demoScenarios";
 import { saveFinancialProfile } from "../lib/roadmapService";
 import PlaidConnectButton from "./PlaidConnectButton";
 
@@ -40,12 +40,6 @@ export default function BankConnectionScreen({
     }
   };
 
-  const applyDemo = () => {
-    const detail = applyDemoScenario("balanced", getStoredUser()?.id);
-    saveFinancialProfile(detail.profile, getStoredUser()?.id);
-    void finish(true);
-  };
-
   return (
     <div style={styles.page}>
       <style>{css}</style>
@@ -61,8 +55,7 @@ export default function BankConnectionScreen({
         <p style={styles.eyebrow}>Connect Bank</p>
         <h1 style={styles.headline}>Link your money</h1>
         <p style={styles.subhead}>
-          Connect via Plaid or load a demo bank so Sprout AI can analyze cash flow and build your roadmap.
-          You can skip and come back later.
+          Connect via Plaid or load demo data so Sprout AI can analyze cash flow and build your roadmap.
         </p>
 
         <div style={styles.card}>
@@ -94,11 +87,6 @@ export default function BankConnectionScreen({
             <span style={{ color: "#D1D5DB" }}>pass_good</span>. Pick any test bank.
           </p>
         </div>
-
-        <button type="button" style={styles.demoBtn} disabled={saving} onClick={applyDemo}>
-          <Sparkles size={16} color="#10B981" />
-          {saving ? "Loading…" : "Use demo bank data"}
-        </button>
 
         {error ? <p style={styles.error}>{error}</p> : null}
 
@@ -263,20 +251,6 @@ const styles: Record<string, React.CSSProperties> = {
     border: "1px solid rgba(244,63,94,0.28)",
     borderRadius: 10,
     padding: "10px 12px",
-  },
-  demoBtn: {
-    border: "1px solid rgba(16,185,129,0.35)",
-    borderRadius: 12,
-    background: "rgba(16,185,129,0.10)",
-    color: "#ECFDF5",
-    fontSize: 14,
-    fontWeight: 800,
-    padding: "12px 16px",
-    cursor: "pointer",
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
   },
   skipBtn: {
     marginTop: 4,
