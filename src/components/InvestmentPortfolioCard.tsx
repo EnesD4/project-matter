@@ -3,10 +3,8 @@ import {
   Banknote,
   BarChart3,
   ChevronDown,
-  ChevronLeft,
   ChevronRight,
   ChevronUp,
-  ExternalLink,
   Eye,
   EyeOff,
   GripVertical,
@@ -71,7 +69,6 @@ import {
   type StockQuote,
   type StockSearchResult,
 } from "../lib/stockService";
-import { clearbitLogoUrl } from "../lib/assetLogos";
 import {
   buildHistoricalSeries,
   ChartCandle,
@@ -106,11 +103,11 @@ import {
 } from "../lib/plaidLink";
 import AccountKindBadge, { PortfolioOriginBadges } from "./AccountKindBadge";
 import AllocationRing from "./AllocationRing";
+import ConnectBrokerModal from "./ConnectBrokerModal";
 import DailyReportScreen from "./DailyReportScreen";
 import DarkCalendar from "./DarkCalendar";
 import LiveStatusBadge from "./LiveStatusBadge";
 import LoadingSpinner, { EmptyChartPlaceholder } from "./LoadingSpinner";
-import PlaidConnectButton from "./PlaidConnectButton";
 import SocratesPortfolioReport, { type DailyReportMode } from "./SocratesPortfolioReport";
 import Sparkline from "./Sparkline";
 import StockDetailPage from "./StockDetailPage";
@@ -278,87 +275,6 @@ function moveItemToIndex<T extends { id: string }>(items: T[], fromId: string, t
   return next;
 }
 
-type BrokerPlatform = {
-  name: string;
-  tag: string;
-  color: string;
-  domain: string;
-  partnerUrl: string;
-  initials: string;
-};
-
-const BROKER_PLATFORMS: BrokerPlatform[] = [
-  {
-    name: "Robinhood",
-    tag: "Popular for Stocks & Options",
-    color: "#00C805",
-    domain: "robinhood.com",
-    partnerUrl: "https://robinhood.com/us/en/?ref=matterpro",
-    initials: "RH",
-  },
-  {
-    name: "Webull",
-    tag: "Commission-free trading",
-    color: "#E11D2E",
-    domain: "webull.com",
-    partnerUrl: "https://www.webull.com/?ref=matterpro",
-    initials: "WB",
-  },
-  {
-    name: "Interactive Brokers",
-    tag: "Pro tools & global markets",
-    color: "#DC0128",
-    domain: "interactivebrokers.com",
-    partnerUrl: "https://www.interactivebrokers.com/?ref=matterpro",
-    initials: "IB",
-  },
-  {
-    name: "Fidelity",
-    tag: "Full-service investing",
-    color: "#4B8B3B",
-    domain: "fidelity.com",
-    partnerUrl: "https://www.fidelity.com/?ref=matterpro",
-    initials: "F",
-  },
-  {
-    name: "Charles Schwab",
-    tag: "Trusted wealth platform",
-    color: "#00A0DF",
-    domain: "schwab.com",
-    partnerUrl: "https://www.schwab.com/?ref=matterpro",
-    initials: "CS",
-  },
-];
-
-function BrokerLogo({ platform }: { platform: BrokerPlatform }) {
-  const [failed, setFailed] = useState(false);
-  const src = clearbitLogoUrl(platform.domain, 128);
-
-  return (
-    <span
-      className="grid h-11 w-11 flex-shrink-0 place-items-center overflow-hidden rounded-xl"
-      style={{ background: `${platform.color}22`, color: platform.color }}
-    >
-      {failed ? (
-        <span className="text-[11px] font-extrabold tracking-tight">{platform.initials}</span>
-      ) : (
-        <img
-          src={src}
-          alt={`${platform.name} logo`}
-          width={28}
-          height={28}
-          draggable={false}
-          onContextMenu={(event) => event.preventDefault()}
-          onDragStart={(event) => event.preventDefault()}
-          className="pointer-events-none h-7 w-7 select-none rounded-md object-contain drag-none"
-          style={{ WebkitTouchCallout: "none", WebkitUserDrag: "none" } as React.CSSProperties}
-          onError={() => setFailed(true)}
-        />
-      )}
-    </span>
-  );
-}
-
 const SEARCH_DEBOUNCE_MS = 350;
 
 export type { StockQuote };
@@ -503,7 +419,7 @@ function PortfolioActionButtons({
         className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-[#2A2A2A] bg-[#0A0A0A] px-4 py-3 text-sm font-bold text-white transition hover:border-[#3F3F3F] hover:bg-[#111111] active:scale-[0.99]"
       >
         <Wallet size={16} />
-        Connect Broker
+        Connect Brokerage
       </button>
     </div>
   );
@@ -794,7 +710,7 @@ export default function InvestmentPortfolioCard({
   const [liveQuotesLimited, setLiveQuotesLimited] = useState(false);
 
   const [modalOpen, setModalOpen] = useState(false);
-  const [modalTab, setModalTab] = useState<"connect" | "manual">("connect");
+  const [connectBrokerOpen, setConnectBrokerOpen] = useState(false);
   const [justAddedId, setJustAddedId] = useState<string | null>(null);
   const [executionLog, setExecutionLog] = useState<PaperTradeLogEntry[]>([]);
 
@@ -943,6 +859,7 @@ export default function InvestmentPortfolioCard({
       });
       setHoldingsExpanded(true);
       setModalOpen(false);
+      setConnectBrokerOpen(false);
       if (stocks.length > 0) markUpdated();
     };
 
@@ -987,6 +904,7 @@ export default function InvestmentPortfolioCard({
       });
       setHoldingsExpanded(true);
       setModalOpen(false);
+      setConnectBrokerOpen(false);
       if (stocks.length > 0 || brokerRows.length > 0) markUpdated();
       const first = stocks[0] || brokerRows[0];
       if (first) {
@@ -1410,14 +1328,12 @@ export default function InvestmentPortfolioCard({
     return [0, Math.floor(n / 3), Math.floor((2 * n) / 3), n - 1];
   }, [chartData.length, range]);
 
-  const connectedPlatformNames = useMemo(
+  const linkedBrokerInstitutions = useMemo(
     () =>
-      new Set(
-        (safeHoldings ?? [])
-          .filter((h): h is BrokerHolding => h?.kind === "broker")
-          .map((h) => h?.name)
-          .filter(Boolean)
-      ),
+      (safeHoldings ?? [])
+        .filter((h): h is BrokerHolding => h?.kind === "broker")
+        .map((h) => String(h?.name || "").replace(/\s+cash$/i, "").trim())
+        .filter(Boolean),
     [safeHoldings]
   );
 
@@ -1438,11 +1354,16 @@ export default function InvestmentPortfolioCard({
     priceTouchedRef.current = false;
   };
 
-  const openModal = (tab: "connect" | "manual" = "connect") => {
-    setModalTab(tab);
+  const openManualModal = () => {
     resetManualForm();
-    if (tab !== "manual") setPaperQuestIntent(null);
+    setConnectBrokerOpen(false);
     setModalOpen(true);
+  };
+
+  const openConnectBrokerModal = () => {
+    setPaperQuestIntent(null);
+    setModalOpen(false);
+    setConnectBrokerOpen(true);
   };
 
   const closeModal = () => {
@@ -1616,8 +1537,8 @@ export default function InvestmentPortfolioCard({
   };
 
   const openAddForHolding = (holding: StockHolding) => {
-    setModalTab("manual");
     resetManualForm();
+    setConnectBrokerOpen(false);
     setModalOpen(true);
     void selectTicker(
       {
@@ -1634,8 +1555,8 @@ export default function InvestmentPortfolioCard({
     const intent = peekPaperTickerIntent();
     if (!intent) return;
     setPaperQuestIntent(intent);
-    setModalTab("manual");
     resetManualForm();
+    setConnectBrokerOpen(false);
     setModalOpen(true);
     void selectTicker({
       symbol: intent.symbol,
@@ -2626,13 +2547,19 @@ export default function InvestmentPortfolioCard({
       )}
 
       <PortfolioActionButtons
-        onAddStock={() => openModal("manual")}
-        onConnectBroker={() => openModal("connect")}
+        onAddStock={openManualModal}
+        onConnectBroker={openConnectBrokerModal}
       />
 
       {typeof belowHoldings === "function"
         ? belowHoldings({ onAddHolding: openAddForHolding, onSellHolding: sellHolding })
         : belowHoldings}
+
+      <ConnectBrokerModal
+        open={connectBrokerOpen}
+        onClose={() => setConnectBrokerOpen(false)}
+        linkedInstitutions={linkedBrokerInstitutions}
+      />
 
       {modalOpen && (
         <div
@@ -2649,28 +2576,15 @@ export default function InvestmentPortfolioCard({
           >
             <div className="flex items-start justify-between gap-2">
               <div className="flex min-w-0 items-center gap-2">
-                {modalTab === "manual" ? (
-                  <button
-                    type="button"
-                    onClick={() => setModalTab("connect")}
-                    aria-label="Back to brokers"
-                    className="grid h-9 w-9 flex-shrink-0 place-items-center rounded-lg bg-white/5 text-slate-300 transition hover:bg-white/10 hover:text-white"
-                  >
-                    <ChevronLeft size={17} />
-                  </button>
-                ) : (
-                  <span className="grid h-9 w-9 flex-shrink-0 place-items-center rounded-lg bg-emerald-500/15 text-emerald-400">
-                    <Wallet size={17} />
-                  </span>
-                )}
+                <span className="grid h-9 w-9 flex-shrink-0 place-items-center rounded-lg bg-emerald-500/15 text-emerald-400">
+                  <Plus size={17} />
+                </span>
                 <div className="min-w-0">
                   <h3 id="portfolio-modal-title" className="text-sm font-extrabold leading-snug text-white">
-                    {modalTab === "manual" ? "Add to Paper Account" : "Connect Broker"}
+                    Add to Paper Account
                   </h3>
                   <p className="mt-0.5 text-[11px] leading-snug text-slate-500">
-                    {modalTab === "manual"
-                      ? "Manual lots are tagged Paper Account. Investment badges unlock only from API-verified brokerage data."
-                      : "Verified Brokerage Portfolio requires an API-linked account. Partner links do not import holdings."}
+                    Manual lots are tagged Paper Account. Investment badges unlock only from API-verified brokerage data.
                   </p>
                 </div>
               </div>
@@ -2684,7 +2598,7 @@ export default function InvestmentPortfolioCard({
               </button>
             </div>
 
-            {modalTab === "manual" && paperQuestIntent && (
+            {paperQuestIntent && (
               <div className="mt-3 rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-3 py-2.5">
                 <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-cyan-300">Lesson quest</p>
                 <p className="mt-1 text-xs font-semibold leading-snug text-cyan-50">
@@ -2702,60 +2616,7 @@ export default function InvestmentPortfolioCard({
               </div>
             )}
 
-            {modalTab === "connect" && (
-              <div className="mt-4 space-y-2.5">
-                <div className="rounded-2xl border border-emerald-500/25 bg-emerald-500/8 p-3">
-                  <p className="text-[11px] font-extrabold uppercase tracking-[0.14em] text-emerald-300">
-                    Connect with Plaid
-                  </p>
-                  <p className="mt-1.5 text-[11px] leading-relaxed text-slate-300">
-                    Open Plaid Link and import live sandbox balances and any investment holdings the
-                    institution returns.
-                  </p>
-                  <PlaidConnectButton className="mt-3" />
-                </div>
-                <div className="rounded-xl border border-amber-500/25 bg-amber-500/8 px-3 py-2.5 text-[11px] leading-relaxed text-amber-100/90">
-                  Partner links open the broker in a new tab. They do not import a Verified Brokerage
-                  Portfolio, so investment achievement badges stay locked until API sync is connected.
-                </div>
-                {BROKER_PLATFORMS.map((platform) => {
-                  if (!platform) return null;
-                  const isLinked = connectedPlatformNames.has(platform.name);
-                  return (
-                    <div
-                      key={platform.name}
-                      className="rounded-2xl border border-[#1F1F1F] bg-black/30 p-3 transition hover:border-emerald-500/30"
-                    >
-                      <div className="flex items-center gap-3">
-                        <BrokerLogo platform={platform} />
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm font-extrabold text-white">{platform.name}</p>
-                          <p className="truncate text-[11px] text-slate-400">{platform.tag}</p>
-                        </div>
-                      </div>
-                      {isLinked ? (
-                        <p className="mt-2.5 rounded-xl border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-center text-[11px] font-bold text-emerald-300">
-                          Linked in this session
-                        </p>
-                      ) : (
-                        <a
-                          href={platform.partnerUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="mt-2.5 flex w-full items-center justify-center gap-1.5 rounded-xl bg-emerald-500 px-3 py-2 text-[11px] font-extrabold text-[#042F2E] transition hover:bg-emerald-400 active:scale-[0.99]"
-                        >
-                          Connect via Partner Link
-                          <ExternalLink size={12} />
-                        </a>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {modalTab === "manual" && (
-              <form onSubmit={submitManualAsset} className="mt-4 space-y-3">
+            <form onSubmit={submitManualAsset} className="mt-4 space-y-3">
                 <div className="flex items-start gap-2 rounded-xl border border-amber-500/25 bg-amber-500/8 px-3 py-2.5">
                   <AccountKindBadge kind="paper" />
                   <p className="text-[11px] leading-relaxed text-amber-100/85">
@@ -3035,7 +2896,6 @@ export default function InvestmentPortfolioCard({
                   {savingAsset ? "Saving…" : "Add to Paper Account"}
                 </button>
               </form>
-            )}
           </div>
         </div>
       )}

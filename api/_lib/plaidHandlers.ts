@@ -6,6 +6,7 @@ import {
   fetchPlaidSnapshot,
   logPlaidError,
   pickBalance,
+  resolvePlaidLinkMode,
   type PlaidAccount,
   type PlaidHolding,
   type PlaidTransaction,
@@ -106,8 +107,9 @@ export async function handleCreateLinkToken(req: IncomingMessage, res: ServerRes
       }
     }
     user_id = user_id || "user_default";
-    const link_token = await linkTokenCreate(user_id);
-    sendJson(res, 200, { link_token });
+    const mode = resolvePlaidLinkMode(body.mode || body.link_mode || body.product);
+    const link_token = await linkTokenCreate(user_id, { mode });
+    sendJson(res, 200, { link_token, mode });
   } catch (error) {
     const rec = error && typeof error === "object" ? (error as { response?: { data?: unknown }; message?: string }) : null;
     const message = rec?.response?.data || rec?.message || (error instanceof Error ? error.message : String(error));

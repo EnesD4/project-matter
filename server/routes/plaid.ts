@@ -7,6 +7,7 @@ import {
   fetchPlaidSnapshot,
   logPlaidError,
   pickBalance,
+  resolvePlaidLinkMode,
   type PlaidAccount,
   type PlaidHolding,
   type PlaidTransaction,
@@ -66,8 +67,9 @@ router.post('/create-link-token', async (req: AuthedRequest, res: Response) => {
 
   try {
     const user_id = String(req.body?.user_id || req.body?.client_user_id || req.user?.id || 'user_default');
-    const link_token = await linkTokenCreate(user_id || 'user_default');
-    return res.status(200).json({ link_token });
+    const mode = resolvePlaidLinkMode(req.body?.mode || req.body?.link_mode || req.body?.product);
+    const link_token = await linkTokenCreate(user_id || 'user_default', { mode });
+    return res.status(200).json({ link_token, mode });
   } catch (error) {
     const rec = error && typeof error === 'object' ? (error as { response?: { data?: unknown }; message?: string }) : null;
     console.error(rec?.response?.data || rec?.message || (error instanceof Error ? error.message : error));

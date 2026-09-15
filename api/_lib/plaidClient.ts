@@ -142,24 +142,71 @@ export function sanitizePlaidClientUserId(raw: string): string {
   return value.slice(0, 256);
 }
 
-/** Official Plaid /link/token/create payload used by create-link-token. */
-export async function linkTokenCreate(user_id?: string): Promise<string> {
+/** Link intent: bank cash flows vs brokerage investments (holdings + uninvested cash). */
+export type PlaidLinkMode = "bank" | "brokerage";
+
+export function resolvePlaidLinkMode(raw: unknown): PlaidLinkMode {
+  const value = String(raw || "")
+    .trim()
+    .toLowerCase();
+  if (value === "brokerage" || value === "investments" || value === "investment" || value === "broker") {
+    return "brokerage";
+  }
+  return "bank";
+}
+
+/**
+ * Official Plaid /link/token/create payload used by create-link-token.
+ * - bank: Transactions required; Investments optional (checking/savings + holdings when supported).
+ * - brokerage: Investments required so Link is limited to US investment institutions
+ *   (Robinhood, Fidelity, Schwab, E*TRADE, Webull, …); Transactions optional for cash-flow history.
+ */
+export async function linkTokenCreate(
+  user_id?: string,
+  options?: { mode?: PlaidLinkMode }
+): Promise<string> {
   const client_id = String(process.env.PLAID_CLIENT_ID || "").trim() || getPlaidClientId();
   const secret = String(process.env.PLAID_SECRET || "").trim() || getPlaidSecret();
   if (!client_id || !secret) {
     throw new Error("PLAID_CLIENT_ID or PLAID_SECRET is missing or invalid.");
   }
 
+  const mode = options?.mode || "bank";
   const payload: Record<string, unknown> = {
     user: { client_user_id: sanitizePlaidClientUserId(user_id || "user_default") || "user_default" },
     client_name: "Sprout",
-    // Transactions for checking/savings cash flow; investments when the institution supports it
-    // (Robinhood, Fidelity, Schwab, E*TRADE, etc.).
-    products: ["transactions"],
-    optional_products: ["investments"],
     country_codes: ["US"],
     language: "en",
   };
+
+  if (mode === "brokerage") {
+    payload.products = ["investments"];
+    payload.optional_products = ["transactions"];
+    // Restrict Institution + Account Select to investment accounts (brokerage, IRA, 401k, …).
+    payload.account_filters = {
+      investment: {
+        account_subtypes: [
+          "brokerage",
+          "ira",
+          "roth",
+          "401k",
+          "403b",
+          "529",
+          "hsa",
+          "mutual fund",
+          "stock plan",
+          "trust",
+          "ugma",
+          "utma",
+        ],
+      },
+    };
+  } else {
+    // Transactions for checking/savings cash flow; investments when the institution supports it.
+    payload.products = ["transactions"];
+    payload.optional_products = ["investments"];
+  }
+
   const redirect = process.env.PLAID_REDIRECT_URI?.trim();
   if (redirect) payload.redirect_uri = redirect;
 

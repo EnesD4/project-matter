@@ -219,13 +219,13 @@ function plaidClientUserId(raw: string): string {
   return `user-${hash.toString(16)}`;
 }
 
-export async function createPlaidLinkToken(): Promise<string> {
+export async function createPlaidLinkToken(mode: "bank" | "brokerage" = "bank"): Promise<string> {
   const clientUserId = plaidClientUserId(
     (await getSupabaseUserId()) || getStoredUser()?.id || getToken() || `guest-${Date.now()}`
   );
   const response = await plaidApiFetch("/api/plaid/create-link-token", {
     method: "POST",
-    body: JSON.stringify({ user_id: clientUserId, client_user_id: clientUserId }),
+    body: JSON.stringify({ user_id: clientUserId, client_user_id: clientUserId, mode }),
   });
   const text = await response.text();
   let json: { link_token?: string; error?: unknown; error_message?: string } = {};
