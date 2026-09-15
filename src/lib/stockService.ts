@@ -109,17 +109,25 @@ function finiteNumber(value: unknown, fallback = 0): number {
 
 /**
  * Resolve live/market mark from API payloads.
- * Prefer Polygon/Finnhub `c`, then explicit current_price fields, then generic price —
- * never invent a static default (e.g. 100).
+ * Prefer Polygon close (`c` / `close` / `vw`), then explicit current_price fields,
+ * then generic price — never invent a static default (e.g. 100).
  */
 export function resolveLiveMark(raw: Record<string, any> | null | undefined, fallback = 0): number {
   const row = raw ?? {};
-  const live = finiteNumber(
-    row.current_price ?? row.currentPrice ?? row.c ?? row.close ?? row.last ?? row.regularMarketPrice
-  );
-  if (live > 0) return live;
-  const generic = finiteNumber(row.price);
-  if (generic > 0) return generic;
+  const candidates = [
+    row.c,
+    row.close,
+    row.vw,
+    row.current_price,
+    row.currentPrice,
+    row.last,
+    row.regularMarketPrice,
+    row.price,
+  ];
+  for (const candidate of candidates) {
+    const live = finiteNumber(candidate);
+    if (live > 0) return live;
+  }
   return finiteNumber(fallback);
 }
 

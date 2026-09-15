@@ -31,8 +31,9 @@ import { readLocalItem } from "../lib/storage";
 import {
   fetchStockChart,
   fetchStockProfile,
-  fetchStockQuote,
+  fetchStockQuotes,
   fetchStockSearch,
+  resolveLiveMark,
 } from "../lib/stockService";
 import Sparkline from "./Sparkline";
 import StockLogo from "./StockLogo";
@@ -130,7 +131,17 @@ function companyName(item: WatchlistApiItem, quote?: LiveQuote) {
 }
 
 function watchlistItems(list: WatchlistApiList | null | undefined): WatchlistApiItem[] {
-  return Array.isArray(list?.items) ? list.items.filter(Boolean) : [];
+  return Array.isArray(list?.items)
+    ? list.items
+        .filter(Boolean)
+        .map((item) => ({
+          ...item,
+          symbol: String(item.symbol || "")
+            .trim()
+            .toUpperCase(),
+        }))
+        .filter((item) => Boolean(item.symbol))
+    : [];
 }
 
 function persistLists(lists: WatchlistApiList[]) {
@@ -329,33 +340,37 @@ function WatchlistCard({
                 (watchlistItems(list) ?? []).map((item = {} as any) => {
                   if (!item) return null;
                   if (!item?.symbol) return null;
+                  const symbol = String(item.symbol || "")
+                    .trim()
+                    .toUpperCase();
                   const raw = item as any;
-                  const quote = quotes[item.symbol] ?? cachedOrPendingQuote(item.symbol);
+                  const quote = quotes[symbol] ?? cachedOrPendingQuote(symbol);
                   const price = toFiniteNumber(
-                    quote?.price ?? raw.current_price ?? raw.price,
+                    quote?.price > 0
+                      ? quote.price
+                      : resolveLiveMark({
+                          ...raw,
+                          c: raw.c ?? quote?.price,
+                          current_price: raw.current_price ?? quote?.price,
+                        }),
                     0
                   );
-                  const shares = toFiniteNumber(raw.shares ?? raw.quantity, 0);
-                  const change = toFiniteNumber(
-                    raw.change ?? raw.change_percent ?? quote?.changePct,
+                  const changePct = toFiniteNumber(
+                    quote?.changePct ?? raw.change_percent ?? raw.dp ?? raw.change,
                     0
                   );
-                  const total = toFiniteNumber(
-                    raw.total_value ?? raw.value ?? price * shares,
-                    0
-                  );
-                  const changePct = change;
                   const up = changePct > 0;
                   const down = changePct < 0;
                   const changeColor = down ? LOSS_RED : up ? GAIN_GREEN : "#9CA3AF";
+                  const displayName = companyName({ ...item, symbol }, quote);
                   return (
                     <div key={item.id} className="flex items-center gap-2 py-3">
                       <button
                         type="button"
                         onClick={() =>
                           onSelectStock?.({
-                            symbol: item.symbol,
-                            name: companyName(item, quote),
+                            symbol,
+                            name: displayName,
                             price,
                             changePct,
                             logo: quote?.logo,
@@ -365,30 +380,26 @@ function WatchlistCard({
                         className="flex min-w-0 flex-1 items-center gap-3 text-left transition hover:opacity-90 active:scale-[0.995]"
                       >
                         <StockLogo
-                          symbol={item.symbol}
+                          symbol={symbol}
                           finnhubLogo={quote?.logo}
                           domain={quote?.domain}
                           size={40}
                         />
                         <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm font-bold text-white">{item.symbol}</p>
-                          <p className="truncate text-[11px] text-[#9CA3AF]">{companyName(item, quote)}</p>
+                          <p className="truncate text-sm font-bold text-white">{symbol}</p>
+                          <p className="truncate text-[11px] text-[#9CA3AF]">{displayName}</p>
                         </div>
                         <Sparkline
-                          values={rowSparkValues(item.symbol, price, changePct)}
+                          values={rowSparkValues(symbol, price > 0 ? price : 1, changePct)}
                           width={58}
                           height={26}
                           color={changeColor}
                         />
-                        <div className="flex-shrink-0 text-right">
-                          <p className="text-sm font-bold tabular-nums text-white">
-                            {price > 0
-                              ? privacyMoney(privacyMode, price)
-                              : total > 0
-                                ? privacyMoney(privacyMode, total)
-                                : "—"}
+                        <div className="flex-shrink-0 text-right tabular-nums">
+                          <p className="text-sm font-bold text-white">
+                            {price > 0 ? privacyMoney(privacyMode, price) : "—"}
                           </p>
-                          <p className="text-[11px] font-bold tabular-nums" style={{ color: changeColor }}>
+                          <p className="text-[11px] font-bold" style={{ color: changeColor }}>
                             {price > 0 ? formatPercent(changePct) : "—"}
                           </p>
                         </div>
@@ -398,7 +409,7 @@ function WatchlistCard({
                         type="button"
                         onClick={() => void onRemoveTicker(list, item)}
                         disabled={removingItemId === item.id}
-                        aria-label={`Remove ${item.symbol}`}
+                        aria-label={`Remove ${symbol}`}
                         className="grid h-8 w-8 flex-shrink-0 place-items-center rounded-lg text-[#6B7280] transition hover:bg-rose-500/10 hover:text-rose-300"
                       >
                         {removingItemId === item.id ? (
@@ -543,41 +554,78 @@ export default function WatchlistsSection({
   );
 
   useEffect(() => {
-    const symbols = allSymbolsKey ? allSymbolsKey.split(",") : [];
+    const symbols = allSymbolsKey
+      ? allSymbolsKey
+          .split(",")
+          .map((symbol) => symbol.trim().toUpperCase())
+          .filter(Boolean)
+      : [];
     if (symbols.length === 0) return;
 
     let cancelled = false;
 
+    const seed: Record<string, LiveQuote> = {};
     symbols.forEach((symbol) => {
-      const pending = cachedOrPendingQuote(symbol);
-      setQuotes((prev) => (prev[symbol] ? prev : { ...prev, [symbol]: pending }));
-
-      (async () => {
-        try {
-          const [quoteRes, profileRes] = await Promise.allSettled([
-            fetchStockQuote(symbol),
-            fetchStockProfile(symbol),
-          ]);
-          void fetchStockChart(symbol, "1M").catch(() => null);
-
-          if (cancelled) return;
-
-          const live: LiveQuote = { ...pending };
-          if (quoteRes.status === "fulfilled" && quoteRes.value && quoteRes.value.c > 0) {
-            live.price = toFiniteNumber(quoteRes.value.c, pending.price);
-            live.changePct = toFiniteNumber(quoteRes.value.dp, pending.changePct);
-          }
-          if (profileRes.status === "fulfilled" && profileRes.value) {
-            if (profileRes.value.name) live.name = profileRes.value.name;
-            if (profileRes.value.logo) live.logo = profileRes.value.logo;
-            if (profileRes.value.domain) live.domain = profileRes.value.domain;
-          }
-          setQuotes((prev) => ({ ...prev, [symbol]: live }));
-        } catch {
-          // keep the last cached quote
-        }
-      })();
+      seed[symbol] = cachedOrPendingQuote(symbol);
     });
+    setQuotes((prev) => {
+      const merged = { ...prev };
+      for (const symbol of symbols) {
+        if (!merged[symbol]) merged[symbol] = seed[symbol];
+      }
+      return merged;
+    });
+
+    (async () => {
+      try {
+        const quoteMap = await fetchStockQuotes(symbols);
+        if (cancelled) return;
+
+        const next: Record<string, LiveQuote> = { ...seed };
+        for (const symbol of symbols) {
+          const quote = quoteMap.get(symbol);
+          const pending = next[symbol] ?? cachedOrPendingQuote(symbol);
+          if (quote && quote.c > 0) {
+            next[symbol] = {
+              ...pending,
+              price: toFiniteNumber(quote.c, pending.price),
+              changePct: toFiniteNumber(quote.dp, pending.changePct),
+            };
+          }
+        }
+        setQuotes((prev) => ({ ...prev, ...next }));
+
+        await Promise.all(
+          symbols.map(async (symbol) => {
+            try {
+              const [profileRes] = await Promise.allSettled([
+                fetchStockProfile(symbol),
+                fetchStockChart(symbol, "1M").catch(() => null),
+              ]);
+              if (cancelled) return;
+              if (profileRes.status !== "fulfilled" || !profileRes.value) return;
+              const profile = profileRes.value;
+              setQuotes((prev) => {
+                const existing = prev[symbol] ?? cachedOrPendingQuote(symbol);
+                return {
+                  ...prev,
+                  [symbol]: {
+                    ...existing,
+                    name: profile.name || existing.name,
+                    logo: profile.logo || existing.logo,
+                    domain: profile.domain || existing.domain,
+                  },
+                };
+              });
+            } catch {
+              // keep last quote
+            }
+          })
+        );
+      } catch {
+        // keep seeded / cached quotes
+      }
+    })();
 
     return () => {
       cancelled = true;

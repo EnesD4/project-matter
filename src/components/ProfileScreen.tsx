@@ -47,7 +47,7 @@ import {
 import type { Holding } from "./InvestmentPortfolioCard";
 import { holdingAccount } from "../lib/accountKind";
 import CertificatesSection from "./CertificatesSection";
-import DemoScenarioSwitcher from "./DemoScenarioSwitcher";
+import PlaidConnectButton from "./PlaidConnectButton";
 import ProfileModal from "./ProfileModal";
 import TrophyCabinet from "./TrophyCabinet";
 
@@ -512,7 +512,6 @@ export default function ProfileScreen({
       </section>
 
       <ProfileModal onRecalculate={onEditFinancialProfile} />
-      <DemoScenarioSwitcher />
 
       <CertificatesSection userId={user.id} />
       <TrophyCabinet trophies={trophies} />
@@ -555,7 +554,17 @@ export default function ProfileScreen({
 
       {/* Integrations */}
       <section style={styles.card} aria-label="Integrations">
-        <p style={styles.sectionLabel}>Integrations</p>
+        <p style={styles.sectionLabel}>Bank connection</p>
+        <div style={styles.plaidBlock}>
+          <div style={styles.plaidCopy}>
+            <p style={styles.plaidTitle}>Connect with Plaid</p>
+            <p style={styles.plaidHint}>
+              Link a bank or brokerage through Plaid to sync live balances and holdings.
+            </p>
+          </div>
+          <PlaidConnectButton />
+        </div>
+        <div style={styles.divider} />
         <SettingsRow
           icon={<Landmark size={16} color="#10B981" />}
           title="Connected Brokerage Accounts"
@@ -576,7 +585,7 @@ export default function ProfileScreen({
                     : styles.statusChip
               }
             >
-              {hasVerifiedHoldings ? "Verified" : hasPaperHoldings ? "Paper" : "Demo"}
+              {hasVerifiedHoldings ? "Verified" : hasPaperHoldings ? "Paper" : "Not linked"}
             </span>
           }
         />
@@ -715,6 +724,33 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 700,
     letterSpacing: "0.14em",
     textTransform: "uppercase",
+    color: "#9CA3AF",
+  },
+  plaidBlock: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 12,
+    marginBottom: 4,
+    padding: 12,
+    borderRadius: 12,
+    border: "1px solid rgba(16, 185, 129, 0.28)",
+    background: "rgba(16, 185, 129, 0.08)",
+  },
+  plaidCopy: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 4,
+  },
+  plaidTitle: {
+    margin: 0,
+    fontSize: 14,
+    fontWeight: 800,
+    color: "#FFFFFF",
+  },
+  plaidHint: {
+    margin: 0,
+    fontSize: 12,
+    lineHeight: 1.45,
     color: "#9CA3AF",
   },
   currencyRow: {

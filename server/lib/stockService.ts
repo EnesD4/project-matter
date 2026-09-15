@@ -248,12 +248,21 @@ function quoteFromBars(args: {
   };
 }
 
+/** Polygon bar close: prefer `c`, fall back to volume-weighted `vw`. */
+function barClosePrice(bar: AggBar | null | undefined): number | null {
+  const close = asFinite(bar?.c);
+  if (close != null && close > 0) return close;
+  const vw = asFinite(bar?.vw);
+  if (vw != null && vw > 0) return vw;
+  return null;
+}
+
 async function fetchPreviousClose(ticker: string): Promise<AggBar | null> {
   const data = await polygonGet<{ results?: AggBar[] }>(
     `/v2/aggs/ticker/${encodeURIComponent(ticker)}/prev?adjusted=true`
   );
   const bar = data?.results?.[0];
-  return bar && asFinite(bar.c) != null ? bar : null;
+  return bar && barClosePrice(bar) != null ? bar : null;
 }
 
 async function fetchRecentDailyBars(ticker: string): Promise<AggBar[]> {
@@ -264,7 +273,7 @@ async function fetchRecentDailyBars(ticker: string): Promise<AggBar[]> {
   const data = await polygonGet<{ results?: AggBar[] }>(
     `/v2/aggs/ticker/${encodeURIComponent(ticker)}/range/1/day/${from}/${to}?adjusted=true&sort=asc&limit=500`
   );
-  const bars = (data?.results ?? []).filter((bar) => asFinite(bar.c) != null && (asFinite(bar.c) ?? 0) > 0);
+  const bars = (data?.results ?? []).filter((bar) => (barClosePrice(bar) ?? 0) > 0);
   if (bars.length > 0) cacheSet(dailyBarCache, ticker, bars, 5 * 60_000);
   return bars;
 }
@@ -273,8 +282,8 @@ function quoteFromDailyBars(bars: AggBar[]): QuoteSnapshot | null {
   if (bars.length === 0) return null;
   const last = bars[bars.length - 1];
   const prev = bars.length > 1 ? bars[bars.length - 2] : last;
-  const price = asFinite(last.c);
-  const prevClose = asFinite(prev.c);
+  const price = barClosePrice(last);
+  const prevClose = barClosePrice(prev);
   if (price == null || price <= 0) return null;
   return quoteFromBars({
     price,
@@ -294,7 +303,7 @@ async function fetchQuoteUncached(symbol: string): Promise<QuoteSnapshot | null>
   if (fromDaily) return fromDaily;
 
   const prev = await fetchPreviousClose(ticker);
-  const prevClose = asFinite(prev?.c);
+  const prevClose = barClosePrice(prev);
   if (prevClose == null || prevClose <= 0) return null;
 
   return quoteFromBars({
@@ -429,7 +438,7 @@ function aggregateSpec(range: ChartRange): { multiplier: number; timespan: strin
 }
 
 function mapBar(bar: AggBar): ChartPoint | null {
-  const close = asFinite(bar.c);
+  const close = barClosePrice(bar);
   const timestamp = asFinite(bar.t);
   if (close == null || close <= 0 || timestamp == null) return null;
   const open = asFinite(bar.o) ?? close;

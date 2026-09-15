@@ -2669,8 +2669,12 @@ export default function InvestmentPortfolioCard({
                     </label>
                     <input
                       id="asset-qty"
+                      name="paper-trading-quantity-unique"
                       type="text"
                       inputMode="decimal"
+                      autoComplete="off"
+                      autoCorrect="off"
+                      spellCheck={false}
                       value={quantity}
                       onChange={(e) => setQuantity(e.target.value.replace(/[^0-9.]/g, ""))}
                       placeholder="10"
