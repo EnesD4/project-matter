@@ -141,8 +141,8 @@ export default function PlaidConnectButton({
   const defaultLabel =
     mode === "brokerage"
       ? institutionHint
-        ? `Connect ${institutionHint}`
-        : "Connect Brokerage"
+        ? `Connect ${institutionHint} Brokerage via Plaid`
+        : "Connect Brokerage via Plaid"
       : "Connect Bank";
   const buttonLabel =
     status === "connecting"

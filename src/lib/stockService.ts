@@ -418,6 +418,58 @@ export async function fetchStockProfile(
 
 const TICKER_QUERY = /^[A-Z][A-Z0-9.\-]{0,9}$/;
 
+/** Normalize free-text queries/names for case-insensitive ticker + company matching. */
+export function normalizeSearchText(value: string | null | undefined): string {
+  return String(value || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9.\s-]+/g, " ")
+    .replace(/\s+/g, " ");
+}
+
+/**
+ * Match a search query against ticker symbol and/or company name.
+ * Supports "AAPL", "apple", "red cat", and spaced company fragments.
+ */
+export function matchesStockQuery(
+  query: string,
+  symbol: string,
+  name: string | null | undefined
+): boolean {
+  const q = normalizeSearchText(query);
+  if (!q) return false;
+  const sym = normalizeSearchText(symbol);
+  const desc = normalizeSearchText(name);
+  if (sym.includes(q) || desc.includes(q)) return true;
+
+  const compactQ = q.replace(/[\s.-]+/g, "");
+  const compactSym = sym.replace(/[\s.-]+/g, "");
+  const compactDesc = desc.replace(/[\s.-]+/g, "");
+  if (compactQ && (compactSym.includes(compactQ) || compactDesc.includes(compactQ))) return true;
+
+  const tokens = q.split(" ").filter(Boolean);
+  if (tokens.length > 1) {
+    return tokens.every((token) => sym.includes(token) || desc.includes(token));
+  }
+  return false;
+}
+
+function searchRelevance(query: string, symbol: string, name: string): number {
+  const q = normalizeSearchText(query);
+  const sym = normalizeSearchText(symbol);
+  const desc = normalizeSearchText(name);
+  if (!q) return 99;
+  if (sym === q) return 0;
+  if (sym.startsWith(q)) return 1;
+  if (sym.includes(q)) return 2;
+  if (desc.startsWith(q)) return 3;
+  if (desc.includes(q)) return 4;
+  const compactQ = q.replace(/[\s.-]+/g, "");
+  if (compactQ && sym.replace(/[\s.-]+/g, "").includes(compactQ)) return 5;
+  if (compactQ && desc.replace(/[\s.-]+/g, "").includes(compactQ)) return 6;
+  return 7;
+}
+
 function asSearchResult(row: Partial<StockSearchResult> | null | undefined): StockSearchResult | null {
   const symbol = normalizeSymbol(row?.displaySymbol || row?.symbol || "");
   if (!symbol) return null;
@@ -449,18 +501,46 @@ function parseSearchPayload(data: unknown): StockSearchResult[] {
   return out;
 }
 
+function mergeSearchResults(query: string, ...groups: StockSearchResult[][]): StockSearchResult[] {
+  const seen = new Set<string>();
+  const merged: StockSearchResult[] = [];
+  for (const group of groups) {
+    for (const row of group) {
+      if (!row?.symbol || seen.has(row.symbol)) continue;
+      seen.add(row.symbol);
+      merged.push(row);
+    }
+  }
+  return merged
+    .sort((a, b) => {
+      const aMatch = matchesStockQuery(query, a.symbol, a.description) ? 0 : 1;
+      const bMatch = matchesStockQuery(query, b.symbol, b.description) ? 0 : 1;
+      if (aMatch !== bMatch) return aMatch - bMatch;
+      return (
+        searchRelevance(query, a.symbol, a.description) -
+        searchRelevance(query, b.symbol, b.description)
+      );
+    })
+    .slice(0, 8);
+}
+
 /** Local catalog + typed-ticker fallback so paper search still works when APIs are down. */
 export function localTickerMatches(query: string): StockSearchResult[] {
-  const q = normalizeSymbol(query);
-  if (!q) return [];
+  const raw = String(query || "").trim();
+  if (!raw) return [];
+  const q = normalizeSymbol(raw);
   const rows = Object.entries(DEMO_TICKER_CATALOG)
-    .filter(([symbol, meta]) => symbol.includes(q) || meta.name.toUpperCase().includes(q))
+    .filter(([symbol, meta]) => matchesStockQuery(raw, symbol, meta.name))
     .map(([symbol, meta]) => ({
       symbol,
       displaySymbol: symbol,
       description: meta.name,
       type: "Common Stock",
-    }));
+    }))
+    .sort(
+      (a, b) =>
+        searchRelevance(raw, a.symbol, a.description) - searchRelevance(raw, b.symbol, b.description)
+    );
   if (TICKER_QUERY.test(q) && !rows.some((row) => row.symbol === q)) {
     const resolved = resolveDemoTicker(q);
     rows.unshift({
@@ -574,7 +654,8 @@ export async function fetchStockSearch(
       signal
     );
     const remote = parseSearchPayload(data);
-    return remote.length > 0 ? remote.slice(0, 8) : local;
+    // Prefer rows that match ticker or company name; keep other API hits as fallbacks.
+    return mergeSearchResults(q, local, remote);
   } catch (err) {
     if ((err as Error).name === "AbortError") throw err;
     return local;

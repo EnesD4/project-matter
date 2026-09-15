@@ -211,7 +211,7 @@ export default function ConnectBrokerModal({
             <div className="mt-3">
               <PlaidConnectButton
                 mode="brokerage"
-                label="Continue in Plaid"
+                label="Connect Brokerage via Plaid"
                 preload
                 autoOpen
                 onConnected={handleConnected}
@@ -260,13 +260,13 @@ export default function ConnectBrokerModal({
                     <PlaidConnectButton
                       mode="brokerage"
                       institutionHint={platform.name}
-                      label={`Connect ${platform.name} with Plaid`}
+                      label={`Connect ${platform.name} Brokerage via Plaid`}
                       preload
                       autoOpen
                       onConnected={handleConnected}
                     />
                     <p className="mt-2 text-center text-[10px] leading-snug text-slate-500">
-                      In Plaid, search for {platform.name} to finish linking.
+                      In Plaid, search for {platform.name} to finish linking your investment account.
                     </p>
                     <button
                       type="button"
@@ -285,7 +285,7 @@ export default function ConnectBrokerModal({
                     }}
                     className="mt-2.5 flex w-full items-center justify-center gap-1.5 rounded-xl bg-emerald-500 px-3 py-2 text-[11px] font-extrabold text-[#042F2E] transition hover:bg-emerald-400 active:scale-[0.99]"
                   >
-                    Connect with Plaid
+                    Connect Brokerage via Plaid
                   </button>
                 )}
               </div>

@@ -138,11 +138,38 @@ function quoteFromMeta(symbol: string, meta: Record<string, unknown>) {
   };
 }
 
+function normalizeSearchText(value: string | null | undefined): string {
+  return String(value || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9.\s-]+/g, " ")
+    .replace(/\s+/g, " ");
+}
+
+function matchesStockQuery(query: string, symbol: string, name: string | null | undefined): boolean {
+  const q = normalizeSearchText(query);
+  if (!q) return false;
+  const sym = normalizeSearchText(symbol);
+  const desc = normalizeSearchText(name);
+  if (sym.includes(q) || desc.includes(q)) return true;
+
+  const compactQ = q.replace(/[\s.-]+/g, "");
+  const compactSym = sym.replace(/[\s.-]+/g, "");
+  const compactDesc = desc.replace(/[\s.-]+/g, "");
+  if (compactQ && (compactSym.includes(compactQ) || compactDesc.includes(compactQ))) return true;
+
+  const tokens = q.split(" ").filter(Boolean);
+  if (tokens.length > 1) {
+    return tokens.every((token) => sym.includes(token) || desc.includes(token));
+  }
+  return false;
+}
+
 function catalogMatches(query: string): SearchResult[] {
-  const needle = query.toUpperCase();
-  const rows = SEARCH_CATALOG.filter(
-    (row) => row.symbol.includes(needle) || row.description.toUpperCase().includes(needle)
+  const rows = SEARCH_CATALOG.filter((row) =>
+    matchesStockQuery(query, row.symbol, row.description)
   );
+  const needle = normalizeSearchText(query).replace(/\s+/g, "");
   if (/^[A-Z][A-Z0-9.\-]{0,9}$/.test(needle) && !rows.some((row) => row.symbol === needle)) {
     rows.unshift({
       symbol: needle,

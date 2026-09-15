@@ -60,6 +60,7 @@ import {
   fetchStockSearch,
   isLiveQuoteSource,
   localTickerMatches,
+  matchesStockQuery,
   mockQuoteForSymbol,
   normalizeStockData,
   normalizeSymbol,
@@ -1061,10 +1062,11 @@ export default function InvestmentPortfolioCard({
       try {
         const data = await fetchStockSearch(query, controller.signal);
 
-        // Prefer primary US listings (no exchange suffix like ".TO"/".SW") when available.
+        // Prefer primary US listings (no exchange suffix like ".TO"/".SW") when available,
+        // but keep ticker + company-name matches at the front of the list.
         const primary = data.filter((r) => !r.symbol.includes("."));
-        const remote = (primary.length > 0 ? primary : data).slice(0, 8);
-        setSearchResults(remote.length > 0 ? remote : local);
+        const ranked = (primary.length > 0 ? primary : data).slice(0, 8);
+        setSearchResults(ranked.length > 0 ? ranked : local);
       } catch (err) {
         if ((err as Error).name !== "AbortError") {
           setSearchResults(local);
@@ -1454,8 +1456,10 @@ export default function InvestmentPortfolioCard({
   const resolveSearchPick = (raw?: string | null): StockSearchResult | null => {
     const query = (raw ?? searchQuery).trim();
     if (!query) return searchResults[0] ?? null;
+    const upper = query.toUpperCase();
     return (
-      searchResults.find((row) => (row.displaySymbol || row.symbol).toUpperCase() === query.toUpperCase()) ||
+      searchResults.find((row) => (row.displaySymbol || row.symbol).toUpperCase() === upper) ||
+      searchResults.find((row) => matchesStockQuery(query, row.symbol, row.description)) ||
       searchResults[0] ||
       localTickerMatches(query)[0] ||
       null
