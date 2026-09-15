@@ -35,6 +35,7 @@ import AuthScreen from "./src/components/AuthScreen";
 import DemoScenarioSwitcher from "./src/components/DemoScenarioSwitcher";
 import InvestmentScreen, { type Holding } from "./src/components/InvestmentScreen";
 import CashFlowScreen, { SafetyNetSection } from "./src/components/CashFlowScreen";
+import FinancialHealthCard from "./src/components/FinancialHealthCard";
 import OnboardingScreen from "./src/components/OnboardingScreen";
 import BankConnectionScreen from "./src/components/BankConnectionScreen";
 import RetirementScreen from "./src/components/RetirementScreen";
@@ -107,6 +108,8 @@ import {
   emptySafetyNet,
   type SafetyNetConfig,
 } from "./src/lib/safetyNet";
+import { buildFinancialDiagnostics } from "./src/lib/financialDiagnostics";
+import { geminiParamsFromDiagnostics } from "./src/lib/gemini";
 import { GeminiCoachError, requestGeminiCoach } from "./src/lib/geminiCoach";
 import {
   EDUCATIONAL_DISCLAIMER,
@@ -1144,6 +1147,36 @@ const App: React.FC = () => {
     netCashFlow,
   ]);
 
+  const financialDiagnostics = useMemo(() => {
+    const profile = authUser?.id ? loadFinancialProfile(authUser.id) : loadFinancialProfile();
+    return buildFinancialDiagnostics({
+      income: monthlyIncome,
+      expenses: safeExpenses.map((item) => ({
+        id: item.id,
+        label: item.label,
+        amount: toFiniteNumber(item.amount, 0),
+      })),
+      creditDebt: totalDebt,
+      preferPlaid: cashFlowLinked,
+      profile: profile
+        ? {
+            monthlyIncome: profile.monthlyIncome,
+            monthlyEssentialExpenses: profile.monthlyEssentialExpenses,
+            creditDebt: totalDebt,
+          }
+        : null,
+    });
+  }, [authUser?.id, monthlyIncome, safeExpenses, totalDebt, cashFlowLinked]);
+
+  const geminiFinancialParams = useMemo(
+    () =>
+      geminiParamsFromDiagnostics(financialDiagnostics, {
+        userName: firstName,
+        debt: Math.max(financialDiagnostics.creditDebt, totalDebt),
+      }),
+    [financialDiagnostics, firstName, totalDebt]
+  );
+
   const educationalSnapshot = useMemo<SproutAiFinancialSnapshot>(() => {
     const safetyNetMonths = monthlyExpenses > 0 ? safetyTotals.total / monthlyExpenses : null;
     const highestApr =
@@ -1168,11 +1201,14 @@ const App: React.FC = () => {
         summary: debtContext,
       },
       spending: {
-        monthlyIncome,
-        monthlyExpenses,
-        netCashFlow,
-        isSurplus,
-        categories: safeExpenses.map((item) => ({ label: item.label, amount: item.amount })),
+        monthlyIncome: financialDiagnostics.income || monthlyIncome,
+        monthlyExpenses: financialDiagnostics.recurringExpenses || monthlyExpenses,
+        netCashFlow: financialDiagnostics.netCashFlow,
+        isSurplus: financialDiagnostics.isSurplus,
+        categories: financialDiagnostics.categories.map((item) => ({
+          label: item.label,
+          amount: item.amount,
+        })),
         summary: cashFlowContext,
       },
     };
@@ -1188,9 +1224,7 @@ const App: React.FC = () => {
     focusDebt?.title,
     debtContext,
     monthlyIncome,
-    netCashFlow,
-    isSurplus,
-    safeExpenses,
+    financialDiagnostics,
     cashFlowContext,
   ]);
 
@@ -1314,6 +1348,7 @@ const App: React.FC = () => {
           snapshot: educationalSnapshot,
           conversation: history,
           portfolioContext,
+          financial: geminiFinancialParams,
         },
         { stream: true, onDelta: applyCoachText }
       );
@@ -2275,6 +2310,12 @@ const App: React.FC = () => {
                 </div>
               </div>
             </section>
+
+            <FinancialHealthCard
+              diagnostics={financialDiagnostics}
+              privacyMode={privacyMode}
+              className="mt-3"
+            />
 
             {/* 4. Multi-asset safety net, sized off the real spending total. */}
             <SafetyNetSection

@@ -72,6 +72,20 @@ type SproutAiFinancialSnapshot = {
 };
 
 type GeminiCoachHistoryItem = { sender?: string; text?: string };
+type GeminiFinancialParams = {
+  income: number;
+  expenses: number;
+  discretionarySpend: number;
+  debt: number;
+  netCashFlow?: number;
+  essentialSpend?: number;
+  userName?: string;
+  transactionTrends?: string;
+  proposedMonthlyCut?: number;
+  cutCategoryLabel?: string;
+  topDiscretionary?: Array<{ label: string; amount: number; shareOfFlexible?: number }>;
+  recommendationTarget?: { label: string; amount: number } | null;
+};
 type GeminiCoachRequest = {
   snapshot?: SproutAiFinancialSnapshot;
   conversation?: string;
@@ -79,6 +93,7 @@ type GeminiCoachRequest = {
   portfolioContext?: string;
   message?: string;
   stream?: boolean;
+  financial?: GeminiFinancialParams;
 };
 type GeminiCoachErrorCode = "timeout" | "rate_limit" | "unavailable" | "invalid" | "blank" | "upstream";
 type CoachHttpError = Error & { status: number; code: GeminiCoachErrorCode };
@@ -287,6 +302,95 @@ function asSnapshot(value: unknown): SproutAiFinancialSnapshot {
   };
 }
 
+function futureValueOfMonthlyInvestment(monthlyContribution: number, years = 10, annualRate = 0.09): number {
+  const pmt = Math.max(0, Number(monthlyContribution) || 0);
+  const n = Math.round(Math.max(0, years) * 12);
+  if (pmt <= 0 || n <= 0) return 0;
+  if (!annualRate) return Math.round(pmt * n * 100) / 100;
+  const r = annualRate / 12;
+  return Math.round(pmt * ((Math.pow(1 + r, n) - 1) / r) * 100) / 100;
+}
+
+function buildFinancialDiagnosticsPrompt(params: GeminiFinancialParams): string {
+  const income = Number(params.income) || 0;
+  const expenses = Number(params.expenses) || 0;
+  const discretionary = Number(params.discretionarySpend) || 0;
+  const debt = Number(params.debt) || 0;
+  const net = params.netCashFlow != null ? Number(params.netCashFlow) || 0 : income - expenses;
+  const name = firstNameOf(params.userName || "Investor");
+  const target = params.recommendationTarget || params.topDiscretionary?.[0] || null;
+  const cut =
+    params.proposedMonthlyCut != null
+      ? Math.max(0, Number(params.proposedMonthlyCut) || 0)
+      : target
+        ? Math.round(target.amount * 0.25)
+        : Math.round(discretionary * 0.2);
+  const cutLabel = params.cutCategoryLabel || target?.label || "non-essential spending";
+  const at8 = usd(futureValueOfMonthlyInvestment(cut, 10, 0.08));
+  const at10 = usd(futureValueOfMonthlyInvestment(cut, 10, 0.1));
+  const flow =
+    net > 0 ? `surplus of $${usd(net)}/mo` : net < 0 ? `deficit of $${usd(Math.abs(net))}/mo` : "break-even cash flow";
+  const topLines =
+    (params.topDiscretionary || [])
+      .slice(0, 3)
+      .map(
+        (item, index) =>
+          `  ${index + 1}. ${item.label}: $${usd(item.amount)}/mo${
+            item.shareOfFlexible != null ? ` (${Math.round(item.shareOfFlexible * 100)}% of flexible spend)` : ""
+          }`
+      )
+      .join("\n") || "  (no discretionary categories detected yet)";
+
+  return `Live Plaid / profile financial diagnostics for ${name} (use these exact numbers; do not invent others):
+- Monthly income: $${usd(income)}
+- Recurring expenses: $${usd(expenses)}
+- Discretionary / flexible spend: $${usd(discretionary)}${
+    params.essentialSpend != null ? ` (essentials $${usd(params.essentialSpend)})` : ""
+  }
+- Credit / debt balance: $${usd(debt)}
+- Net cash flow: ${flow}
+- Highest-impact discretionary categories:
+${topLines}
+${params.transactionTrends ? `- Transaction trends: ${params.transactionTrends}` : ""}
+
+Your reply must:
+1. Highlight ${name}'s actual net cash flow (${flow}) and call out non-essential spending trends from the categories above.
+2. Present an interactive-style recommendation that asks whether they want to reduce "${cutLabel}" by about $${usd(cut)}/mo (or another specific detected expense from the list).
+3. Calculate and clearly state the educational 10-year compound wealth if that $${usd(cut)}/mo is invested at roughly 8–10% annual return: about $${at8} at 8% and $${at10} at 10% (monthly compounding illustration — not a prediction or advice to buy anything).
+Keep the tone warm and under 5 short sentences, then append the educational disclaimer.`;
+}
+
+function asFinancialParams(value: unknown): GeminiFinancialParams | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const rec = value as Record<string, unknown>;
+  const income = Number(rec.income);
+  const expenses = Number(rec.expenses);
+  const discretionarySpend = Number(rec.discretionarySpend);
+  const debt = Number(rec.debt);
+  if (![income, expenses, discretionarySpend, debt].every((n) => Number.isFinite(n))) return undefined;
+  return {
+    income,
+    expenses,
+    discretionarySpend,
+    debt,
+    netCashFlow: Number.isFinite(Number(rec.netCashFlow)) ? Number(rec.netCashFlow) : undefined,
+    essentialSpend: Number.isFinite(Number(rec.essentialSpend)) ? Number(rec.essentialSpend) : undefined,
+    userName: typeof rec.userName === "string" ? rec.userName : undefined,
+    transactionTrends: typeof rec.transactionTrends === "string" ? rec.transactionTrends : undefined,
+    proposedMonthlyCut: Number.isFinite(Number(rec.proposedMonthlyCut))
+      ? Number(rec.proposedMonthlyCut)
+      : undefined,
+    cutCategoryLabel: typeof rec.cutCategoryLabel === "string" ? rec.cutCategoryLabel : undefined,
+    topDiscretionary: Array.isArray(rec.topDiscretionary)
+      ? (rec.topDiscretionary as GeminiFinancialParams["topDiscretionary"])
+      : undefined,
+    recommendationTarget:
+      rec.recommendationTarget && typeof rec.recommendationTarget === "object"
+        ? (rec.recommendationTarget as GeminiFinancialParams["recommendationTarget"])
+        : undefined,
+  };
+}
+
 function parseGeminiCoachRequest(raw: unknown): GeminiCoachRequest {
   const rec = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   return {
@@ -296,6 +400,7 @@ function parseGeminiCoachRequest(raw: unknown): GeminiCoachRequest {
     portfolioContext: typeof rec.portfolioContext === "string" ? rec.portfolioContext : undefined,
     message: typeof rec.message === "string" ? rec.message : undefined,
     stream: rec.stream === true,
+    financial: asFinancialParams(rec.financial),
   };
 }
 
@@ -311,10 +416,29 @@ function buildUserPrompt(body: GeminiCoachRequest): string {
   if (!conversation) {
     throw coachError("A message is required.", 400, "invalid");
   }
+  const snapshot = body.snapshot || FALLBACK_SNAPSHOT;
+  const financial: GeminiFinancialParams =
+    body.financial ||
+    {
+      income: snapshot.spending.monthlyIncome,
+      expenses: snapshot.spending.monthlyExpenses,
+      discretionarySpend: Math.max(0, snapshot.spending.monthlyExpenses * 0.35),
+      debt: snapshot.debt.total,
+      netCashFlow: snapshot.spending.netCashFlow,
+      userName: snapshot.userName,
+      topDiscretionary: [...snapshot.spending.categories]
+        .sort((a, b) => b.amount - a.amount)
+        .slice(0, 3)
+        .map((item) => ({ label: item.label, amount: item.amount })),
+    };
   return `${buildSproutUserPrompt({
-    snapshot: body.snapshot || FALLBACK_SNAPSHOT,
+    snapshot,
     conversation,
-  })}\n- Investment portfolio (facts only — do not recommend trades): ${
+  })}
+
+---
+${buildFinancialDiagnosticsPrompt(financial)}
+\n- Investment portfolio (facts only — do not recommend trades): ${
     body.portfolioContext?.trim() || "No investments or connected accounts yet."
   }`;
 }

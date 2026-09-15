@@ -1,6 +1,10 @@
 import { GoogleGenAI } from "@google/genai";
 import type { IncomingMessage, ServerResponse } from "http";
 import {
+  buildFinancialDiagnosticsPrompt,
+  type GeminiFinancialParams,
+} from "../../src/lib/gemini.js";
+import {
   buildSproutUserPrompt,
   stripEducationalDisclaimer,
   SPROUT_SYSTEM_INSTRUCTION,
@@ -21,6 +25,7 @@ export type GeminiCoachRequest = {
   portfolioContext?: string;
   message?: string;
   stream?: boolean;
+  financial?: GeminiFinancialParams;
 };
 
 export type GeminiCoachErrorCode =
@@ -102,6 +107,39 @@ function asSnapshot(value: unknown): SproutAiFinancialSnapshot {
   };
 }
 
+function asFinancialParams(value: unknown): GeminiFinancialParams | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const rec = value as Record<string, unknown>;
+  const income = Number(rec.income);
+  const expenses = Number(rec.expenses);
+  const discretionarySpend = Number(rec.discretionarySpend);
+  const debt = Number(rec.debt);
+  if (![income, expenses, discretionarySpend, debt].every((n) => Number.isFinite(n))) {
+    return undefined;
+  }
+  return {
+    income,
+    expenses,
+    discretionarySpend,
+    debt,
+    netCashFlow: Number.isFinite(Number(rec.netCashFlow)) ? Number(rec.netCashFlow) : undefined,
+    essentialSpend: Number.isFinite(Number(rec.essentialSpend)) ? Number(rec.essentialSpend) : undefined,
+    userName: typeof rec.userName === "string" ? rec.userName : undefined,
+    transactionTrends: typeof rec.transactionTrends === "string" ? rec.transactionTrends : undefined,
+    proposedMonthlyCut: Number.isFinite(Number(rec.proposedMonthlyCut))
+      ? Number(rec.proposedMonthlyCut)
+      : undefined,
+    cutCategoryLabel: typeof rec.cutCategoryLabel === "string" ? rec.cutCategoryLabel : undefined,
+    topDiscretionary: Array.isArray(rec.topDiscretionary)
+      ? (rec.topDiscretionary as GeminiFinancialParams["topDiscretionary"])
+      : undefined,
+    recommendationTarget:
+      rec.recommendationTarget && typeof rec.recommendationTarget === "object"
+        ? (rec.recommendationTarget as GeminiFinancialParams["recommendationTarget"])
+        : undefined,
+  };
+}
+
 export function parseGeminiCoachRequest(raw: unknown): GeminiCoachRequest {
   const rec = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   return {
@@ -111,6 +149,7 @@ export function parseGeminiCoachRequest(raw: unknown): GeminiCoachRequest {
     portfolioContext: typeof rec.portfolioContext === "string" ? rec.portfolioContext : undefined,
     message: typeof rec.message === "string" ? rec.message : undefined,
     stream: rec.stream === true,
+    financial: asFinancialParams(rec.financial),
   };
 }
 
@@ -127,10 +166,43 @@ function buildUserPrompt(body: GeminiCoachRequest): string {
     throw coachError("A message is required.", 400, "invalid");
   }
 
+  const snapshot = body.snapshot || FALLBACK_SNAPSHOT;
+  const financial =
+    body.financial ||
+    ({
+      income: snapshot.spending.monthlyIncome,
+      expenses: snapshot.spending.monthlyExpenses,
+      discretionarySpend: Math.max(
+        0,
+        snapshot.spending.monthlyExpenses -
+          snapshot.spending.categories
+            .filter((item) => /rent|mortgage|utilit|insur|grocer|phone|loan|debt/i.test(item.label))
+            .reduce((sum, item) => sum + item.amount, 0)
+      ),
+      debt: snapshot.debt.total,
+      netCashFlow: snapshot.spending.netCashFlow,
+      userName: snapshot.userName,
+      topDiscretionary: [...snapshot.spending.categories]
+        .sort((a, b) => b.amount - a.amount)
+        .slice(0, 3)
+        .map((item, index) => ({
+          id: `cat-${index}`,
+          label: item.label,
+          amount: item.amount,
+          flexibility: "flexible" as const,
+          shareOfFlexible: 0,
+          impactScore: item.amount,
+        })),
+    } satisfies GeminiFinancialParams);
+
   return `${buildSproutUserPrompt({
-    snapshot: body.snapshot || FALLBACK_SNAPSHOT,
+    snapshot,
     conversation,
-  })}\n- Investment portfolio (facts only — do not recommend trades): ${
+  })}
+
+---
+${buildFinancialDiagnosticsPrompt(financial)}
+\n- Investment portfolio (facts only — do not recommend trades): ${
     body.portfolioContext?.trim() || "No investments or connected accounts yet."
   }`;
 }

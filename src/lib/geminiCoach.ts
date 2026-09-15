@@ -1,3 +1,4 @@
+import type { GeminiFinancialParams } from "./gemini";
 import type { SproutAiFinancialSnapshot } from "./sproutAi";
 import { serverlessFetch } from "./serverless";
 
@@ -5,6 +6,8 @@ export type GeminiCoachPayload = {
   snapshot: SproutAiFinancialSnapshot;
   conversation: string;
   portfolioContext: string;
+  /** Live Plaid / profile numbers for diagnostic prompt enrichment. */
+  financial?: GeminiFinancialParams;
 };
 
 export type GeminiCoachCode =
