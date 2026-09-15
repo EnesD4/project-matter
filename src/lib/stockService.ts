@@ -1,7 +1,7 @@
-import { apiUrl } from "./apiBase";
+import { allowClientMockFallback, apiUrl } from "./apiBase";
 import { clearbitLogoUrl, extractWebsiteDomain } from "./assetLogos";
 import { DEMO_TICKER_CATALOG, resolveDemoTicker } from "./demoScenarios";
-import { setCachedChart, setCachedQuote, setCachedSpark } from "./marketCache";
+import { getCachedQuote, setCachedChart, setCachedQuote, setCachedSpark } from "./marketCache";
 import {
   buildHistoricalSeries,
   ChartCandle,
@@ -63,12 +63,31 @@ export type HistoricalClose = {
 };
 
 const LIVE_CHART_SOURCES = new Set(["polygon", "yahoo", "finnhub"]);
+const LIVE_QUOTE_SOURCES = new Set(["polygon", "yahoo", "finnhub"]);
 
 export function isLiveChartSource(source?: string | null): boolean {
   return Boolean(source && LIVE_CHART_SOURCES.has(source));
 }
 
+/** True when the quote came from a live market API (not mock / local cache). */
+export function isLiveQuoteSource(source?: string | null): boolean {
+  return Boolean(source && LIVE_QUOTE_SOURCES.has(source));
+}
+
+/** Trim + uppercase ticker symbols so "aapl" and " AAPL " resolve the same. */
+export function normalizeSymbol(symbol: string | null | undefined): string {
+  return String(symbol || "")
+    .trim()
+    .toUpperCase();
+}
+
 export { clearbitLogoUrl, extractWebsiteDomain };
+
+export type QuoteFetchFailureReason = "rate_limited" | "empty" | "http_error" | "network" | "invalid";
+
+type ApiGetResult<T> =
+  | { ok: true; data: T }
+  | { ok: false; reason: QuoteFetchFailureReason; status?: number };
 
 async function readJson<T>(res: Response): Promise<T | null> {
   try {
@@ -78,14 +97,55 @@ async function readJson<T>(res: Response): Promise<T | null> {
   }
 }
 
-async function safeApiGet<T>(url: string, signal?: AbortSignal): Promise<T | null> {
+async function apiGet<T>(url: string, signal?: AbortSignal): Promise<ApiGetResult<T>> {
   try {
     const res = await fetch(url, { signal });
-    if (!res.ok) return null;
-    return await readJson<T>(res);
-  } catch {
-    return null;
+    if (res.status === 429) {
+      return { ok: false, reason: "rate_limited", status: 429 };
+    }
+    if (!res.ok) {
+      return { ok: false, reason: "http_error", status: res.status };
+    }
+    const data = await readJson<T>(res);
+    if (data == null) return { ok: false, reason: "empty", status: res.status };
+    return { ok: true, data };
+  } catch (err) {
+    if ((err as Error)?.name === "AbortError") throw err;
+    return { ok: false, reason: "network" };
   }
+}
+
+async function safeApiGet<T>(url: string, signal?: AbortSignal): Promise<T | null> {
+  const result = await apiGet<T>(url, signal);
+  return result.ok ? result.data : null;
+}
+
+function quoteFromLocalCache(ticker: string): StockQuote | null {
+  const cached = getCachedQuote(ticker);
+  if (!cached || !(cached.price > 0)) return null;
+  return {
+    c: cached.price,
+    d: cached.price * ((cached.changePct || 0) / 100),
+    dp: cached.changePct || 0,
+    h: cached.price,
+    l: cached.price,
+    o: cached.price,
+    pc: cached.price,
+    t: Math.floor((cached.updatedAt || Date.now()) / 1000),
+    source: "cache",
+  };
+}
+
+/**
+ * Live → local cache → optional demo mock (never cached as live).
+ * Hardcoded catalog prices must not overwrite a valid cached / user mark.
+ */
+function fallbackQuote(ticker: string): StockQuote | null {
+  const cached = quoteFromLocalCache(ticker);
+  if (cached) return cached;
+  // Local/dev demos only — production returns null so the UI can prompt for manual input.
+  if (!allowClientMockFallback()) return null;
+  return mockQuoteForSymbol(ticker);
 }
 
 export type NormalizedStockData = {
@@ -185,9 +245,7 @@ export function sanitizeSafeStock<T extends Record<string, any>>(rawStock: T | n
  */
 export const normalizeStockData = (raw: any): NormalizedStockData => {
   const safe = sanitizeSafeStock(raw);
-  const symbol = String(safe?.symbol || raw?.ticker || "")
-    .trim()
-    .toUpperCase();
+  const symbol = normalizeSymbol(safe?.symbol || raw?.ticker || "");
   // Prefer sanitized live mark (already mapped from Polygon `c` / current_price).
   const price = finiteNumber(safe.current_price ?? safe.price ?? resolveLiveMark(raw));
   const shares = finiteNumber(safe.shares);
@@ -236,7 +294,10 @@ export function normalizeToStockQuote(raw: any, fallbackSymbol = ""): StockQuote
 
 function cacheAndReturnQuote(ticker: string, data: StockQuote): StockQuote {
   const quote = normalizeToStockQuote(data, ticker) ?? data;
-  setCachedQuote(ticker, { price: quote.c, changePct: quote.dp ?? 0 });
+  // Never persist mock/catalog marks into the live quote cache — they override real inputs.
+  if (quote.source !== "mock" && quote.c > 0) {
+    setCachedQuote(ticker, { price: quote.c, changePct: quote.dp ?? 0 });
+  }
   return quote;
 }
 
@@ -244,46 +305,72 @@ export async function fetchStockQuote(
   symbol: string,
   signal?: AbortSignal
 ): Promise<StockQuote | null> {
-  const ticker = symbol.trim().toUpperCase();
+  const ticker = normalizeSymbol(symbol);
   if (!ticker) return null;
   try {
-    const data = await safeApiGet<unknown>(
+    const result = await apiGet<unknown>(
       `${apiUrl("/api/stocks/quote")}?symbol=${encodeURIComponent(ticker)}`,
       signal
     );
-    const quote = normalizeToStockQuote(data, ticker);
-    if (quote && quote.c > 0) return cacheAndReturnQuote(ticker, quote);
-  } catch {
-    // 404 / connection errors fall through to mock quotes
+    if (result.ok) {
+      const quote = normalizeToStockQuote(result.data, ticker);
+      if (quote && quote.c > 0) {
+        // Reject mock payloads from the API when a fresher local cache already exists —
+        // hardcoded catalog defaults must not clobber a valid mark.
+        if (quote.source === "mock") {
+          const cached = quoteFromLocalCache(ticker);
+          if (cached) return cached;
+          if (!allowClientMockFallback()) return null;
+          return quote;
+        }
+        return cacheAndReturnQuote(ticker, quote);
+      }
+      // Empty / zero price body
+      return fallbackQuote(ticker);
+    }
+    // 429 / HTTP / network — prefer cache, then optional local-demo mock only.
+    return fallbackQuote(ticker);
+  } catch (err) {
+    if ((err as Error)?.name === "AbortError") throw err;
+    return fallbackQuote(ticker);
   }
-  const mock = mockQuoteForSymbol(ticker);
-  return mock ? cacheAndReturnQuote(ticker, mock) : null;
 }
 
 export async function fetchStockQuotes(
   symbols: string[],
   signal?: AbortSignal
 ): Promise<Map<string, StockQuote>> {
-  const unique = [...new Set(symbols.map((s) => s.trim().toUpperCase()).filter(Boolean))];
+  const unique = [...new Set(symbols.map((s) => normalizeSymbol(s)).filter(Boolean))];
   const out = new Map<string, StockQuote>();
   if (unique.length === 0) return out;
 
   if (unique.length > 1) {
     try {
-      const data = await safeApiGet<{ items?: Array<Record<string, unknown> & { symbol?: string }> }>(
+      const result = await apiGet<{ items?: Array<Record<string, unknown> & { symbol?: string }> }>(
         `${apiUrl("/api/stocks/quotes")}?symbols=${encodeURIComponent(unique.join(","))}`,
         signal
       );
-      for (const item of data?.items ?? []) {
-        const ticker = String(item.symbol || item.ticker || "")
-          .trim()
-          .toUpperCase();
-        const quote = normalizeToStockQuote(item, ticker);
-        if (!ticker || !quote || !(quote.c > 0)) continue;
-        out.set(ticker, quote);
-        setCachedQuote(ticker, { price: quote.c, changePct: quote.dp ?? 0 });
+      if (result.ok) {
+        for (const item of result.data?.items ?? []) {
+          const ticker = normalizeSymbol(String(item.symbol || item.ticker || ""));
+          const quote = normalizeToStockQuote(item, ticker);
+          if (!ticker || !quote || !(quote.c > 0)) continue;
+          if (quote.source === "mock") {
+            const cached = quoteFromLocalCache(ticker);
+            if (cached) {
+              out.set(ticker, cached);
+              continue;
+            }
+            if (!allowClientMockFallback()) continue;
+            out.set(ticker, quote);
+            continue;
+          }
+          out.set(ticker, quote);
+          setCachedQuote(ticker, { price: quote.c, changePct: quote.dp ?? 0 });
+        }
       }
-    } catch {
+    } catch (err) {
+      if ((err as Error)?.name === "AbortError") throw err;
       // fall through to per-symbol fetches
     }
   }
@@ -294,9 +381,10 @@ export async function fetchStockQuotes(
       try {
         const quote = await fetchStockQuote(ticker, signal);
         if (quote) out.set(ticker, quote);
-      } catch {
-        const mock = mockQuoteForSymbol(ticker);
-        if (mock) out.set(ticker, cacheAndReturnQuote(ticker, mock));
+      } catch (err) {
+        if ((err as Error)?.name === "AbortError") throw err;
+        const cached = fallbackQuote(ticker);
+        if (cached) out.set(ticker, cached);
       }
     })
   );
@@ -307,7 +395,7 @@ export async function fetchStockProfile(
   symbol: string,
   signal?: AbortSignal
 ): Promise<StockProfile | null> {
-  const ticker = symbol.trim().toUpperCase();
+  const ticker = normalizeSymbol(symbol);
   if (!ticker) return null;
   try {
     const data = await safeApiGet<StockProfile>(
@@ -331,9 +419,7 @@ export async function fetchStockProfile(
 const TICKER_QUERY = /^[A-Z][A-Z0-9.\-]{0,9}$/;
 
 function asSearchResult(row: Partial<StockSearchResult> | null | undefined): StockSearchResult | null {
-  const symbol = String(row?.displaySymbol || row?.symbol || "")
-    .trim()
-    .toUpperCase();
+  const symbol = normalizeSymbol(row?.displaySymbol || row?.symbol || "");
   if (!symbol) return null;
   return {
     symbol,
@@ -365,7 +451,7 @@ function parseSearchPayload(data: unknown): StockSearchResult[] {
 
 /** Local catalog + typed-ticker fallback so paper search still works when APIs are down. */
 export function localTickerMatches(query: string): StockSearchResult[] {
-  const q = query.trim().toUpperCase();
+  const q = normalizeSymbol(query);
   if (!q) return [];
   const rows = Object.entries(DEMO_TICKER_CATALOG)
     .filter(([symbol, meta]) => symbol.includes(q) || meta.name.toUpperCase().includes(q))
@@ -401,7 +487,7 @@ const MOCK_DAY_CHANGE: Record<string, number> = {
 };
 
 export function mockQuoteForSymbol(symbol: string, fallbackPrice?: number): StockQuote | null {
-  const ticker = symbol.trim().toUpperCase();
+  const ticker = normalizeSymbol(symbol);
   if (!ticker) return null;
   const known = DEMO_TICKER_CATALOG[ticker];
   // Catalog or caller-supplied mark only — never invent a static $100 default.
@@ -500,7 +586,7 @@ export async function fetchStockChart(
   range: RangeOption,
   signal?: AbortSignal
 ): Promise<{ mapped: SeriesPoint[]; source?: string; points: ChartCandle[] } | null> {
-  const ticker = symbol.trim().toUpperCase();
+  const ticker = normalizeSymbol(symbol);
   if (!ticker) return null;
   try {
     const data = await safeApiGet<StockChartResponse>(
@@ -528,7 +614,7 @@ export async function fetchHistoricalClose(
   date: string,
   signal?: AbortSignal
 ): Promise<HistoricalClose | null> {
-  const ticker = symbol.trim().toUpperCase();
+  const ticker = normalizeSymbol(symbol);
   if (!ticker || !date) return null;
   try {
     const data = await safeApiGet<HistoricalClose>(

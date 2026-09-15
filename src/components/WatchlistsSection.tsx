@@ -585,7 +585,8 @@ export default function WatchlistsSection({
         for (const symbol of symbols) {
           const quote = quoteMap.get(symbol);
           const pending = next[symbol] ?? cachedOrPendingQuote(symbol);
-          if (quote && quote.c > 0) {
+          // Live API marks update current display; mock catalog must not overwrite valid cache.
+          if (quote && quote.c > 0 && quote.source !== "mock") {
             next[symbol] = {
               ...pending,
               price: toFiniteNumber(quote.c, pending.price),

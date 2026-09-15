@@ -53,16 +53,18 @@ import {
   SP500_LINE,
   type BenchmarkChartPoint,
 } from "../lib/benchmarkChart";
-import { getCachedSpark } from "../lib/marketCache";
+import { getCachedQuote, getCachedSpark } from "../lib/marketCache";
 import {
   fetchHistoricalClose,
   fetchStockProfile,
   fetchStockQuote,
   fetchStockQuotes,
   fetchStockSearch,
+  isLiveQuoteSource,
   localTickerMatches,
   mockQuoteForSymbol,
   normalizeStockData,
+  normalizeSymbol,
   normalizeToStockQuote,
   sanitizeSafeStock,
   type StockProfile,
@@ -834,13 +836,17 @@ export default function InvestmentPortfolioCard({
         (prev || []).map((h) => {
           if (!h || h.kind !== "stock") return h;
           const quote = quotes.get(h.symbol);
-          return quote ? applyQuoteToHolding(h, quote) : h;
+          // Only apply live (or cached) marks — never catalog/mock defaults over a holding.
+          if (!quote || !(quote.c > 0)) return h;
+          if (quote.source === "mock") return h;
+          return applyQuoteToHolding(h, quote);
         })
       );
       setSelectedHolding((prev) => {
         if (!prev) return prev;
         const quote = quotes.get(prev.symbol);
-        return quote ? applyQuoteToHolding(prev, quote) : prev;
+        if (!quote || !(quote.c > 0) || quote.source === "mock") return prev;
+        return applyQuoteToHolding(prev, quote);
       });
     },
   });
@@ -1430,7 +1436,7 @@ export default function InvestmentPortfolioCard({
   };
 
   const selectTicker = async (result: StockSearchResult, costDate = parseToIsoDate(purchaseDate) ?? todayISODate()) => {
-    const symbol = (result.displaySymbol || result.symbol || "").trim().toUpperCase();
+    const symbol = normalizeSymbol(result.displaySymbol || result.symbol || "");
     if (!symbol) return;
     setSelectedTicker({ symbol, description: result.description || symbol, type: result.type });
     setSearchQuery("");
@@ -1454,20 +1460,32 @@ export default function InvestmentPortfolioCard({
     const existingMark = holdingsRef.current.find(
       (h): h is StockHolding => h?.kind === "stock" && String(h.symbol || "").toUpperCase() === symbol
     )?.currentPrice;
+    const cachedMark = getCachedQuote(symbol);
     const quote =
-      liveQuote && liveQuote.c > 0
+      liveQuote && liveQuote.c > 0 && (isLiveQuoteSource(liveQuote.source) || liveQuote.source === "cache")
         ? liveQuote
-        : normalizeToStockQuote(
-            mockQuoteForSymbol(symbol, existingMark && existingMark > 0 ? existingMark : undefined),
-            symbol
-          );
-    if (quote) {
+        : liveQuote && liveQuote.c > 0 && liveQuote.source !== "mock"
+          ? liveQuote
+          : cachedMark && cachedMark.price > 0
+            ? normalizeToStockQuote(
+                {
+                  c: cachedMark.price,
+                  dp: cachedMark.changePct,
+                  source: "cache",
+                },
+                symbol
+              )
+            : existingMark && existingMark > 0
+              ? normalizeToStockQuote(
+                  mockQuoteForSymbol(symbol, existingMark) ?? { c: existingMark, source: "cache" },
+                  symbol
+                )
+              : null;
+
+    if (quote && quote.c > 0) {
       setSelectedQuote(quote);
-      if (!liveQuote || !(liveQuote.c > 0)) {
-        setQuoteError("Using an estimated price. Enter your fill if this isn't right.");
-      }
     } else {
-      setQuoteError("Couldn't fetch the live price. You can enter it manually.");
+      setSelectedQuote(null);
     }
 
     if (profileResult.status === "fulfilled" && profileResult.value) {
@@ -1476,6 +1494,19 @@ export default function InvestmentPortfolioCard({
 
     setQuoteLoading(false);
     await fillCostForDate(symbol, costDate, quote);
+
+    // Set after fillCostForDate — that helper clears quoteError when applying a fill price.
+    if (quote && quote.c > 0) {
+      if (!isLiveQuoteSource(quote.source)) {
+        setQuoteError(
+          quote.source === "cache"
+            ? "Using a cached price. Enter your fill if this isn't right."
+            : "Couldn't fetch the live price. You can enter it manually."
+        );
+      }
+    } else {
+      setQuoteError("Couldn't fetch the live price. You can enter it manually.");
+    }
   };
 
   const openAddForHolding = (holding: StockHolding) => {

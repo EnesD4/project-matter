@@ -88,11 +88,16 @@ export function isPolygonConfigured(): boolean {
   return Boolean(getPolygonApiKey());
 }
 
-function cacheGet<T>(map: Map<string, { expires: number; value: T }>, key: string): T | null {
+function cacheGet<T>(
+  map: Map<string, { expires: number; value: T }>,
+  key: string,
+  opts?: { allowStale?: boolean }
+): T | null {
   const hit = map.get(key);
   if (!hit) return null;
   if (hit.expires < Date.now()) {
-    map.delete(key);
+    // Keep expired entries so 429 / empty live fetches can fall back to a last-known mark.
+    if (opts?.allowStale) return hit.value;
     return null;
   }
   return hit.value;
@@ -188,6 +193,14 @@ function releaseGate() {
   else gateOpen = true;
 }
 
+export class PolygonRateLimitError extends Error {
+  readonly status = 429;
+  constructor(path: string) {
+    super(`Polygon rate limited: ${path}`);
+    this.name = 'PolygonRateLimitError';
+  }
+}
+
 async function polygonGet<T>(path: string, timeoutMs = 8000): Promise<T | null> {
   const key = getPolygonApiKey();
   if (!key) return null;
@@ -205,12 +218,16 @@ async function polygonGet<T>(path: string, timeoutMs = 8000): Promise<T | null> 
           await new Promise((resolve) => setTimeout(resolve, 1300));
           continue;
         }
-        return null;
+        throw new PolygonRateLimitError(path);
       }
       if (response.status === 403) return null;
       if (!response.ok) return null;
-      return (await response.json()) as T;
+      const json = (await response.json()) as T;
+      // Empty aggregate / reference payloads are treated as misses so callers can use stale cache.
+      if (json == null) return null;
+      return json;
     } catch (error) {
+      if (error instanceof PolygonRateLimitError) throw error;
       console.error(`Polygon request failed ${path}:`, error instanceof Error ? error.message : error);
       return null;
     } finally {
@@ -325,9 +342,26 @@ export async function fetchPolygonQuote(symbol: string): Promise<QuoteSnapshot |
   return coalesce(`quote:${ticker}`, async () => {
     const again = cacheGet(quoteCache, ticker);
     if (again) return again;
-    const quote = await fetchQuoteUncached(ticker);
-    if (quote) cacheSet(quoteCache, ticker, quote, QUOTE_TTL_MS);
-    return quote;
+    try {
+      const quote = await fetchQuoteUncached(ticker);
+      if (quote && quote.c > 0) {
+        cacheSet(quoteCache, ticker, quote, QUOTE_TTL_MS);
+        return quote;
+      }
+    } catch (error) {
+      if (error instanceof PolygonRateLimitError) {
+        const stale = cacheGet(quoteCache, ticker, { allowStale: true });
+        if (stale && stale.c > 0) {
+          console.warn(`Polygon 429 for ${ticker}; serving stale quote`);
+          return stale;
+        }
+        return null;
+      }
+      throw error;
+    }
+    // Empty live response — prefer last-known mark over inventing a price.
+    const stale = cacheGet(quoteCache, ticker, { allowStale: true });
+    return stale && stale.c > 0 ? stale : null;
   });
 }
 

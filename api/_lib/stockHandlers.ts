@@ -4,7 +4,6 @@ import {
   mockHistoryPayload,
   mockProfilePayload,
   mockQuoteForSymbol,
-  mockQuotePayload,
 } from "./mockMarket.js";
 
 function sendJson(res: any, status: number, payload: unknown) {
@@ -139,22 +138,6 @@ function quoteFromMeta(symbol: string, meta: Record<string, unknown>) {
   };
 }
 
-function fallbackQuoteItem(symbol: string) {
-  const mock = mockQuotePayload(symbol);
-  return {
-    symbol,
-    c: mock.c,
-    d: mock.d,
-    dp: mock.dp,
-    h: mock.h,
-    l: mock.l,
-    o: mock.o,
-    pc: mock.pc,
-    t: mock.t,
-    source: mock.source,
-  };
-}
-
 function catalogMatches(query: string): SearchResult[] {
   const needle = query.toUpperCase();
   const rows = SEARCH_CATALOG.filter(
@@ -175,16 +158,19 @@ async function handleQuote(req: IncomingMessage | any, res: ServerResponse | any
   const url = urlOf(req);
   const symbol = String(url.searchParams.get("symbol") || "").trim().toUpperCase();
   if (!symbol) {
-    return sendJson(res, 200, mockQuotePayload(""));
+    return sendJson(res, 400, { error: "Symbol is required", c: 0 });
   }
 
   try {
     const meta = await yahooQuoteMeta(symbol);
     const quote = quoteFromMeta(symbol, meta);
-    if (!quote) return sendJson(res, 200, mockQuotePayload(symbol));
-    return sendJson(res, 200, { status: "ok", ...quote, data: [] });
+    if (!quote) {
+      // Do not invent catalog prices — let the client use cache or prompt for manual input.
+      return sendJson(res, 502, { error: "Failed to fetch stock quote", symbol, c: 0, source: "empty" });
+    }
+    return sendJson(res, 200, { status: "ok", ...quote, source: "yahoo", data: [] });
   } catch {
-    return sendJson(res, 200, mockQuotePayload(symbol));
+    return sendJson(res, 502, { error: "Failed to fetch stock quote", symbol, c: 0, source: "empty" });
   }
 }
 
@@ -201,16 +187,19 @@ async function handleQuotes(req: IncomingMessage | any, res: ServerResponse | an
       return sendJson(res, 200, { status: "ok", items: [], data: [] });
     }
 
-    const items = await Promise.all(
-      symbols.map(async (symbol) => {
-        try {
-          const meta = await yahooQuoteMeta(symbol);
-          return quoteFromMeta(symbol, meta) || fallbackQuoteItem(symbol);
-        } catch {
-          return fallbackQuoteItem(symbol);
-        }
-      })
-    );
+    const items = (
+      await Promise.all(
+        symbols.map(async (symbol) => {
+          try {
+            const meta = await yahooQuoteMeta(symbol);
+            const quote = quoteFromMeta(symbol, meta);
+            return quote ? { ...quote, symbol, source: "yahoo" as const } : null;
+          } catch {
+            return null;
+          }
+        })
+      )
+    ).filter((row): row is NonNullable<typeof row> => row != null);
     return sendJson(res, 200, { status: "ok", items, data: items });
   } catch {
     return sendJson(res, 200, { status: "ok", items: [], data: [] });
@@ -303,7 +292,7 @@ export default async function handleStockPath(req: IncomingMessage | any, res: S
   if (parts.length >= 2 && parts[1] === "chart") {
     const symbol = String(parts[0] || "").trim().toUpperCase();
     const range = String(url.searchParams.get("range") || "1M");
-    if (!symbol) return sendJson(res, 200, mockChartPayload("AAPL", range));
+    if (!symbol) return sendJson(res, 400, { error: "Symbol is required", points: [] });
     try {
       const points = await yahooChart(symbol, range);
       if (points.length > 0) {
