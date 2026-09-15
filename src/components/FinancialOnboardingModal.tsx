@@ -1,7 +1,7 @@
 import { Landmark, Sparkles, X } from "lucide-react";
 import React, { useEffect, useState } from "react";
 import { getStoredUser } from "../lib/auth";
-import { inferProfileFromBalances } from "../lib/demoScenarios";
+import { applyDemoScenario, inferProfileFromBalances } from "../lib/demoScenarios";
 import {
   hasFinancialProfile,
   saveFinancialProfile,
@@ -76,7 +76,7 @@ export default function FinancialOnboardingModal({
               Connect a bank
             </h2>
             <p className="mt-1.5 text-sm leading-relaxed text-slate-400">
-              Open Plaid Link to pull live sandbox balances. Checking, savings, and credit debt sync into your profile.
+              Open Plaid Link or load demo data. Checking, savings, and credit debt sync into your profile.
             </p>
           </div>
           {allowCancel || connected ? (
@@ -124,6 +124,18 @@ export default function FinancialOnboardingModal({
             </p>
           </div>
 
+          <button
+            type="button"
+            onClick={() => {
+              const detail = applyDemoScenario("balanced", getStoredUser()?.id);
+              const roadmap = saveFinancialProfile(detail.profile, getStoredUser()?.id);
+              finish(roadmap);
+            }}
+            className="flex w-full items-center justify-center gap-2 rounded-xl border border-emerald-500/35 bg-emerald-500/10 px-4 py-3 text-sm font-extrabold text-emerald-100 transition hover:bg-emerald-500/20"
+          >
+            <Sparkles size={16} className="text-emerald-400" />
+            Use demo bank data
+          </button>
         </div>
 
         <div className="border-t border-[#1F1F1F] px-5 py-4">

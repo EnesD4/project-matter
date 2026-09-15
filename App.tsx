@@ -35,13 +35,14 @@ import AuthScreen from "./src/components/AuthScreen";
 import DemoScenarioSwitcher from "./src/components/DemoScenarioSwitcher";
 import InvestmentScreen, { type Holding } from "./src/components/InvestmentScreen";
 import CashFlowScreen, { SafetyNetSection } from "./src/components/CashFlowScreen";
-import FinancialHealthCard from "./src/components/FinancialHealthCard";
 import OnboardingScreen from "./src/components/OnboardingScreen";
+import OnboardingModal from "./src/components/OnboardingModal";
 import BankConnectionScreen from "./src/components/BankConnectionScreen";
 import RetirementScreen from "./src/components/RetirementScreen";
 import LessonsScreen from "./src/components/LessonsScreen";
 import ProfileScreen from "./src/components/ProfileScreen";
 import FinancialOnboardingModal from "./src/components/FinancialOnboardingModal";
+import FinancialRoadmapPanel from "./src/components/FinancialRoadmapPanel";
 import AchievementBanner from "./src/components/AchievementBanner";
 import CertificateCelebration from "./src/components/CertificateCelebration";
 import { ErrorBoundary } from "./src/components/ErrorBoundary";
@@ -95,7 +96,10 @@ import {
 } from "./src/lib/demoScenarios";
 import {
   OPEN_FINANCIAL_ONBOARDING_EVENT,
+  OPEN_FINANCIAL_ROADMAP_EVENT,
+  hasSeenSproutWelcome,
   loadFinancialProfile,
+  markSproutWelcomeSeen,
   saveFinancialProfile,
   type FinancialProfile,
 } from "./src/lib/roadmapService";
@@ -396,6 +400,8 @@ const App: React.FC = () => {
   const [financialModalCancelable, setFinancialModalCancelable] = useState(false);
   const [financialDraft, setFinancialDraft] = useState<FinancialProfile | null>(null);
   const [demoPanelOpen, setDemoPanelOpen] = useState(false);
+  const [sproutWelcomeOpen, setSproutWelcomeOpen] = useState(false);
+  const [roadmapOpen, setRoadmapOpen] = useState(false);
 
   // Cash Flow & Debt Management module state.
   const [expenses, setExpenses] = useState<ExpenseItem[]>(cashFlowBoot.expenses);
@@ -740,6 +746,12 @@ const App: React.FC = () => {
     };
     window.addEventListener(OPEN_FINANCIAL_ONBOARDING_EVENT, onOpen);
     return () => window.removeEventListener(OPEN_FINANCIAL_ONBOARDING_EVENT, onOpen);
+  }, []);
+
+  useEffect(() => {
+    const onOpenRoadmap = () => setRoadmapOpen(true);
+    window.addEventListener(OPEN_FINANCIAL_ROADMAP_EVENT, onOpenRoadmap);
+    return () => window.removeEventListener(OPEN_FINANCIAL_ROADMAP_EVENT, onOpenRoadmap);
   }, []);
 
   useEffect(() => {
@@ -1434,11 +1446,10 @@ const App: React.FC = () => {
                 const nextSettings = persistLocalUserSettings({
                   ...settings,
                   hasCompletedOnboarding: true,
-                  // Bank step remains available later; do not block the main dashboard.
-                  hasCompletedBankSetup: true,
+                  // Step 3 (bank connect) stays required/skippable via BankConnectionScreen.
+                  hasCompletedBankSetup: false,
                 });
                 setUserSettings(nextSettings);
-                setActiveTab("dashboard");
               }}
             />
           </Suspense>
@@ -1457,6 +1468,9 @@ const App: React.FC = () => {
               onComplete={(settings) => {
                 setUserSettings(settings);
                 setActiveTab("dashboard");
+                if (!hasSeenSproutWelcome(authUser?.id)) {
+                  setSproutWelcomeOpen(true);
+                }
               }}
             />
           </Suspense>
@@ -1602,8 +1616,37 @@ const App: React.FC = () => {
         open={financialModalOpen}
         allowCancel={financialModalCancelable}
         initialAnswers={financialDraft}
-        onClose={() => setFinancialModalOpen(false)}        onComplete={(roadmap) => {
+        onClose={() => setFinancialModalOpen(false)}
+        onComplete={(roadmap) => {
           saveAcademyStartPhase(authUser.id, roadmap.recommendedPhaseId);
+          setFinancialModalOpen(false);
+          if (!hasSeenSproutWelcome(authUser?.id)) {
+            setSproutWelcomeOpen(true);
+          }
+        }}
+      />
+      <OnboardingModal
+        open={sproutWelcomeOpen}
+        userName={userName}
+        diagnostics={financialDiagnostics}
+        onClose={() => {
+          markSproutWelcomeSeen(authUser?.id);
+          setSproutWelcomeOpen(false);
+        }}
+        onExploreRoadmap={() => {
+          markSproutWelcomeSeen(authUser?.id);
+          setSproutWelcomeOpen(false);
+          setRoadmapOpen(true);
+        }}
+      />
+      <FinancialRoadmapPanel
+        open={roadmapOpen}
+        onClose={() => setRoadmapOpen(false)}
+        diagnostics={financialDiagnostics}
+        privacyMode={privacyMode}
+        onOpenPaperTrading={() => {
+          setRoadmapOpen(false);
+          setActiveTab("dashboard");
         }}
       />
       {import.meta.env.DEV && activeTab !== "socrates" ? (
@@ -2310,12 +2353,6 @@ const App: React.FC = () => {
                 </div>
               </div>
             </section>
-
-            <FinancialHealthCard
-              diagnostics={financialDiagnostics}
-              privacyMode={privacyMode}
-              className="mt-3"
-            />
 
             {/* 4. Multi-asset safety net, sized off the real spending total. */}
             <SafetyNetSection

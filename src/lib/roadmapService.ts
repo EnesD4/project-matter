@@ -6,8 +6,16 @@ import { readLocalItem } from "./storage";
 
 export const FINANCIAL_PROFILE_UPDATED_EVENT = "matterpro:financial-profile-updated";
 export const OPEN_FINANCIAL_ONBOARDING_EVENT = "matterpro:open-financial-onboarding";
+export const OPEN_FINANCIAL_ROADMAP_EVENT = "matterpro:open-financial-roadmap";
 export const ROADMAP_TODO_UPDATED_EVENT = "matterpro:roadmap-todo-updated";
 export const ROADMAP_TASK_XP = 20;
+
+/** Stable quest ids for the interactive AI roadmap. */
+export const ROADMAP_QUEST_IDS = {
+  cashFlowDebt: "quest-cashflow-debt",
+  microSavings: "quest-micro-savings",
+  compoundGrowth: "quest-compound-growth",
+} as const;
 
 export type CostOfLiving = "high" | "moderate" | "low";
 export type IncomeRange = "under-3k" | "3k-5k" | "5k-8k" | "8k-plus";
@@ -409,116 +417,36 @@ function task(id: string, title: string, detail: string): RoadmapTask {
   return { id, title, detail, xp: ROADMAP_TASK_XP };
 }
 
-function sharesTheme(a: RoadmapTask, b: RoadmapTask): boolean {
-  const pair = (left: RegExp, right: RegExp) => left.test(a.title) && right.test(b.title);
-  if (pair(/401\(k\)/i, /401\(k\)/i)) return true;
-  if (pair(/HYSA|Emergency Fund/i, /HYSA|Emergency Fund/i)) return true;
-  if (pair(/Roth IRA/i, /Roth IRA/i)) return true;
-  return false;
-}
-
 export function buildRoadmapTodos(
   archetype: FinancialArchetype,
   bottleneck: Bottleneck,
   monthlyMargin: number
 ): RoadmapTask[] {
   const surplus = Math.max(0, Math.round(monthlyMargin));
-  const buffer = Math.max(50, Math.min(1000, surplus || 50));
+  const debtFocus =
+    bottleneck === "high-interest-debt" || archetype === "survival"
+      ? "Point every leftover dollar at the highest APR first (Avalanche)."
+      : surplus > 0
+        ? `You have about ${usd(surplus)}/mo of margin — protect it before lifestyle creep eats it.`
+        : "Stabilize cash flow first so investing has something real to compound.";
 
-  const leadByGoal: Record<Bottleneck, RoadmapTask> = {
-    "high-interest-debt": task(
-      "goal-debt",
-      "Call your highest-APR lender and lock the payoff target",
-      "Confirm the balance, APR, and minimum. Extra dollars go Avalanche — highest rate first."
-    ),
-    "emergency-safety-net": task(
-      "goal-emergency",
-      "Open a HYSA and nickname it Emergency Fund",
-      surplus > 0
-        ? `Automate ${usd(buffer)} from this month's surplus so the buffer builds without willpower.`
-        : "Even $25 a week into a HYSA starts the habit until margin appears."
-    ),
-    "tax-strategy": task(
-      "goal-tax",
-      "Contact HR/Employer to set up 401(k) match",
-      "Ask for the match policy and contribution form. Free money first, then Roth."
-    ),
-    "stock-portfolio": task(
-      "goal-invest",
-      "Open a brokerage (or paper) account and pick one broad index",
-      "S&P 500 exposure first. Automate a small transfer so the habit exists before the ticker hunt."
-    ),
-  };
-
-  const survival: RoadmapTask[] = [
+  return [
     task(
-      "survival-audit",
-      "Audit housing, food, and utilities line by line",
-      "List every essential bill. Cancel unused subscriptions before buying a single share."
+      ROADMAP_QUEST_IDS.cashFlowDebt,
+      "Cash Flow & Debt Optimization",
+      debtFocus
     ),
     task(
-      "survival-minimums",
-      "Pay every minimum, then Avalanche the highest APR",
-      "Defense first. Investing waits until leftover cash is real."
+      ROADMAP_QUEST_IDS.microSavings,
+      "Micro-Savings Target",
+      "Trim a slice of identified non-essential spend and automate the difference."
     ),
     task(
-      "survival-income",
-      "Start one income-boost conversation this week",
-      "Overtime, a raise, or a side skill — thin margin means income is a first-class goal."
+      ROADMAP_QUEST_IDS.compoundGrowth,
+      "Compound Investment Growth Engine",
+      "See a 10-year illustration of investing those savings — then practice with paper trading."
     ),
   ];
-
-  const micro: RoadmapTask[] = [
-    task(
-      "micro-401k",
-      "Contact HR/Employer to set up 401(k) match",
-      "Contribute only up to the company match — the only guaranteed return."
-    ),
-    task(
-      "micro-hysa",
-      surplus >= 1000
-        ? "Automate $1,000 to a HYSA Emergency Fund"
-        : `Automate ${usd(buffer)} to a HYSA Emergency Fund`,
-      "A mini shield so the next surprise does not land on a credit card."
-    ),
-    task(
-      "micro-debt",
-      "Send leftover margin at high-interest debt",
-      surplus > 0
-        ? `After the match and mini buffer, point about ${usd(surplus)}/mo at the highest APR.`
-        : "Any dollar above essentials goes to the highest APR until the match and buffer are done."
-    ),
-  ];
-
-  const wealth: RoadmapTask[] = [
-    task(
-      "wealth-401k",
-      "Contact HR/Employer to max the 401(k) match",
-      "Capture 100% of the company match before any taxable brokerage."
-    ),
-    task(
-      "wealth-roth",
-      "Open a Roth IRA",
-      surplus > 0
-        ? `Automate part of your ${usd(surplus)} surplus into the Roth after the match.`
-        : "Open the account now so contributions can start the month margin lands."
-    ),
-    task(
-      "wealth-hsa",
-      "Use an HSA if you have a high-deductible plan",
-      "Triple tax advantage. Skip this step only if you are not HSA-eligible."
-    ),
-    task(
-      "wealth-index",
-      "Automate leftover margin into a broad S&P 500 fund",
-      "Paper-trade the habit first if you are still learning the assets."
-    ),
-  ];
-
-  const base = archetype === "survival" ? survival : archetype === "micro-match" ? micro : wealth;
-  const lead = leadByGoal[bottleneck];
-  const rest = base.filter((item) => item.id !== lead.id && !sharesTheme(item, lead));
-  return [lead, ...rest];
 }
 
 export function buildFinancialRoadmap(answers: FinancialProfileAnswers, userId?: string): FinancialRoadmap {
@@ -819,6 +747,31 @@ export function requestFinancialOnboarding(cancelable = true) {
   if (typeof window === "undefined") return;
   const detail: OpenOnboardingDetail = { cancelable };
   window.dispatchEvent(new CustomEvent<OpenOnboardingDetail>(OPEN_FINANCIAL_ONBOARDING_EVENT, { detail }));
+}
+
+export function requestFinancialRoadmap() {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent(OPEN_FINANCIAL_ROADMAP_EVENT));
+}
+
+function welcomeSeenKey(userId?: string) {
+  return `sprout_ai_welcome_seen_${userId ?? getStoredUser()?.id ?? "anon"}`;
+}
+
+export function hasSeenSproutWelcome(userId?: string): boolean {
+  try {
+    return localStorage.getItem(welcomeSeenKey(userId)) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function markSproutWelcomeSeen(userId?: string) {
+  try {
+    localStorage.setItem(welcomeSeenKey(userId), "1");
+  } catch {
+    // private mode / quota
+  }
 }
 
 export function subscribeFinancialProfile(listener: () => void): () => void {

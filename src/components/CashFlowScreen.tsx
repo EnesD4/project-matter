@@ -46,9 +46,9 @@ import {
   HYSA_APY,
   hysaAnnualYield,
   requestFinancialOnboarding,
+  requestFinancialRoadmap,
 } from "../lib/roadmapService";
 import type { Holding, StockHolding } from "./InvestmentPortfolioCard";
-import FinancialRoadmapPanel from "./FinancialRoadmapPanel";
 import StockLogo from "./StockLogo";
 
 type CashFlowScreenProps = {
@@ -121,7 +121,6 @@ export default function CashFlowScreen({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [calendarOpen, setCalendarOpen] = useState(false);
-  const [roadmapOpen, setRoadmapOpen] = useState(false);
   const roadmap = useFinancialRoadmap();
   const todoProgress = useRoadmapTodoProgress();
   const roadmapDone = roadmap
@@ -236,14 +235,12 @@ export default function CashFlowScreen({
         type="button"
         onClick={() => {
           if (roadmap) {
-            setRoadmapOpen(true);
+            requestFinancialRoadmap();
             return;
           }
           requestFinancialOnboarding(true);
         }}
         aria-haspopup="dialog"
-        aria-expanded={roadmapOpen}
-        aria-controls="financial-roadmap-panel-title"
         className="group w-full overflow-hidden rounded-2xl border border-emerald-400/40 bg-gradient-to-r from-emerald-500 to-emerald-400 p-4 text-left text-[#042F2E] shadow-[0_10px_28px_rgba(16,185,129,0.18)] transition hover:from-emerald-400 hover:to-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
       >
         <div className="flex items-center justify-between gap-3">
@@ -265,18 +262,16 @@ export default function CashFlowScreen({
                 {roadmap ? (
                   <span className="inline-flex items-center gap-1">
                     <RoadmapGlyph archetype={roadmap.archetype} size={12} />
-                    {roadmap.title} · {roadmapDone}/{roadmapTotal} tasks
+                    {roadmap.title} · {roadmapDone}/{roadmapTotal} quests
                   </span>
                 ) : (
-                  "Build a real-life to-do list from your budget"
+                  "Build an AI quest path from your budget"
                 )}
               </p>
             </div>
           </div>
         </div>
       </button>
-
-      <FinancialRoadmapPanel open={roadmapOpen} onClose={() => setRoadmapOpen(false)} />
 
       <button
         type="button"

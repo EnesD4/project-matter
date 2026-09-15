@@ -154,7 +154,7 @@ export default function OnboardingScreen({
       wantsCapitalGrowth: true,
       wantsFinancialLiteracy: true,
       hasCompletedOnboarding: true,
-      hasCompletedBankSetup: true,
+      hasCompletedBankSetup: false,
       age: nextAge,
       birthDate: birthIso,
       name: nextName,
