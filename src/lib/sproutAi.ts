@@ -99,13 +99,22 @@ export type SproutAiFinancialSnapshot = {
     topSleeves: SproutPortfolioSleeve[];
     summary: string;
   };
+  /** Optional post-bank goal intake for roadmap / milestone tailoring. */
+  goals?: {
+    primaryGoalLabel: string | null;
+    primaryGoalId: string | null;
+    liquidSavings: number | null;
+  };
 };
 
 /** Tailored educational milestones from automated cash, debt, and spending context. */
 export function buildEducationalMilestones(snapshot: SproutAiFinancialSnapshot): string[] {
-  const { cash, debt, spending } = snapshot;
+  const { cash, debt, spending, goals } = snapshot;
   const milestones: string[] = [];
   const months = cash.safetyNetMonths;
+  const reportedLiquid = goals?.liquidSavings;
+  const goalLabel = goals?.primaryGoalLabel;
+  const goalId = goals?.primaryGoalId;
 
   if (spending.monthlyIncome > 0 && !spending.isSurplus) {
     milestones.push(
@@ -113,10 +122,12 @@ export function buildEducationalMilestones(snapshot: SproutAiFinancialSnapshot):
     );
   }
 
-  const spendableCash = cash.liquidCash + cash.hysaCash;
+  const spendableCash = Math.max(cash.liquidCash + cash.hysaCash, reportedLiquid ?? 0);
   if (spendableCash < cash.starterCashGoal) {
     milestones.push(
-      `Build a starter cash cushion toward $${usd(cash.starterCashGoal)} so a small surprise does not become new debt.`
+      `Build a starter cash cushion toward $${usd(cash.starterCashGoal)}${
+        goalLabel ? ` while keeping ${goalLabel} in view` : ""
+      } so a small surprise does not become new debt.`
     );
   }
 
@@ -127,6 +138,24 @@ export function buildEducationalMilestones(snapshot: SproutAiFinancialSnapshot):
   } else if (months < cash.recommendedMonths) {
     milestones.push(
       `Safety net is about ${months.toFixed(1)} months — explain how stretching toward ${cash.recommendedMonths} months adds resilience.`
+    );
+  }
+
+  if (goalId === "home-down-payment") {
+    milestones.push(
+      "Separate a dedicated down-payment HYSA goal from long-term investing education — near-term purchase cash should stay liquid."
+    );
+  } else if (goalId === "buy-a-car") {
+    milestones.push(
+      "Show how saving cash for a car purchase avoids high-APR auto debt — keep that bucket distinct from brokerage lessons."
+    );
+  } else if (goalId === "financial-independence") {
+    milestones.push(
+      "Frame financial independence as tax-advantaged compounding plus expense control — not stock picks."
+    );
+  } else if (goalId === "wealth-growth") {
+    milestones.push(
+      "After the safety net, teach surplus automation and broad-market compounding concepts for long-term wealth growth."
     );
   }
 
@@ -181,7 +210,7 @@ export function firstNameOf(name: string, fallback = "Investor"): string {
 }
 
 export function formatEducationalContext(snapshot: SproutAiFinancialSnapshot): string {
-  const { cash, debt, spending, portfolio } = snapshot;
+  const { cash, debt, spending, portfolio, goals } = snapshot;
   const userName = firstNameOf(snapshot.userName);
   const monthsLabel =
     cash.safetyNetMonths == null ? "spending not tracked yet" : `${cash.safetyNetMonths.toFixed(1)} months of spending`;
@@ -195,10 +224,16 @@ export function formatEducationalContext(snapshot: SproutAiFinancialSnapshot): s
   const portfolioLine = portfolio?.summary
     ? `- Portfolio diversification (facts only): ${portfolio.summary}`
     : "- Portfolio diversification: no linked brokerage holdings yet.";
+  const goalsLine = goals
+    ? `- Primary goal intake: ${goals.primaryGoalLabel ?? "not set"}; reported liquid savings $${
+        goals.liquidSavings == null ? "n/a" : usd(goals.liquidSavings)
+      }.`
+    : "- Primary goal intake: not set yet.";
 
   return [
     `${userName}'s automated financial context (use these numbers; do not invent others):`,
     `- Cash: liquid $${usd(cash.liquidCash)}, HYSA $${usd(cash.hysaCash)}, safety net $${usd(cash.safetyNetTotal)} (${monthsLabel}). Starter cash goal $${usd(cash.starterCashGoal)}; ${cash.starterMonths}-month reserve target $${usd(spending.monthlyExpenses * cash.starterMonths)}; ${cash.recommendedMonths}-month target $${usd(cash.recommendedGoal)}.`,
+    goalsLine,
     `- Debt: ${debt.summary}`,
     `- Spending patterns: ${spending.summary}${topSpend ? ` Largest categories: ${topSpend}.` : ""}`,
     portfolioLine,

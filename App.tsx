@@ -100,6 +100,7 @@ import {
   hasSeenSproutWelcome,
   loadFinancialProfile,
   markSproutWelcomeSeen,
+  primaryGoalLabel,
   saveFinancialProfile,
   type FinancialProfile,
 } from "./src/lib/roadmapService";
@@ -1248,6 +1249,7 @@ const App: React.FC = () => {
     const highestApr =
       safeDebts.length === 0 ? null : Math.max(...safeDebts.map((d) => toFiniteNumber(d?.apr, 0)));
     const health = analyzePortfolioHealth(safeHoldings, 0);
+    const profile = authUser?.id ? loadFinancialProfile(authUser.id) : loadFinancialProfile();
     const topSleeves = health.empty
       ? []
       : (() => {
@@ -1314,9 +1316,15 @@ const App: React.FC = () => {
               topSleeves.map((s) => `${s.label} ${s.weightPct.toFixed(0)}%`).join(", ") || "n/a"
             }. Teach tech-heavy vs broad-market index exposure without recommending trades.`,
       },
+      goals: {
+        primaryGoalLabel: primaryGoalLabel(profile?.primaryGoal),
+        primaryGoalId: profile?.primaryGoal ?? null,
+        liquidSavings: profile?.liquidSavings ?? null,
+      },
     };
   }, [
     firstName,
+    authUser?.id,
     safetyTotals.liquidCash,
     safetyTotals.hysaCash,
     safetyTotals.total,

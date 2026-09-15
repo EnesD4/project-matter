@@ -26,6 +26,12 @@ export type Bottleneck =
   | "tax-strategy"
   | "stock-portfolio";
 export type FinancialGoal = Bottleneck;
+/** User-facing primary goal collected during post-bank onboarding intake. */
+export type PrimaryFinancialGoal =
+  | "home-down-payment"
+  | "buy-a-car"
+  | "financial-independence"
+  | "wealth-growth";
 export type FinancialArchetype = "survival" | "micro-match" | "wealth";
 export type ExpenseLoad = "tight" | "balanced" | "comfortable";
 export type KnowledgeLevel = "beginner" | "intermediate" | "advanced";
@@ -209,6 +215,35 @@ export const GOAL_OPTIONS: Array<{
 
 export const BOTTLENECK_OPTIONS = GOAL_OPTIONS;
 
+export const PRIMARY_GOAL_OPTIONS: Array<{
+  id: PrimaryFinancialGoal;
+  label: string;
+  hint: string;
+}> = [
+  { id: "home-down-payment", label: "Home Down Payment", hint: "Save toward a house deposit" },
+  { id: "buy-a-car", label: "Buy a Car", hint: "Fund a vehicle without high-interest debt" },
+  { id: "financial-independence", label: "Financial Independence", hint: "Build freedom from a paycheck" },
+  { id: "wealth-growth", label: "Wealth Growth", hint: "Grow long-term invested capital" },
+];
+
+export function primaryGoalLabel(goal: PrimaryFinancialGoal | null | undefined): string | null {
+  if (!goal) return null;
+  return PRIMARY_GOAL_OPTIONS.find((option) => option.id === goal)?.label ?? null;
+}
+
+/** Map intake goals onto the existing bottleneck curriculum pins. */
+export function bottleneckFromPrimaryGoal(
+  goal: PrimaryFinancialGoal | null | undefined,
+  liquidSavings: number | null | undefined
+): Bottleneck {
+  const savings = liquidSavings == null ? null : Math.max(0, liquidSavings);
+  if (savings != null && savings < 1000) return "emergency-safety-net";
+  if (goal === "home-down-payment" || goal === "buy-a-car") return "emergency-safety-net";
+  if (goal === "financial-independence") return "tax-strategy";
+  if (goal === "wealth-growth") return "stock-portfolio";
+  return "emergency-safety-net";
+}
+
 export type RoadmapTask = {
   id: string;
   title: string;
@@ -222,6 +257,10 @@ export type FinancialProfileAnswers = {
   monthlyEssentialExpenses: number;
   bottleneck: Bottleneck;
   knowledgeLevel: KnowledgeLevel;
+  /** Optional liquid / emergency-fund balance from post-bank goal intake. */
+  liquidSavings?: number | null;
+  /** Optional primary life goal from post-bank goal intake. */
+  primaryGoal?: PrimaryFinancialGoal | null;
 };
 
 export type FinancialProfile = FinancialProfileAnswers & {
@@ -233,6 +272,8 @@ export type FinancialProfile = FinancialProfileAnswers & {
   costOfLiving: CostOfLiving | null;
   archetype: FinancialArchetype;
   expenseLoad: ExpenseLoad;
+  liquidSavings: number | null;
+  primaryGoal: PrimaryFinancialGoal | null;
   completedAt: string;
   updatedAt: string;
 };
@@ -400,6 +441,25 @@ function bottleneckNote(bottleneck: Bottleneck): string {
   return " Your current focus is investing — learn the assets, then paper-trade the habit.";
 }
 
+function primaryGoalNote(
+  primaryGoal: PrimaryFinancialGoal | null | undefined,
+  liquidSavings: number | null | undefined
+): string {
+  const label = primaryGoalLabel(primaryGoal);
+  const savings =
+    liquidSavings == null || !Number.isFinite(liquidSavings)
+      ? null
+      : Math.max(0, Math.round(liquidSavings));
+  const savingsBit =
+    savings == null
+      ? ""
+      : savings <= 0
+        ? " Liquid savings were marked as $0 — treat cash runway as step one."
+        : ` You reported about ${usd(savings)} in liquid / emergency savings.`;
+  if (!label) return savingsBit;
+  return ` Primary goal: ${label}.${savingsBit}`;
+}
+
 function applyBottleneck(order: PhaseId[], bottleneck: Bottleneck, archetype: FinancialArchetype): PhaseId[] {
   if (bottleneck === "high-interest-debt" || bottleneck === "emergency-safety-net") {
     return pinPhase(order, "phase-1");
@@ -420,9 +480,20 @@ function task(id: string, title: string, detail: string): RoadmapTask {
 export function buildRoadmapTodos(
   archetype: FinancialArchetype,
   bottleneck: Bottleneck,
-  monthlyMargin: number
+  monthlyMargin: number,
+  options?: {
+    primaryGoal?: PrimaryFinancialGoal | null;
+    liquidSavings?: number | null;
+  }
 ): RoadmapTask[] {
   const surplus = Math.max(0, Math.round(monthlyMargin));
+  const primaryGoal = options?.primaryGoal ?? null;
+  const liquidSavings =
+    options?.liquidSavings == null || !Number.isFinite(options.liquidSavings)
+      ? null
+      : Math.max(0, Math.round(options.liquidSavings));
+  const goalLabel = primaryGoalLabel(primaryGoal);
+
   const debtFocus =
     bottleneck === "high-interest-debt" || archetype === "survival"
       ? "Point every leftover dollar at the highest APR first (Avalanche)."
@@ -430,22 +501,39 @@ export function buildRoadmapTodos(
         ? `You have about ${usd(surplus)}/mo of margin — protect it before lifestyle creep eats it.`
         : "Stabilize cash flow first so investing has something real to compound.";
 
+  let savingsDetail =
+    "Trim a slice of identified non-essential spend and automate the difference.";
+  if (liquidSavings != null && liquidSavings < 1000) {
+    savingsDetail = `Grow liquid savings past a $${usd(1000)} starter buffer${
+      goalLabel ? ` on the path to ${goalLabel}` : ""
+    }, then automate a monthly transfer.`;
+  } else if (primaryGoal === "home-down-payment") {
+    savingsDetail =
+      "Automate a dedicated down-payment bucket (HYSA) before aggressive brokerage growth.";
+  } else if (primaryGoal === "buy-a-car") {
+    savingsDetail =
+      "Automate a car-purchase cash target so you avoid financing at punitive rates.";
+  } else if (liquidSavings != null && liquidSavings >= 1000) {
+    savingsDetail = `You already reported ~${usd(liquidSavings)} liquid — protect that cushion and automate surplus above it.`;
+  }
+
+  let growthDetail =
+    "See a 10-year illustration of investing those savings — then practice with paper trading.";
+  if (primaryGoal === "financial-independence") {
+    growthDetail =
+      "Model FI runway with tax-advantaged accounts first, then practice the habit in paper trading.";
+  } else if (primaryGoal === "wealth-growth") {
+    growthDetail =
+      "Illustrate 10-year compounding of surplus, then rehearse order entry in the Simulation Lab.";
+  } else if (primaryGoal === "home-down-payment" || primaryGoal === "buy-a-car") {
+    growthDetail =
+      "Keep the near-term purchase funded in cash; use paper trading only to learn — not to raid the goal pot.";
+  }
+
   return [
-    task(
-      ROADMAP_QUEST_IDS.cashFlowDebt,
-      "Cash Flow & Debt Optimization",
-      debtFocus
-    ),
-    task(
-      ROADMAP_QUEST_IDS.microSavings,
-      "Micro-Savings Target",
-      "Trim a slice of identified non-essential spend and automate the difference."
-    ),
-    task(
-      ROADMAP_QUEST_IDS.compoundGrowth,
-      "Compound Investment Growth Engine",
-      "See a 10-year illustration of investing those savings — then practice with paper trading."
-    ),
+    task(ROADMAP_QUEST_IDS.cashFlowDebt, "Cash Flow & Debt Optimization", debtFocus),
+    task(ROADMAP_QUEST_IDS.microSavings, "Micro-Savings Target", savingsDetail),
+    task(ROADMAP_QUEST_IDS.compoundGrowth, "Compound Investment Growth Engine", growthDetail),
   ];
 }
 
@@ -462,8 +550,16 @@ export function buildFinancialRoadmap(answers: FinancialProfileAnswers, userId?:
   const costOfLiving = costOfLivingForState(answers.stateCode);
   const state = stateByCode(answers.stateCode);
   const expenseLoad = expenseLoadFromNumbers(monthlyIncome, monthlyEssentialExpenses);
+  const liquidSavings =
+    answers.liquidSavings == null || !Number.isFinite(answers.liquidSavings)
+      ? null
+      : Math.max(0, Math.round(answers.liquidSavings));
+  const primaryGoal = isPrimaryGoal(answers.primaryGoal) ? answers.primaryGoal : null;
   const now = new Date().toISOString();
-  const todos = buildRoadmapTodos(archetype, answers.bottleneck, monthlyMargin);
+  const todos = buildRoadmapTodos(archetype, answers.bottleneck, monthlyMargin, {
+    primaryGoal,
+    liquidSavings,
+  });
   const knowledgeLevel = normalizeKnowledgeLevel(answers.knowledgeLevel);
   const unlockAllPhases = unlocksAllCurriculum(knowledgeLevel);
 
@@ -481,11 +577,15 @@ export function buildFinancialRoadmap(answers: FinancialProfileAnswers, userId?:
     costOfLiving,
     archetype,
     expenseLoad,
+    liquidSavings,
+    primaryGoal,
     completedAt: now,
     updatedAt: now,
   };
 
-  const flavor = `${locationNote(state)}${incomeNote(monthlyIncome, monthlyMargin)}${bottleneckNote(answers.bottleneck)}`;
+  const flavor = `${locationNote(state)}${incomeNote(monthlyIncome, monthlyMargin)}${bottleneckNote(
+    answers.bottleneck
+  )}${primaryGoalNote(primaryGoal, liquidSavings)}`;
 
   if (archetype === "survival") {
     const phaseOrder = uniquePhases(applyBottleneck([...PHASE_ORDER], answers.bottleneck, archetype));
@@ -582,6 +682,15 @@ function isBottleneck(value: unknown): value is Bottleneck {
   );
 }
 
+function isPrimaryGoal(value: unknown): value is PrimaryFinancialGoal {
+  return (
+    value === "home-down-payment" ||
+    value === "buy-a-car" ||
+    value === "financial-independence" ||
+    value === "wealth-growth"
+  );
+}
+
 function normalizeKnowledgeLevel(value: unknown): KnowledgeLevel {
   if (value === "intermediate") return "intermediate";
   if (value === "advanced" || value === "experienced" || value === "confident") return "advanced";
@@ -619,6 +728,11 @@ function parseProfile(raw: string): FinancialProfile | null {
 
   const monthlyMargin = discretionaryMargin(monthlyIncome, monthlyEssentialExpenses);
   const stateCode = typeof parsed.stateCode === "string" && parsed.stateCode ? parsed.stateCode : null;
+  const liquidSavings =
+    typeof parsed.liquidSavings === "number" && Number.isFinite(parsed.liquidSavings)
+      ? Math.max(0, Math.round(parsed.liquidSavings))
+      : null;
+  const primaryGoal = isPrimaryGoal(parsed.primaryGoal) ? parsed.primaryGoal : null;
   return {
     version: 2,
     userId: typeof parsed.userId === "string" ? parsed.userId : "anon",
@@ -633,6 +747,8 @@ function parseProfile(raw: string): FinancialProfile | null {
     costOfLiving: costOfLivingForState(stateCode),
     archetype: archetypeFromMargin(marginRange),
     expenseLoad: expenseLoadFromNumbers(monthlyIncome, monthlyEssentialExpenses),
+    liquidSavings,
+    primaryGoal,
     completedAt: typeof parsed.completedAt === "string" ? parsed.completedAt : new Date().toISOString(),
     updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date().toISOString(),
   };
@@ -664,7 +780,13 @@ export function loadFinancialRoadmap(userId?: string): FinancialRoadmap | null {
 
 export function saveFinancialProfile(answers: FinancialProfileAnswers, userId?: string): FinancialRoadmap {
   const existing = loadFinancialProfile(userId);
-  const roadmap = buildFinancialRoadmap(answers, userId);
+  const merged: FinancialProfileAnswers = {
+    ...answers,
+    liquidSavings:
+      answers.liquidSavings !== undefined ? answers.liquidSavings : existing?.liquidSavings ?? null,
+    primaryGoal: answers.primaryGoal !== undefined ? answers.primaryGoal : existing?.primaryGoal ?? null,
+  };
+  const roadmap = buildFinancialRoadmap(merged, userId);
   const persist: FinancialProfile = {
     ...roadmap.profile,
     completedAt: existing?.completedAt ?? roadmap.profile.completedAt,

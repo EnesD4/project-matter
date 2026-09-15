@@ -1,4 +1,4 @@
-import { ArrowRight, PieChart, Sparkles, TrendingUp, Wallet, X } from "lucide-react";
+import { ArrowRight, PieChart, Sparkles, Target, TrendingUp, Wallet, X } from "lucide-react";
 import React, { useEffect, useMemo } from "react";
 import {
   buildFinancialDiagnostics,
@@ -7,7 +7,7 @@ import {
 } from "../lib/financialDiagnostics";
 import { formatCurrency } from "../lib/money";
 import { firstNameOf } from "../lib/sproutAi";
-import { loadFinancialProfile } from "../lib/roadmapService";
+import { loadFinancialProfile, primaryGoalLabel } from "../lib/roadmapService";
 
 export type OnboardingModalProps = {
   open: boolean;
@@ -33,9 +33,9 @@ export default function OnboardingModal({
   onClose,
   onExploreRoadmap,
 }: OnboardingModalProps) {
+  const profile = useMemo(() => loadFinancialProfile(), []);
   const diagnostics = useMemo(() => {
     if (diagnosticsProp) return diagnosticsProp;
-    const profile = loadFinancialProfile();
     return buildFinancialDiagnostics({
       income: profile?.monthlyIncome,
       creditDebt: 0,
@@ -46,9 +46,11 @@ export default function OnboardingModal({
           }
         : null,
     });
-  }, [diagnosticsProp]);
+  }, [diagnosticsProp, profile]);
 
   const firstName = firstNameOf(userName);
+  const goalLabel = primaryGoalLabel(profile?.primaryGoal);
+  const liquidSavings = profile?.liquidSavings;
   const target = diagnostics.recommendationTarget || diagnostics.topDiscretionary[0] || null;
   const suggestedCut = target ? Math.round(target.amount * 0.25) : Math.round(diagnostics.flexibleSpend * 0.2);
   const projection = useMemo(() => tenYearWealthProjection(Math.max(0, suggestedCut)), [suggestedCut]);
@@ -117,6 +119,30 @@ export default function OnboardingModal({
             Here&apos;s a quick read on where you stand — educational only, not advice.
           </p>
 
+          {(goalLabel || liquidSavings != null) && (
+            <div className="rounded-2xl border border-[#1F1F1F] bg-black/40 px-4 py-3">
+              <div className="flex items-center gap-2 text-[11px] font-extrabold uppercase tracking-wide text-slate-500">
+                <Target size={13} className="text-amber-300" aria-hidden />
+                Your goal intake
+              </div>
+              <p className="mt-2 mb-0 text-[14px] font-semibold leading-snug text-white">
+                {goalLabel ? (
+                  <>
+                    Primary goal: <span className="text-amber-200">{goalLabel}</span>
+                    {liquidSavings != null ? (
+                      <> · liquid savings reported at {money(liquidSavings)}.</>
+                    ) : (
+                      "."
+                    )}
+                  </>
+                ) : (
+                  <>Liquid savings reported at {money(liquidSavings ?? 0)}.</>
+                )}{" "}
+                I&apos;ll tailor your 10-year roadmap milestones around that.
+              </p>
+            </div>
+          )}
+
           <div className="rounded-2xl border border-[#1F1F1F] bg-black/40 px-4 py-3">
             <div className="flex items-center gap-2 text-[11px] font-extrabold uppercase tracking-wide text-slate-500">
               <Wallet size={13} className="text-emerald-400" aria-hidden />
@@ -174,8 +200,9 @@ export default function OnboardingModal({
             <p className="mt-2 mb-0 text-[14px] font-semibold leading-snug text-emerald-50">
               {suggestedCut > 0 ? (
                 <>
-                  If that {money(suggestedCut)}/mo were invested instead, a ~8–10% educational illustration grows to
-                  roughly {money(projection.at8)}–{money(projection.at10)} over 10 years (
+                  If that {money(suggestedCut)}/mo were invested instead
+                  {goalLabel ? ` toward ${goalLabel}` : ""}, a ~8–10% educational illustration grows to roughly{" "}
+                  {money(projection.at8)}–{money(projection.at10)} over 10 years (
                   {money(projection.totalContributed)} contributed).
                 </>
               ) : (

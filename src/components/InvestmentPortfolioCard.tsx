@@ -5,6 +5,7 @@ import {
   ChevronDown,
   ChevronRight,
   ChevronUp,
+  ExternalLink,
   Eye,
   EyeOff,
   GripVertical,
@@ -89,6 +90,15 @@ import {
   type PaperTickerIntent,
 } from "../lib/lessonProgress";
 import { markQuestComplete } from "../lib/userProgress";
+import {
+  adjustPaperCash,
+  hasPaperAccount,
+  loadPaperCash,
+  markPaperAccountCreated,
+  PAPER_ACCOUNT_CREATED_EVENT,
+  PAPER_STARTING_CASH,
+  savePaperCash,
+} from "../lib/paperTrading";
 import { readLocalItem } from "../lib/storage";
 import { isoToUsDate, maskUsDateInput, parseToIsoDate } from "../lib/usDate";
 import { useMarketPolling } from "../hooks/useMarketPolling";
@@ -114,6 +124,13 @@ import SocratesPortfolioReport, { type DailyReportMode } from "./SocratesPortfol
 import Sparkline from "./Sparkline";
 import StockDetailPage from "./StockDetailPage";
 import StockLogo from "./StockLogo";
+
+export type PortfolioWorkspace = "verified" | "paper";
+
+function externalBrokerTradeUrl(symbol: string): string {
+  const ticker = encodeURIComponent(String(symbol || "").toUpperCase());
+  return `https://robinhood.com/stocks/${ticker}`;
+}
 
 export type StockHolding = {
   id: string;
@@ -399,12 +416,41 @@ type InvestmentPortfolioCardProps = {
 };
 
 function PortfolioActionButtons({
+  workspace,
+  paperReady,
   onAddStock,
   onConnectBroker,
+  onOpenPaperLab,
 }: {
+  workspace: PortfolioWorkspace;
+  paperReady: boolean;
   onAddStock: () => void;
   onConnectBroker: () => void;
+  onOpenPaperLab: () => void;
 }) {
+  if (workspace === "verified") {
+    return (
+      <div className="mt-4 flex flex-col gap-2">
+        <button
+          type="button"
+          onClick={onOpenPaperLab}
+          className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-[#10B981] px-4 py-3 text-sm font-bold text-[#042F2E] transition hover:bg-emerald-400 active:scale-[0.99]"
+        >
+          <Plus size={16} />
+          {paperReady ? "Open Simulation Lab" : "Create Paper Account"}
+        </button>
+        <button
+          type="button"
+          onClick={onConnectBroker}
+          className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-[#2A2A2A] bg-[#0A0A0A] px-4 py-3 text-sm font-bold text-white transition hover:border-[#3F3F3F] hover:bg-[#111111] active:scale-[0.99]"
+        >
+          <Wallet size={16} />
+          Connect Brokerage
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="mt-4 flex flex-col gap-2">
       <button
@@ -417,11 +463,10 @@ function PortfolioActionButtons({
       </button>
       <button
         type="button"
-        onClick={onConnectBroker}
+        onClick={onAddStock}
         className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-[#2A2A2A] bg-[#0A0A0A] px-4 py-3 text-sm font-bold text-white transition hover:border-[#3F3F3F] hover:bg-[#111111] active:scale-[0.99]"
       >
-        <Wallet size={16} />
-        Connect Brokerage
+        Place Order
       </button>
     </div>
   );
@@ -674,6 +719,9 @@ export default function InvestmentPortfolioCard({
   belowHoldings,
   belowAllocation,
 }: InvestmentPortfolioCardProps) {
+  const [workspace, setWorkspace] = useState<PortfolioWorkspace>("verified");
+  const [paperReady, setPaperReady] = useState(() => hasPaperAccount());
+  const [paperCash, setPaperCash] = useState(() => loadPaperCash());
   const [range, setRange] = useState<RangeOption>("1D");
   const [benchmarkOn, setBenchmarkOn] = useState(false);
   const [benchmarkLoading, setBenchmarkLoading] = useState(false);
@@ -794,9 +842,18 @@ export default function InvestmentPortfolioCard({
 
   // Guard mapped portfolio arrays so undefined never reaches charts/tables.
   const safeHoldings = useMemo(() => guardHoldings(holdings), [holdings]);
-  const stocks = safeHoldings.filter((h): h is StockHolding => h?.kind === "stock");
+  const viewHoldings = useMemo(
+    () =>
+      (safeHoldings ?? []).filter((h) => {
+        if (!h) return false;
+        if (workspace === "verified") return h.account === "verified";
+        return h.account === "paper";
+      }),
+    [safeHoldings, workspace]
+  );
+  const stocks = viewHoldings.filter((h): h is StockHolding => h?.kind === "stock");
   const hasStockHoldings = stocks.length > 0;
-  const canReorderHoldings = safeHoldings.length > 1;
+  const canReorderHoldings = viewHoldings.length > 1;
   const dailyReportHoldings = useMemo(
     () =>
       stocks.map((h) => ({
@@ -1138,21 +1195,25 @@ export default function InvestmentPortfolioCard({
 
   const allocationExtra =
     typeof belowAllocation === "function"
-      ? belowAllocation({ holdings: safeHoldings, cashBalance })
+      ? belowAllocation({
+          holdings: viewHoldings,
+          cashBalance: workspace === "paper" ? paperCash : cashBalance,
+        })
       : belowAllocation;
-  const hasHoldings = safeHoldings.length > 0;
+  const hasHoldings = viewHoldings.length > 0;
   const investmentValue = useMemo(
     () => (stocks ?? []).reduce((sum, h) => sum + (Number(holdingValue(h)) || 0), 0),
     [stocks]
   );
   const brokerCash = useMemo(
     () =>
-      (safeHoldings ?? [])
+      (viewHoldings ?? [])
         .filter((h) => h?.kind === "broker")
         .reduce((sum, h) => sum + (Number(holdingValue(h)) || 0), 0),
-    [safeHoldings]
+    [viewHoldings]
   );
-  const cashValue = brokerCash + Math.max(0, cashBalance);
+  const cashValue =
+    workspace === "paper" ? Math.max(0, paperCash) : brokerCash + Math.max(0, cashBalance);
   const totalValue = investmentValue + cashValue;
 
   const allocationSlices = useMemo(() => {
@@ -1175,11 +1236,20 @@ export default function InvestmentPortfolioCard({
     return buildAllocationSlices(items);
   }, [stocks]);
 
-  const holdingOrderKey = (safeHoldings ?? []).map((h) => h?.id).filter(Boolean).join("\0");
+  const holdingOrderKey = (viewHoldings ?? []).map((h) => h?.id).filter(Boolean).join("\0");
   useEffect(() => {
     if (portfolioLoading || !holdingOrderKey) return;
     writeHoldingOrder(holdingOrderKey.split("\0"));
   }, [holdingOrderKey, portfolioLoading]);
+
+  useEffect(() => {
+    const syncPaper = () => {
+      setPaperReady(hasPaperAccount());
+      setPaperCash(loadPaperCash());
+    };
+    window.addEventListener(PAPER_ACCOUNT_CREATED_EVENT, syncPaper);
+    return () => window.removeEventListener(PAPER_ACCOUNT_CREATED_EVENT, syncPaper);
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -1193,12 +1263,12 @@ export default function InvestmentPortfolioCard({
   // total portfolio value (broker/cash-style holdings contribute 0% change and dilute it).
   const portfolioDayChangePct = useMemo(() => {
     if (totalValue <= 0) return 0;
-    const weightedSum = safeHoldings.reduce((sum, h) => {
+    const weightedSum = viewHoldings.reduce((sum, h) => {
       const dp = h?.kind === "stock" ? toFiniteNumber(h?.dayChangePct, 0) : 0;
       return sum + holdingValue(h) * dp;
     }, 0);
     return weightedSum / totalValue;
-  }, [safeHoldings, totalValue]);
+  }, [viewHoldings, totalValue]);
 
   const stockSymbolsKey = useMemo(
     () =>
@@ -1411,6 +1481,16 @@ export default function InvestmentPortfolioCard({
   };
 
   const openManualModal = () => {
+    if (workspace !== "paper") {
+      openPaperLab();
+      return;
+    }
+    if (!paperReady) {
+      markPaperAccountCreated();
+      setPaperReady(true);
+      setPaperCash(loadPaperCash() || PAPER_STARTING_CASH);
+      savePaperCash(loadPaperCash() || PAPER_STARTING_CASH);
+    }
     resetManualForm();
     setConnectBrokerOpen(false);
     setModalOpen(true);
@@ -1420,6 +1500,20 @@ export default function InvestmentPortfolioCard({
     setPaperQuestIntent(null);
     setModalOpen(false);
     setConnectBrokerOpen(true);
+  };
+
+  const openPaperLab = () => {
+    if (!hasPaperAccount()) {
+      markPaperAccountCreated();
+      const starting = PAPER_STARTING_CASH;
+      savePaperCash(starting);
+      setPaperCash(starting);
+      setPaperReady(true);
+    } else {
+      setPaperReady(true);
+      setPaperCash(loadPaperCash());
+    }
+    setWorkspace("paper");
   };
 
   const closeModal = () => {
@@ -1596,6 +1690,11 @@ export default function InvestmentPortfolioCard({
   };
 
   const openAddForHolding = (holding: StockHolding) => {
+    if (holding.account === "verified") {
+      openPaperLab();
+    } else if (workspace !== "paper") {
+      setWorkspace("paper");
+    }
     resetManualForm();
     setConnectBrokerOpen(false);
     setModalOpen(true);
@@ -1613,6 +1712,13 @@ export default function InvestmentPortfolioCard({
   useEffect(() => {
     const intent = peekPaperTickerIntent();
     if (!intent) return;
+    if (!hasPaperAccount()) {
+      markPaperAccountCreated();
+      savePaperCash(PAPER_STARTING_CASH);
+      setPaperCash(PAPER_STARTING_CASH);
+      setPaperReady(true);
+    }
+    setWorkspace("paper");
     setPaperQuestIntent(intent);
     resetManualForm();
     setConnectBrokerOpen(false);
@@ -1679,6 +1785,15 @@ export default function InvestmentPortfolioCard({
     const price = parseFloat(purchasePrice) || 0;
     if (shares <= 0 || price <= 0) {
       setQuoteError("Enter a valid share quantity and price greater than zero.");
+      return;
+    }
+
+    const orderCost = shares * price;
+    const availableCash = loadPaperCash();
+    if (availableCash < orderCost) {
+      setQuoteError(
+        `Insufficient paper cash. Available ${formatMoney(availableCash)} — need ${formatMoney(orderCost)}.`
+      );
       return;
     }
 
@@ -1801,17 +1916,25 @@ export default function InvestmentPortfolioCard({
 
       // Upsert keeps one paper row per ticker; still guard empty/undefined prev.
       const nextHoldings = upsertPaperHolding([...(holdings || [])], holding);
+      const orderNotional = safeShares * safeBuyPrice;
+      if (!paperReady) {
+        markPaperAccountCreated();
+        setPaperReady(true);
+      }
+      const nextPaperCash = adjustPaperCash(-orderNotional);
+      setPaperCash(nextPaperCash);
       setHoldings(nextHoldings);
       pushExecutionLog(
         {
           side: "buy",
           symbol: holding.symbol,
-          shares: holding.quantity,
+          shares: safeShares,
           price: holding.avgCost,
-          notional: holding.quantity * holding.avgCost,
+          notional: orderNotional,
           portfolioValue:
-            nextHoldings.reduce((sum, h) => sum + (Number(holdingValue(h)) || 0), 0) +
-            Math.max(0, cashBalance),
+            nextHoldings
+              .filter((h) => h?.account === "paper")
+              .reduce((sum, h) => sum + (Number(holdingValue(h)) || 0), 0) + nextPaperCash,
         },
         nextHoldings
       );
@@ -1989,8 +2112,13 @@ export default function InvestmentPortfolioCard({
     shares: number,
     sellPrice: number
   ): Promise<{ remainingShares: number }> => {
+    if (holding.account === "verified") {
+      throw new Error("Verified brokerage lots are read-only. Trade externally or use the Simulation Lab.");
+    }
     const result = await sellPortfolioItem(holding.id, { shares, sellPrice });
     const notional = shares * sellPrice;
+    const nextPaperCash = adjustPaperCash(notional);
+    setPaperCash(nextPaperCash);
     if (result.deleted) {
       const next = (holdings || []).filter((h) => h?.id !== holding.id);
       setHoldings(next);
@@ -2002,7 +2130,9 @@ export default function InvestmentPortfolioCard({
           price: sellPrice,
           notional,
           portfolioValue:
-            next.reduce((sum, h) => sum + (Number(holdingValue(h)) || 0), 0) + Math.max(0, cashBalance),
+            next
+              .filter((h) => h?.account === "paper")
+              .reduce((sum, h) => sum + (Number(holdingValue(h)) || 0), 0) + nextPaperCash,
         },
         next
       );
@@ -2024,7 +2154,9 @@ export default function InvestmentPortfolioCard({
         price: sellPrice,
         notional,
         portfolioValue:
-          next.reduce((sum, h) => sum + (Number(holdingValue(h)) || 0), 0) + Math.max(0, cashBalance),
+          next
+            .filter((h) => h?.account === "paper")
+            .reduce((sum, h) => sum + (Number(holdingValue(h)) || 0), 0) + nextPaperCash,
       },
       next
     );
@@ -2057,9 +2189,38 @@ export default function InvestmentPortfolioCard({
       )}
       {/* Portfolio hero */}
       <div>
+        <div className="mb-3 flex gap-1 rounded-xl border border-[#1F2937] bg-[#0A0A0A] p-1">
+          <button
+            type="button"
+            aria-pressed={workspace === "verified"}
+            onClick={() => setWorkspace("verified")}
+            className={`flex-1 rounded-lg px-3 py-2 text-[11px] font-extrabold uppercase tracking-wide transition ${
+              workspace === "verified"
+                ? "bg-sky-500/20 text-sky-200"
+                : "text-[#9CA3AF] hover:text-white"
+            }`}
+          >
+            Verified Brokerage
+          </button>
+          <button
+            type="button"
+            aria-pressed={workspace === "paper"}
+            onClick={() => {
+              if (paperReady) setWorkspace("paper");
+              else openPaperLab();
+            }}
+            className={`flex-1 rounded-lg px-3 py-2 text-[11px] font-extrabold uppercase tracking-wide transition ${
+              workspace === "paper"
+                ? "bg-emerald-500/20 text-emerald-200"
+                : "text-[#9CA3AF] hover:text-white"
+            }`}
+          >
+            Paper Trading
+          </button>
+        </div>
         <div className="flex flex-wrap items-center gap-2">
           <p className="text-[11px] font-semibold uppercase tracking-wider text-[#9CA3AF]">
-            Portfolio Value
+            {workspace === "paper" ? "Simulation Lab Value" : "Verified Portfolio Value"}
           </p>
           {onTogglePrivacy && (
             <button
@@ -2084,6 +2245,13 @@ export default function InvestmentPortfolioCard({
         <p className="mt-1 text-3xl font-extrabold tracking-tight text-white tabular-nums">
           {privacyMoney(privacyMode, displayValue)}
         </p>
+        {workspace === "verified" ? (
+          <p className="mt-1 text-[11px] font-semibold text-sky-300/90">Read-only linked holdings</p>
+        ) : paperReady ? (
+          <p className="mt-1 text-[11px] font-semibold text-emerald-300/90">
+            Paper cash {privacyMoney(privacyMode, paperCash)} · starting {privacyMoney(privacyMode, PAPER_STARTING_CASH)}
+          </p>
+        ) : null}
         {hasHoldings && benchmarkReady && (
           <div className="mt-1.5 space-y-0.5">
             <p className="text-sm font-bold tabular-nums" style={{ color: displayGainColor }}>
@@ -2138,16 +2306,22 @@ export default function InvestmentPortfolioCard({
         />
       </div>
 
-      {!hasHoldings ? (
+      {!hasHoldings && !(workspace === "paper" && paperReady) ? (
         <>
           <div className="mt-4 flex flex-col items-center gap-3 rounded-2xl border border-dashed border-[#1F2937] bg-black/10 px-4 py-10 text-center">
             <div className="grid h-12 w-12 place-items-center rounded-full bg-emerald-500/10 text-emerald-400">
               <Layers size={22} />
             </div>
             <div>
-              <p className="text-sm font-bold text-white">You didn&apos;t add any stock yet.</p>
+              <p className="text-sm font-bold text-white">
+                {workspace === "verified"
+                  ? "No verified brokerage holdings yet."
+                  : "You didn't open a paper account yet."}
+              </p>
               <p className="mt-1 text-[11px] leading-relaxed text-[#9CA3AF]">
-                Connect a broker or add your first investment to start tracking your portfolio.
+                {workspace === "verified"
+                  ? "Connect a broker to sync live or demo holdings. Trading stays outside Sprout — use the Simulation Lab to practice."
+                  : "Create a paper account to practice with a $100,000 virtual balance."}
               </p>
             </div>
           </div>
@@ -2337,9 +2511,25 @@ export default function InvestmentPortfolioCard({
 
           {/* Asset list — Midas style */}
           <div className="mt-5">
+            {workspace === "paper" && paperReady ? (
+              <div className="mb-3 grid grid-cols-2 gap-2">
+                <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/10 px-3 py-2.5">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-emerald-300/80">Paper cash</p>
+                  <p className="mt-1 text-sm font-extrabold tabular-nums text-white">
+                    {privacyMoney(privacyMode, paperCash)}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-[#1F2937] bg-[#0A0A0A] px-3 py-2.5">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-[#9CA3AF]">Invested</p>
+                  <p className="mt-1 text-sm font-extrabold tabular-nums text-white">
+                    {privacyMoney(privacyMode, investmentValue)}
+                  </p>
+                </div>
+              </div>
+            ) : null}
             <div className="flex items-center justify-between gap-2">
               <div className="flex min-w-0 flex-wrap items-center gap-2">
-                {hasHoldings ? <PortfolioOriginBadges holdings={holdings} className="flex-shrink-0" /> : null}
+                {hasHoldings ? <PortfolioOriginBadges holdings={viewHoldings} className="flex-shrink-0" /> : null}
                 <button
                   type="button"
                   onClick={() => setHoldingsExpanded((v) => !v)}
@@ -2414,7 +2604,7 @@ export default function InvestmentPortfolioCard({
                   if (draggingIdRef.current || pendingDragRef.current) e.preventDefault();
                 }}
               >
-                {(safeHoldings ?? []).map((h = {} as any) => {
+                {(viewHoldings ?? []).map((h = {} as any) => {
                   if (!h) return null;
                   const raw = h as any;
                   const highlight = h.id === justAddedId;
@@ -2565,13 +2755,25 @@ export default function InvestmentPortfolioCard({
                         </div>
                         {isStock && <ChevronRight size={14} className="flex-shrink-0 text-[#9CA3AF]" />}
                       </button>
+                      {isStock && workspace === "verified" ? (
+                        <a
+                          href={externalBrokerTradeUrl(h.symbol)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="ml-1 inline-flex flex-shrink-0 items-center gap-1 rounded-lg border border-[#1F2937] bg-[#0A0A0A] px-2 py-1.5 text-[10px] font-bold text-sky-300 transition hover:border-sky-500/40 hover:bg-sky-500/10"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          Trade on Robinhood
+                          <ExternalLink size={11} aria-hidden />
+                        </a>
+                      ) : null}
                     </div>
                   );
                 })}
               </div>
             </div>
 
-            {executionLog.length > 0 ? (
+            {workspace === "paper" && executionLog.length > 0 ? (
               <div className="mt-3 overflow-hidden rounded-xl border border-[#1F2937] bg-[#0A0A0A] px-3 py-2.5">
                 <p className="text-[10px] font-bold uppercase tracking-wide text-[#9CA3AF]">
                   Paper trading activity
@@ -2606,12 +2808,23 @@ export default function InvestmentPortfolioCard({
       )}
 
       <PortfolioActionButtons
+        workspace={workspace}
+        paperReady={paperReady}
         onAddStock={openManualModal}
         onConnectBroker={openConnectBrokerModal}
+        onOpenPaperLab={openPaperLab}
       />
 
       {typeof belowHoldings === "function"
-        ? belowHoldings({ onAddHolding: openAddForHolding, onSellHolding: sellHolding })
+        ? belowHoldings({
+            onAddHolding: (holding) => {
+              if (workspace !== "paper") {
+                openPaperLab();
+              }
+              openAddForHolding(holding);
+            },
+            onSellHolding: sellHolding,
+          })
         : belowHoldings}
 
       <ConnectBrokerModal
@@ -2969,7 +3182,11 @@ export default function InvestmentPortfolioCard({
               ? sellHolding
               : undefined
           }
-          onRemove={selectedHolding.quantity > 0 ? removeHolding : undefined}
+          onRemove={
+            selectedHolding.quantity > 0 && selectedHolding.account !== "verified"
+              ? removeHolding
+              : undefined
+          }
           removing={removingId === selectedHolding.id}
         />
       )}

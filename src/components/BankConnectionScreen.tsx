@@ -2,8 +2,14 @@ import { Briefcase, Landmark, Sparkles } from "lucide-react";
 import React, { useState } from "react";
 import { getStoredUser, saveUserSettings, type UserSettings } from "../lib/auth";
 import { inferProfileFromBalances, type DemoScenarioApplyDetail } from "../lib/demoScenarios";
-import { saveFinancialProfile } from "../lib/roadmapService";
+import {
+  bottleneckFromPrimaryGoal,
+  loadFinancialProfile,
+  saveFinancialProfile,
+  type FinancialProfileAnswers,
+} from "../lib/roadmapService";
 import CustomDemoBuilderModal from "./CustomDemoBuilderModal";
+import GoalIntakeStep, { type GoalIntakeResult } from "./GoalIntakeStep";
 import PlaidConnectButton from "./PlaidConnectButton";
 
 type BankConnectionScreenProps = {
@@ -11,30 +17,59 @@ type BankConnectionScreenProps = {
   onComplete: (settings: UserSettings) => void;
 };
 
+type Phase = "connect" | "goals";
+
 export default function BankConnectionScreen({
   currentSettings,
   onComplete,
 }: BankConnectionScreenProps) {
+  const [phase, setPhase] = useState<Phase>("connect");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [customDemoOpen, setCustomDemoOpen] = useState(false);
+  const [connectedInvestments, setConnectedInvestments] = useState(false);
 
-  const finish = async (connected: boolean) => {
+  const finishSettings = async (connected: boolean) => {
+    const settings = await saveUserSettings({
+      hasActiveInvestments: currentSettings.hasActiveInvestments || connected,
+      hasActiveDebts: currentSettings.hasActiveDebts,
+      wantsCapitalGrowth: currentSettings.wantsCapitalGrowth,
+      wantsFinancialLiteracy: currentSettings.wantsFinancialLiteracy,
+      hasCompletedOnboarding: true,
+      hasCompletedBankSetup: true,
+      age: currentSettings.age ?? null,
+      birthDate: currentSettings.birthDate ?? null,
+    });
+    onComplete(settings);
+  };
+
+  const goToGoals = (connected: boolean) => {
+    setConnectedInvestments(connected);
+    setPhase("goals");
+  };
+
+  const applyGoalIntake = async (result: GoalIntakeResult) => {
     if (saving) return;
     setSaving(true);
     setError(null);
     try {
-      const settings = await saveUserSettings({
-        hasActiveInvestments: currentSettings.hasActiveInvestments || connected,
-        hasActiveDebts: currentSettings.hasActiveDebts,
-        wantsCapitalGrowth: currentSettings.wantsCapitalGrowth,
-        wantsFinancialLiteracy: currentSettings.wantsFinancialLiteracy,
-        hasCompletedOnboarding: true,
-        hasCompletedBankSetup: true,
-        age: currentSettings.age ?? null,
-        birthDate: currentSettings.birthDate ?? null,
-      });
-      onComplete(settings);
+      const userId = getStoredUser()?.id;
+      const existing = loadFinancialProfile(userId);
+      const bottleneck =
+        result.primaryGoal != null
+          ? bottleneckFromPrimaryGoal(result.primaryGoal, result.liquidSavings)
+          : existing?.bottleneck ?? "emergency-safety-net";
+      const answers: FinancialProfileAnswers = {
+        stateCode: existing?.stateCode ?? null,
+        monthlyIncome: existing?.monthlyIncome ?? 0,
+        monthlyEssentialExpenses: existing?.monthlyEssentialExpenses ?? 0,
+        bottleneck,
+        knowledgeLevel: existing?.knowledgeLevel ?? "beginner",
+        liquidSavings: result.liquidSavings,
+        primaryGoal: result.primaryGoal,
+      };
+      saveFinancialProfile(answers, userId);
+      await finishSettings(connectedInvestments);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't finish setup. Try again.");
     } finally {
@@ -48,17 +83,8 @@ export default function BankConnectionScreen({
     setSaving(true);
     setError(null);
     try {
-      const settings = await saveUserSettings({
-        hasActiveInvestments: currentSettings.hasActiveInvestments || detail.hasActiveInvestments,
-        hasActiveDebts: currentSettings.hasActiveDebts || detail.hasActiveDebts,
-        wantsCapitalGrowth: currentSettings.wantsCapitalGrowth,
-        wantsFinancialLiteracy: currentSettings.wantsFinancialLiteracy,
-        hasCompletedOnboarding: true,
-        hasCompletedBankSetup: true,
-        age: currentSettings.age ?? null,
-        birthDate: currentSettings.birthDate ?? null,
-      });
-      onComplete(settings);
+      setConnectedInvestments(detail.hasActiveInvestments);
+      setPhase("goals");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't finish setup. Try again.");
     } finally {
@@ -74,96 +100,110 @@ export default function BankConnectionScreen({
 
       <div className="bank-fade" style={styles.shell}>
         <p style={styles.brand}>Sprout</p>
-        <p style={styles.step}>Step 3 of 3</p>
-        <div style={styles.iconBadge}>
-          <Landmark size={22} color="#10B981" />
-        </div>
-        <p style={styles.eyebrow}>Connect Bank</p>
-        <h1 style={styles.headline}>Link your money</h1>
-        <p style={styles.subhead}>
-          Connect via Plaid, link a brokerage, or build a custom demo so Sprout AI can analyze cash flow
-          and build your roadmap.
-        </p>
 
-        <div style={styles.card}>
-          <div style={styles.cardHead}>
-            <span style={styles.cardIcon}>
-              <Landmark size={16} />
-            </span>
-            <span style={styles.cardTitle}>Connect with Plaid</span>
-          </div>
-          <PlaidConnectButton
-            onConnected={(result) => {
-              const investments = result.holdings.reduce((sum, lot) => sum + lot.shares * lot.buyPrice, 0);
-              const monthlyEssentialExpenses = result.expenses.reduce((sum, item) => sum + item.amount, 0);
-              saveFinancialProfile(
-                inferProfileFromBalances({
-                  cash: result.chaseChecking,
-                  hysa: result.marcusHysa + (result.moneyMarket ?? 0),
-                  investments,
-                  monthlyIncome: result.monthlyIncome,
-                  monthlyEssentialExpenses,
-                }),
-                getStoredUser()?.id
-              );
-              void finish(true);
-            }}
-          />
-          <p style={styles.hint}>
-            Sandbox login: <span style={{ color: "#D1D5DB" }}>user_good</span> /{" "}
-            <span style={{ color: "#D1D5DB" }}>pass_good</span>. Pick any test bank.
-          </p>
-        </div>
+        {phase === "goals" ? (
+          <GoalIntakeStep variant="screen" saving={saving} onComplete={(result) => void applyGoalIntake(result)} />
+        ) : (
+          <>
+            <p style={styles.step}>Step 3 of 3</p>
+            <div style={styles.iconBadge}>
+              <Landmark size={22} color="#10B981" />
+            </div>
+            <p style={styles.eyebrow}>Connect Bank</p>
+            <h1 style={styles.headline}>Link your money</h1>
+            <p style={styles.subhead}>
+              Connect via Plaid, link a brokerage, or build a custom demo so Sprout AI can analyze cash flow
+              and build your roadmap.
+            </p>
 
-        <div style={styles.card}>
-          <div style={styles.cardHead}>
-            <span style={{ ...styles.cardIcon, color: "#7DD3FC", background: "rgba(14,165,233,0.10)", border: "1px solid rgba(14,165,233,0.28)" }}>
-              <Briefcase size={16} />
-            </span>
-            <span style={styles.cardTitle}>Connect brokerage</span>
-          </div>
-          <PlaidConnectButton
-            mode="brokerage"
-            label="Connect Brokerage via Plaid"
-            onConnected={(result) => {
-              const investments = result.holdings.reduce((sum, lot) => sum + lot.shares * lot.buyPrice, 0);
-              const monthlyEssentialExpenses = result.expenses.reduce((sum, item) => sum + item.amount, 0);
-              saveFinancialProfile(
-                inferProfileFromBalances({
-                  cash: result.chaseChecking,
-                  hysa: result.marcusHysa + (result.moneyMarket ?? 0),
-                  investments,
-                  monthlyIncome: result.monthlyIncome,
-                  monthlyEssentialExpenses,
-                }),
-                getStoredUser()?.id
-              );
-              void finish(true);
-            }}
-          />
-          <p style={styles.hint}>Sync holdings, tickers, and uninvested cash from a US broker.</p>
-        </div>
+            <div style={styles.card}>
+              <div style={styles.cardHead}>
+                <span style={styles.cardIcon}>
+                  <Landmark size={16} />
+                </span>
+                <span style={styles.cardTitle}>Connect with Plaid</span>
+              </div>
+              <PlaidConnectButton
+                onConnected={(result) => {
+                  const investments = result.holdings.reduce((sum, lot) => sum + lot.shares * lot.buyPrice, 0);
+                  const monthlyEssentialExpenses = result.expenses.reduce((sum, item) => sum + item.amount, 0);
+                  saveFinancialProfile(
+                    inferProfileFromBalances({
+                      cash: result.chaseChecking,
+                      hysa: result.marcusHysa + (result.moneyMarket ?? 0),
+                      investments,
+                      monthlyIncome: result.monthlyIncome,
+                      monthlyEssentialExpenses,
+                    }),
+                    getStoredUser()?.id
+                  );
+                  goToGoals(true);
+                }}
+              />
+              <p style={styles.hint}>
+                Sandbox login: <span style={{ color: "#D1D5DB" }}>user_good</span> /{" "}
+                <span style={{ color: "#D1D5DB" }}>pass_good</span>. Pick any test bank.
+              </p>
+            </div>
 
-        <button
-          type="button"
-          style={styles.customBtn}
-          disabled={saving}
-          onClick={() => setCustomDemoOpen(true)}
-        >
-          <Sparkles size={16} color="#6EE7B7" />
-          Create Custom Demo Profile
-        </button>
+            <div style={styles.card}>
+              <div style={styles.cardHead}>
+                <span
+                  style={{
+                    ...styles.cardIcon,
+                    color: "#7DD3FC",
+                    background: "rgba(14,165,233,0.10)",
+                    border: "1px solid rgba(14,165,233,0.28)",
+                  }}
+                >
+                  <Briefcase size={16} />
+                </span>
+                <span style={styles.cardTitle}>Connect brokerage</span>
+              </div>
+              <PlaidConnectButton
+                mode="brokerage"
+                label="Connect Brokerage via Plaid"
+                onConnected={(result) => {
+                  const investments = result.holdings.reduce((sum, lot) => sum + lot.shares * lot.buyPrice, 0);
+                  const monthlyEssentialExpenses = result.expenses.reduce((sum, item) => sum + item.amount, 0);
+                  saveFinancialProfile(
+                    inferProfileFromBalances({
+                      cash: result.chaseChecking,
+                      hysa: result.marcusHysa + (result.moneyMarket ?? 0),
+                      investments,
+                      monthlyIncome: result.monthlyIncome,
+                      monthlyEssentialExpenses,
+                    }),
+                    getStoredUser()?.id
+                  );
+                  goToGoals(true);
+                }}
+              />
+              <p style={styles.hint}>Sync holdings, tickers, and uninvested cash from a US broker.</p>
+            </div>
+
+            <button
+              type="button"
+              style={styles.customBtn}
+              disabled={saving}
+              onClick={() => setCustomDemoOpen(true)}
+            >
+              <Sparkles size={16} color="#6EE7B7" />
+              Create Custom Demo Profile
+            </button>
+
+            <button
+              type="button"
+              style={styles.skipBtn}
+              disabled={saving}
+              onClick={() => goToGoals(false)}
+            >
+              Skip for now
+            </button>
+          </>
+        )}
 
         {error ? <p style={styles.error}>{error}</p> : null}
-
-        <button
-          type="button"
-          style={styles.skipBtn}
-          disabled={saving}
-          onClick={() => void finish(false)}
-        >
-          {saving ? "Saving…" : "Skip for now"}
-        </button>
       </div>
 
       <CustomDemoBuilderModal
