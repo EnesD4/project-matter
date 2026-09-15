@@ -6,6 +6,7 @@ import {
   ChevronRight,
   CreditCard,
   Fingerprint,
+  FlaskConical,
   Landmark,
   Loader2,
   LogOut,
@@ -47,6 +48,7 @@ import {
 import type { Holding } from "./InvestmentPortfolioCard";
 import { holdingAccount } from "../lib/accountKind";
 import CertificatesSection from "./CertificatesSection";
+import CustomDemoBuilderModal from "./CustomDemoBuilderModal";
 import PlaidConnectButton from "./PlaidConnectButton";
 import ProfileModal from "./ProfileModal";
 import TrophyCabinet from "./TrophyCabinet";
@@ -203,6 +205,7 @@ export default function ProfileScreen({
   const [ageError, setAgeError] = useState<string | null>(null);
   const [trophies, setTrophies] = useState<Trophy[]>([]);
   const [soundEnabled, setSoundEnabled] = useSoundEnabled();
+  const [customDemoOpen, setCustomDemoOpen] = useState(false);
 
   useEffect(() => {
     setAgeDraft(settings?.age != null ? String(settings.age) : "");
@@ -489,6 +492,7 @@ export default function ProfileScreen({
   }
 
   return (
+    <>
     <div style={styles.root}>
       {/* User card */}
       <section style={styles.userCard} aria-label="Profile">
@@ -589,6 +593,13 @@ export default function ProfileScreen({
             </span>
           }
         />
+        <div style={styles.divider} />
+        <SettingsRow
+          icon={<FlaskConical size={16} color="#10B981" />}
+          title="Create Custom Demo Profile"
+          subtitle="Manual cash flow + brokerage holdings for Sprout AI"
+          onClick={() => setCustomDemoOpen(true)}
+        />
       </section>
 
       {/* App Preferences */}
@@ -643,6 +654,11 @@ export default function ProfileScreen({
         </button>
       ) : null}
     </div>
+    <CustomDemoBuilderModal
+      open={customDemoOpen}
+      onClose={() => setCustomDemoOpen(false)}
+    />
+    </>
   );
 }
 

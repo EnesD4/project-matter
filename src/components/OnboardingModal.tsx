@@ -1,4 +1,4 @@
-import { ArrowRight, Sparkles, TrendingUp, Wallet, X } from "lucide-react";
+import { ArrowRight, PieChart, Sparkles, TrendingUp, Wallet, X } from "lucide-react";
 import React, { useEffect, useMemo } from "react";
 import {
   buildFinancialDiagnostics,
@@ -13,6 +13,9 @@ export type OnboardingModalProps = {
   open: boolean;
   userName?: string;
   diagnostics?: FinancialDiagnostics | null;
+  /** Optional brokerage diversification label from portfolio health. */
+  diversificationLabel?: string | null;
+  diversificationDetail?: string | null;
   onClose?: () => void;
   onExploreRoadmap?: () => void;
 };
@@ -25,6 +28,8 @@ export default function OnboardingModal({
   open,
   userName = "there",
   diagnostics: diagnosticsProp,
+  diversificationLabel,
+  diversificationDetail,
   onClose,
   onExploreRoadmap,
 }: OnboardingModalProps) {
@@ -147,6 +152,19 @@ export default function OnboardingModal({
               )}
             </p>
           </div>
+
+          {diversificationLabel ? (
+            <div className="rounded-2xl border border-[#1F1F1F] bg-black/40 px-4 py-3">
+              <div className="flex items-center gap-2 text-[11px] font-extrabold uppercase tracking-wide text-slate-500">
+                <PieChart size={13} className="text-violet-300" aria-hidden />
+                Brokerage diversification
+              </div>
+              <p className="mt-2 mb-0 text-[14px] font-semibold leading-snug text-white">
+                Portfolio read: <span className="text-violet-300">{diversificationLabel}</span>
+                {diversificationDetail ? ` — ${diversificationDetail}` : "."}
+              </p>
+            </div>
+          ) : null}
 
           <div className="rounded-2xl border border-emerald-500/25 bg-gradient-to-b from-emerald-500/12 to-transparent px-4 py-3">
             <div className="flex items-center gap-2 text-[11px] font-extrabold uppercase tracking-wide text-emerald-400/90">

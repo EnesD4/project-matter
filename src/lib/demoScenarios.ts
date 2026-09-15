@@ -52,6 +52,11 @@ export type DemoScenario = {
   retirementType?: DetectedRetirement["accountType"];
 };
 
+export type DemoBrokerageMeta = {
+  brokerName: string;
+  brokerageCash: number;
+};
+
 export type DemoScenarioApplyDetail = {
   id: DemoScenarioId;
   cash: number;
@@ -66,6 +71,10 @@ export type DemoScenarioApplyDetail = {
   hasActiveDebts: boolean;
   hasActiveInvestments: boolean;
   retirement: DetectedRetirement | null;
+  /** Optional brokerage label for custom demo profiles (e.g. Robinhood). */
+  brokerName?: string;
+  /** Uninvested cash sitting in the linked brokerage. */
+  brokerageCash?: number;
 };
 
 export const DEMO_TICKER_CATALOG: Record<string, { name: string; buyPrice: number }> = {
@@ -199,6 +208,48 @@ function demoScenarioKey(userId?: string) {
   return `${DEMO_SCENARIO_STORAGE_KEY}_${userId ?? getStoredUser()?.id ?? "anon"}`;
 }
 
+const DEMO_BROKERAGE_META_KEY = "sprout_demo_brokerage";
+
+function demoBrokerageKey(userId?: string) {
+  return `${DEMO_BROKERAGE_META_KEY}_${userId ?? getStoredUser()?.id ?? "anon"}`;
+}
+
+export function readDemoBrokerageMeta(userId?: string): DemoBrokerageMeta | null {
+  try {
+    const raw = localStorage.getItem(demoBrokerageKey(userId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<DemoBrokerageMeta>;
+    const brokerageCash = Math.max(0, Number(parsed.brokerageCash) || 0);
+    const brokerName = String(parsed.brokerName || "").trim();
+    if (!brokerName && brokerageCash <= 0) return null;
+    return {
+      brokerName: brokerName || "Brokerage",
+      brokerageCash,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function writeDemoBrokerageMeta(meta: DemoBrokerageMeta | null, userId?: string) {
+  try {
+    const key = demoBrokerageKey(userId);
+    if (!meta || (!meta.brokerName && !(meta.brokerageCash > 0))) {
+      localStorage.removeItem(key);
+      return;
+    }
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        brokerName: meta.brokerName || "Brokerage",
+        brokerageCash: Math.max(0, meta.brokerageCash),
+      })
+    );
+  } catch {
+    // private mode
+  }
+}
+
 function lotToHolding(lot: DemoLot, index: number): PortfolioApiItem {
   const now = new Date().toISOString();
   return {
@@ -282,27 +333,30 @@ function detailFromParts(input: {
   debts: CashFlowDebt[];
   lots: DemoLot[];
   transactions?: BankTransaction[];
+  /** When set, skip mock-derived categories and use these cash-flow rows. */
+  expenses?: CashFlowExpense[];
   profile: FinancialProfileAnswers;
   retirement: DetectedRetirement | null;
+  brokerName?: string;
+  brokerageCash?: number;
 }): DemoScenarioApplyDetail {
   const debtMinimums = input.debts.reduce((sum, debt) => sum + debt.minPayment, 0);
+  const explicitExpenses = (input.expenses || []).filter((row) => row.amount > 0);
   const transactions =
     input.transactions ??
-    buildMockBankTransactions({
-      prefix: input.id,
-      monthlyIncome: input.monthlyIncome,
-      monthlySpending: Math.max(0, input.monthlyEssentialExpenses - debtMinimums),
-    });
+    (explicitExpenses.length > 0
+      ? []
+      : buildMockBankTransactions({
+          prefix: input.id,
+          monthlyIncome: input.monthlyIncome,
+          monthlySpending: Math.max(0, input.monthlyEssentialExpenses - debtMinimums),
+        }));
   const activity = summarizeBankActivity(transactions);
   const brokerage = brokerageLots(input.lots);
-  return {
-    id: input.id,
-    cash: input.cash,
-    hysa: input.hysa,
-    monthlyIncome: activity.monthlyIncome || input.monthlyIncome,
-    debts: input.debts,
-    expenses:
-      activity.expenses.length > 0
+  const expenses =
+    explicitExpenses.length > 0
+      ? explicitExpenses
+      : activity.expenses.length > 0
         ? activity.expenses
         : [
             {
@@ -310,20 +364,29 @@ function detailFromParts(input: {
               label: "Essential bills",
               amount: Math.max(0, input.monthlyEssentialExpenses - debtMinimums),
             },
-          ],
+          ];
+  const expenseTotal = expenses.reduce((sum, item) => sum + item.amount, 0);
+  return {
+    id: input.id,
+    cash: input.cash,
+    hysa: input.hysa,
+    monthlyIncome: explicitExpenses.length > 0 ? input.monthlyIncome : activity.monthlyIncome || input.monthlyIncome,
+    debts: input.debts,
+    expenses,
     holdings: brokerage.map(lotToHolding),
     lots: input.lots,
     transactions,
     profile: {
       ...input.profile,
-      monthlyIncome: activity.monthlyIncome || input.monthlyIncome,
-      monthlyEssentialExpenses:
-        activity.expenses.reduce((sum, item) => sum + item.amount, 0) + debtMinimums ||
-        input.monthlyEssentialExpenses,
+      monthlyIncome:
+        explicitExpenses.length > 0 ? input.monthlyIncome : activity.monthlyIncome || input.monthlyIncome,
+      monthlyEssentialExpenses: expenseTotal + debtMinimums || input.monthlyEssentialExpenses,
     },
     hasActiveDebts: input.debts.length > 0,
-    hasActiveInvestments: brokerage.length > 0,
+    hasActiveInvestments: brokerage.length > 0 || (input.brokerageCash ?? 0) > 0,
     retirement: input.retirement,
+    brokerName: input.brokerName,
+    brokerageCash: Math.max(0, input.brokerageCash ?? 0),
   };
 }
 
@@ -359,26 +422,55 @@ export type CustomDemoInput = {
   creditDebt: number;
   monthlySpending: number;
   monthlyIncome?: number;
-  stocks: Array<{ symbol: string; shares: number }>;
+  /** Essential / fixed monthly bills when building an interactive custom profile. */
+  fixedExpenses?: number;
+  /** Discretionary monthly spend when building an interactive custom profile. */
+  discretionaryExpenses?: number;
+  /** Display name for the custom brokerage (e.g. Robinhood). */
+  brokerName?: string;
+  /** Uninvested cash in the brokerage account. */
+  brokerageCash?: number;
+  stocks: Array<{ symbol: string; shares?: number; amount?: number }>;
   retirementBalance?: number;
   retirementType?: DetectedRetirement["accountType"];
 };
 
 export function buildCustomDemoDetail(input: CustomDemoInput): DemoScenarioApplyDetail {
+  const brokerageCash = Math.max(0, input.brokerageCash ?? 0);
   const cash = Math.max(0, input.cash);
   const creditDebt = Math.max(0, input.creditDebt);
-  const monthlySpending = Math.max(0, input.monthlySpending);
+  const fixedExpenses = Math.max(0, input.fixedExpenses ?? 0);
+  const discretionaryExpenses = Math.max(0, input.discretionaryExpenses ?? 0);
+  const hasSplitExpenses = fixedExpenses > 0 || discretionaryExpenses > 0;
+  const monthlySpending = Math.max(
+    0,
+    hasSplitExpenses ? fixedExpenses + discretionaryExpenses : input.monthlySpending
+  );
   const monthlyIncome = Math.max(0, input.monthlyIncome ?? Math.round(monthlySpending * 1.35 + 400));
+  const brokerName = String(input.brokerName || "").trim() || (brokerageCash > 0 || input.stocks.length > 0 ? "Robinhood" : undefined);
   const lots: DemoLot[] = [];
   for (const row of input.stocks) {
     const meta = resolveDemoTicker(row.symbol);
-    const shares = Math.max(0, row.shares);
-    if (!meta.symbol || shares <= 0 || !(meta.buyPrice > 0)) continue;
+    if (!meta.symbol) continue;
+    const amount = Math.max(0, Number(row.amount) || 0);
+    let shares = Math.max(0, Number(row.shares) || 0);
+    let buyPrice = meta.buyPrice;
+    if (shares <= 0 && amount > 0) {
+      if (buyPrice > 0) {
+        shares = Math.round((amount / buyPrice) * 10000) / 10000;
+      } else {
+        shares = 1;
+        buyPrice = amount;
+      }
+    }
+    if (shares <= 0) continue;
+    // Unknown tickers with share counts get a placeholder cost basis so they still appear.
+    if (!(buyPrice > 0)) buyPrice = amount > 0 ? amount / shares : 25;
     lots.push({
       symbol: meta.symbol,
       name: meta.name,
       shares,
-      buyPrice: meta.buyPrice,
+      buyPrice,
       purchasedAt: new Date().toISOString().slice(0, 10),
       vehicle: "brokerage",
     });
@@ -389,7 +481,7 @@ export function buildCustomDemoDetail(input: CustomDemoInput): DemoScenarioApply
       ? [
           {
             id: "demo-debt-custom-card",
-            title: "Credit card",
+            title: "High-interest debt",
             originalBalance: creditDebt,
             balance: creditDebt,
             minPayment: Math.max(25, Math.round(creditDebt * 0.03)),
@@ -398,15 +490,33 @@ export function buildCustomDemoDetail(input: CustomDemoInput): DemoScenarioApply
         ]
       : [];
 
+  const debtMinimums = debts.reduce((sum, debt) => sum + debt.minPayment, 0);
   const investments = lots.reduce((sum, lot) => sum + lot.shares * lot.buyPrice, 0);
   const profile = inferProfileFromBalances({
-    cash,
+    cash: cash + brokerageCash,
     hysa: 0,
     investments,
     debt: creditDebt,
     monthlyIncome,
-    monthlyEssentialExpenses: monthlySpending + debts.reduce((sum, debt) => sum + debt.minPayment, 0),
+    monthlyEssentialExpenses: monthlySpending + debtMinimums,
   });
+
+  const explicitExpenses: CashFlowExpense[] = hasSplitExpenses
+    ? [
+        ...(fixedExpenses > 0
+          ? [{ id: "demo-exp-custom-fixed", label: "Fixed expenses", amount: fixedExpenses }]
+          : []),
+        ...(discretionaryExpenses > 0
+          ? [
+              {
+                id: "demo-exp-custom-discretionary",
+                label: "Discretionary spending",
+                amount: discretionaryExpenses,
+              },
+            ]
+          : []),
+      ]
+    : [];
 
   return detailFromParts({
     id: "custom",
@@ -416,7 +526,10 @@ export function buildCustomDemoDetail(input: CustomDemoInput): DemoScenarioApply
     monthlyEssentialExpenses: profile.monthlyEssentialExpenses,
     debts,
     lots,
+    expenses: explicitExpenses,
     profile,
+    brokerName,
+    brokerageCash,
     retirement:
       input.retirementBalance && input.retirementBalance > 0
         ? {
@@ -445,15 +558,28 @@ export function clearActiveDemoScenario(userId?: string) {
   } catch {
     // private mode
   }
+  writeDemoBrokerageMeta(null, userId);
 }
 
 function persistAndDispatch(detail: DemoScenarioApplyDetail, userId?: string): DemoScenarioApplyDetail {
-  saveFinancialProfile(detail.profile, userId ?? getStoredUser()?.id);
-  writePortfolioCache(detail.holdings, userId ?? getStoredUser()?.id);
+  const uid = userId ?? getStoredUser()?.id;
+  saveFinancialProfile(detail.profile, uid);
+  writePortfolioCache(detail.holdings, uid);
   try {
     localStorage.setItem(demoScenarioKey(userId), detail.id);
   } catch {
     // private mode
+  }
+  if (detail.brokerName || (detail.brokerageCash ?? 0) > 0) {
+    writeDemoBrokerageMeta(
+      {
+        brokerName: detail.brokerName || "Brokerage",
+        brokerageCash: Math.max(0, detail.brokerageCash ?? 0),
+      },
+      uid
+    );
+  } else {
+    writeDemoBrokerageMeta(null, uid);
   }
   if (typeof window !== "undefined") {
     window.dispatchEvent(new CustomEvent<DemoScenarioApplyDetail>(DEMO_SCENARIO_APPLIED_EVENT, { detail }));

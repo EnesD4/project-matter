@@ -67,10 +67,10 @@ export type FinancialDiagnostics = {
 };
 
 const ESSENTIAL_RE =
-  /rent|mortgage|housing|landlord|utilities?|electric|water|gas bill|internet|wifi|phone|insurance|health|medical|pharmacy|grocery|groceries|child\s*care|daycare|tuition|student\s*loan|loan payment|debt payment|minimum|transit pass|commuter/i;
+  /rent|mortgage|housing|landlord|utilities?|electric|water|gas bill|internet|wifi|phone|insurance|health|medical|pharmacy|grocery|groceries|child\s*care|daycare|tuition|student\s*loan|loan payment|debt payment|minimum|transit pass|commuter|fixed\s*expenses?|essentials?/i;
 
 const DISCRETIONARY_RE =
-  /dining|restaurant|coffee|cafe|bar|nightlife|entertainment|streaming|netflix|spotify|hulu|disney|subscription|subscriptions|shopping|amazon|retail|clothes|apparel|travel|vacation|hotel|uber eats|doordash|delivery|gaming|hobby|hobbies|personal care|salon|gym|fitness(?!\s*insurance)/i;
+  /dining|restaurant|coffee|cafe|bar|nightlife|entertainment|streaming|netflix|spotify|hulu|disney|subscription|subscriptions|shopping|amazon|retail|clothes|apparel|travel|vacation|hotel|uber eats|doordash|delivery|gaming|hobby|hobbies|personal care|salon|gym|fitness(?!\s*insurance)|discretionary(\s*spend(ing)?)?/i;
 
 const FLEXIBLE_RE =
   /transport|uber|lyft|fuel|gasoline|parking|rideshare|taxi|food|meals?|takeout|misc|other|gifts?/i;

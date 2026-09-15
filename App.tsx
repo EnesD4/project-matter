@@ -862,6 +862,51 @@ const App: React.FC = () => {
       setDebts(detail.debts);
       setExpenses(detail.expenses);
       setCashFlowLinked(true);
+      // Seed portfolio immediately so Sprout AI / welcome modal see diversification
+      // even before InvestmentPortfolioCard mounts (e.g. during Step 3 onboarding).
+      const seededStocks: Holding[] = (detail.holdings || [])
+        .filter((item) => item?.symbol)
+        .map((item) => {
+          const lot = detail.lots?.find((row) => row.symbol === item.symbol);
+          const price = toFiniteNumber(item.buyPrice, 0) || toFiniteNumber(lot?.buyPrice, 0);
+          const shares = toFiniteNumber(item.shares, 0);
+          return {
+            id: item.id,
+            kind: "stock" as const,
+            symbol: String(item.symbol).toUpperCase(),
+            description: lot?.name || item.symbol,
+            quantity: shares,
+            avgCost: price,
+            currentPrice: price,
+            dayChangePct: 0,
+            dayChangeAbs: 0,
+            open: price,
+            high: price,
+            low: price,
+            prevClose: price,
+            purchasedAt: item.purchasedAt ?? lot?.purchasedAt ?? null,
+            account: "verified" as const,
+          };
+        });
+      const brokerageCash = Math.max(0, toFiniteNumber(detail.brokerageCash, 0));
+      const brokerName = String(detail.brokerName || "Brokerage").trim() || "Brokerage";
+      const seededBrokers: Holding[] =
+        brokerageCash > 0
+          ? [
+              {
+                id: `broker-cash-${brokerName.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+                kind: "broker",
+                name: `${brokerName} cash`,
+                icon: Wallet,
+                balance: brokerageCash,
+                account: "verified",
+              },
+            ]
+          : [];
+      if (seededStocks.length > 0 || seededBrokers.length > 0) {
+        setHoldings([...seededStocks, ...seededBrokers]);
+        setHoldingsReady(true);
+      }
       const userId = getStoredUser()?.id;
       if (detail.retirement?.present && userId) {
         seedRetirementFromAssets(userId, {
@@ -1679,6 +1724,20 @@ const App: React.FC = () => {
         open={sproutWelcomeOpen}
         userName={userName}
         diagnostics={financialDiagnostics}
+        diversificationLabel={
+          educationalSnapshot.portfolio && educationalSnapshot.portfolio.holdingCount > 0
+            ? educationalSnapshot.portfolio.diversificationLabel
+            : educationalSnapshot.portfolio && educationalSnapshot.portfolio.brokerageCash > 0
+              ? educationalSnapshot.portfolio.diversificationLabel
+              : null
+        }
+        diversificationDetail={
+          educationalSnapshot.portfolio &&
+          (educationalSnapshot.portfolio.holdingCount > 0 ||
+            educationalSnapshot.portfolio.brokerageCash > 0)
+            ? educationalSnapshot.portfolio.diversificationDetail
+            : null
+        }
         onClose={() => {
           markSproutWelcomeSeen(authUser?.id);
           setSproutWelcomeOpen(false);

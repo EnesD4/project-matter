@@ -96,6 +96,7 @@ import {
   DEMO_SCENARIOS,
   DEMO_SCENARIO_APPLIED_EVENT,
   readActiveDemoScenario,
+  readDemoBrokerageMeta,
   type DemoScenarioApplyDetail,
 } from "../lib/demoScenarios";
 import {
@@ -680,7 +681,22 @@ export default function InvestmentPortfolioCard({
   const [holdingCandles, setHoldingCandles] = useState<Map<string, ChartCandle[]>>(new Map());
   const [holdings, setHoldingsState] = useState<Holding[]>(() => {
     const cached = readPortfolioCache();
-    return guardHoldings(cached ? holdingsFromApiItems(cached.items || []) : []);
+    const stocks = cached ? holdingsFromApiItems(cached.items || []) : [];
+    const meta = readDemoBrokerageMeta();
+    const brokerRows: BrokerHolding[] =
+      meta && meta.brokerageCash > 0
+        ? [
+            {
+              id: `broker-cash-${meta.brokerName.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+              kind: "broker",
+              name: `${meta.brokerName} cash`,
+              icon: Wallet,
+              balance: meta.brokerageCash,
+              account: "verified",
+            },
+          ]
+        : [];
+    return guardHoldings([...stocks, ...brokerRows]);
   });
   const setHoldings = (
     updater: Holding[] | ((prev: Holding[]) => Holding[])
@@ -939,12 +955,32 @@ export default function InvestmentPortfolioCard({
           return stockHoldingFromItem(item, lot?.name);
         })
         .filter((h): h is StockHolding => Boolean(h));
+      const meta =
+        detail.brokerName || (detail.brokerageCash ?? 0) > 0
+          ? {
+              brokerName: detail.brokerName || "Brokerage",
+              brokerageCash: Math.max(0, detail.brokerageCash ?? 0),
+            }
+          : readDemoBrokerageMeta();
+      const brokerRows: BrokerHolding[] =
+        meta && meta.brokerageCash > 0
+          ? [
+              {
+                id: `broker-cash-${meta.brokerName.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+                kind: "broker",
+                name: `${meta.brokerName} cash`,
+                icon: Wallet,
+                balance: meta.brokerageCash,
+                account: "verified",
+              },
+            ]
+          : [];
       holdingsEpochRef.current += 1;
       setPortfolioLoading(false);
-      setHoldings(guardHoldings(stocks));
+      setHoldings(guardHoldings([...stocks, ...brokerRows]));
       writePortfolioCache(portfolioStocks);
       setHoldingsExpanded(true);
-      if (stocks.length > 0) markUpdated();
+      if (stocks.length > 0 || brokerRows.length > 0) markUpdated();
     };
 
     window.addEventListener(PLAID_CONNECTED_EVENT, onPlaidSandbox);
@@ -964,7 +1000,24 @@ export default function InvestmentPortfolioCard({
     if (cached) {
       setHoldings((prev) => {
         const brokers = (prev || []).filter((h): h is BrokerHolding => h?.kind === "broker");
-        return sortHoldingsByOrder([...holdingsFromApiItems(cached.items || []), ...brokers], readHoldingOrder());
+        const meta = readDemoBrokerageMeta();
+        const demoBrokers: BrokerHolding[] =
+          meta && meta.brokerageCash > 0
+            ? [
+                {
+                  id: `broker-cash-${meta.brokerName.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+                  kind: "broker",
+                  name: `${meta.brokerName} cash`,
+                  icon: Wallet,
+                  balance: meta.brokerageCash,
+                  account: "verified",
+                },
+              ]
+            : brokers;
+        return sortHoldingsByOrder(
+          [...holdingsFromApiItems(cached.items || []), ...demoBrokers],
+          readHoldingOrder()
+        );
       });
       setPortfolioLoading(false);
     }

@@ -1,8 +1,9 @@
-import { Landmark } from "lucide-react";
+import { Briefcase, Landmark, Sparkles } from "lucide-react";
 import React, { useState } from "react";
 import { getStoredUser, saveUserSettings, type UserSettings } from "../lib/auth";
-import { inferProfileFromBalances } from "../lib/demoScenarios";
+import { inferProfileFromBalances, type DemoScenarioApplyDetail } from "../lib/demoScenarios";
 import { saveFinancialProfile } from "../lib/roadmapService";
+import CustomDemoBuilderModal from "./CustomDemoBuilderModal";
 import PlaidConnectButton from "./PlaidConnectButton";
 
 type BankConnectionScreenProps = {
@@ -16,6 +17,7 @@ export default function BankConnectionScreen({
 }: BankConnectionScreenProps) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [customDemoOpen, setCustomDemoOpen] = useState(false);
 
   const finish = async (connected: boolean) => {
     if (saving) return;
@@ -25,6 +27,30 @@ export default function BankConnectionScreen({
       const settings = await saveUserSettings({
         hasActiveInvestments: currentSettings.hasActiveInvestments || connected,
         hasActiveDebts: currentSettings.hasActiveDebts,
+        wantsCapitalGrowth: currentSettings.wantsCapitalGrowth,
+        wantsFinancialLiteracy: currentSettings.wantsFinancialLiteracy,
+        hasCompletedOnboarding: true,
+        hasCompletedBankSetup: true,
+        age: currentSettings.age ?? null,
+        birthDate: currentSettings.birthDate ?? null,
+      });
+      onComplete(settings);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't finish setup. Try again.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const finishFromCustomDemo = async (detail: DemoScenarioApplyDetail) => {
+    setCustomDemoOpen(false);
+    if (saving) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const settings = await saveUserSettings({
+        hasActiveInvestments: currentSettings.hasActiveInvestments || detail.hasActiveInvestments,
+        hasActiveDebts: currentSettings.hasActiveDebts || detail.hasActiveDebts,
         wantsCapitalGrowth: currentSettings.wantsCapitalGrowth,
         wantsFinancialLiteracy: currentSettings.wantsFinancialLiteracy,
         hasCompletedOnboarding: true,
@@ -55,7 +81,8 @@ export default function BankConnectionScreen({
         <p style={styles.eyebrow}>Connect Bank</p>
         <h1 style={styles.headline}>Link your money</h1>
         <p style={styles.subhead}>
-          Connect via Plaid or load demo data so Sprout AI can analyze cash flow and build your roadmap.
+          Connect via Plaid, link a brokerage, or build a custom demo so Sprout AI can analyze cash flow
+          and build your roadmap.
         </p>
 
         <div style={styles.card}>
@@ -88,6 +115,45 @@ export default function BankConnectionScreen({
           </p>
         </div>
 
+        <div style={styles.card}>
+          <div style={styles.cardHead}>
+            <span style={{ ...styles.cardIcon, color: "#7DD3FC", background: "rgba(14,165,233,0.10)", border: "1px solid rgba(14,165,233,0.28)" }}>
+              <Briefcase size={16} />
+            </span>
+            <span style={styles.cardTitle}>Connect brokerage</span>
+          </div>
+          <PlaidConnectButton
+            mode="brokerage"
+            label="Connect Brokerage via Plaid"
+            onConnected={(result) => {
+              const investments = result.holdings.reduce((sum, lot) => sum + lot.shares * lot.buyPrice, 0);
+              const monthlyEssentialExpenses = result.expenses.reduce((sum, item) => sum + item.amount, 0);
+              saveFinancialProfile(
+                inferProfileFromBalances({
+                  cash: result.chaseChecking,
+                  hysa: result.marcusHysa + (result.moneyMarket ?? 0),
+                  investments,
+                  monthlyIncome: result.monthlyIncome,
+                  monthlyEssentialExpenses,
+                }),
+                getStoredUser()?.id
+              );
+              void finish(true);
+            }}
+          />
+          <p style={styles.hint}>Sync holdings, tickers, and uninvested cash from a US broker.</p>
+        </div>
+
+        <button
+          type="button"
+          style={styles.customBtn}
+          disabled={saving}
+          onClick={() => setCustomDemoOpen(true)}
+        >
+          <Sparkles size={16} color="#6EE7B7" />
+          Create Custom Demo Profile
+        </button>
+
         {error ? <p style={styles.error}>{error}</p> : null}
 
         <button
@@ -99,6 +165,12 @@ export default function BankConnectionScreen({
           {saving ? "Saving…" : "Skip for now"}
         </button>
       </div>
+
+      <CustomDemoBuilderModal
+        open={customDemoOpen}
+        onClose={() => setCustomDemoOpen(false)}
+        onApplied={(detail) => void finishFromCustomDemo(detail)}
+      />
     </div>
   );
 }
@@ -242,6 +314,20 @@ const styles: Record<string, React.CSSProperties> = {
     lineHeight: 1.45,
     color: "#6B7280",
     textAlign: "center",
+  },
+  customBtn: {
+    border: "1px solid rgba(16,185,129,0.35)",
+    borderRadius: 12,
+    background: "rgba(16,185,129,0.10)",
+    color: "#ECFDF5",
+    fontSize: 14,
+    fontWeight: 800,
+    padding: "13px 16px",
+    cursor: "pointer",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
   },
   error: {
     margin: 0,
