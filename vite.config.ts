@@ -5,6 +5,7 @@ import { handleGeminiCoach } from "./api/gemini-coach";
 import handlePlaidPath from "./api/plaid/[...path]";
 import { handlePlaidSync } from "./api/_lib/plaidSync";
 import handleStockPath from "./api/_lib/stockHandlers";
+import { handleDailyReport } from "./api/_lib/dailyReport";
 import {
   handleCashFlowFallback,
   handlePortfolioFallback,
@@ -45,6 +46,7 @@ function localServerlessApi(): Plugin {
 
       let handler: ApiHandler | null = null;
       if (path === "/api/gemini-coach") handler = handleGeminiCoach;
+      else if (path === "/api/market/daily-report") handler = handleDailyReport;
       else if (path === "/api/plaid-sync") handler = handlePlaidSync;
       else if (path.startsWith("/api/plaid/")) handler = handlePlaidPath;
       else if (path.startsWith("/api/stocks/")) handler = handleStockPath;

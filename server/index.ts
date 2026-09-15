@@ -41,7 +41,8 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY;
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY?.trim() || '';
+const GEMINI_API_KEY =
+  process.env.GEMINI_API_KEY?.trim() || process.env.VITE_GEMINI_API_KEY?.trim() || '';
 
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '0.0.0.0']);
 

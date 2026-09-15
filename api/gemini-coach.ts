@@ -132,7 +132,7 @@ async function readJsonBody(req: any): Promise<unknown> {
 }
 
 function getGeminiApiKey(): string {
-  return String(process.env.GEMINI_API_KEY || "").trim();
+  return String(process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || "").trim();
 }
 
 function stripEducationalDisclaimer(text: string): string {

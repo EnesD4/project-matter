@@ -31,11 +31,12 @@ applyEnvFile(".env.local");
 export const GEMINI_FLASH_MODEL = "gemini-3.6-flash";
 
 /**
- * Server-only secrets. Never prefix these with VITE_ — Vite would embed them in the client bundle.
- * Intentionally ignores VITE_GEMINI_API_KEY so a leaked client env name cannot unlock Gemini.
+ * Server-only Gemini key. Prefer GEMINI_API_KEY; fall back to VITE_GEMINI_API_KEY for
+ * deployments that only set the Vite-named env var on Vercel.
+ * Do not read this via import.meta.env in client code.
  */
 export function getGeminiApiKey(): string {
-  return trim(process.env.GEMINI_API_KEY);
+  return trim(process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY);
 }
 
 export function getGeminiModel(): string {
