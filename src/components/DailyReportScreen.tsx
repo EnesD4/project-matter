@@ -8,20 +8,16 @@ import {
   MessageCircle,
   Sparkles,
 } from "lucide-react";
-import { getApiBaseUrl } from "../lib/apiBase";
-import { getMarketStatusHeader } from "../lib/marketInsights";
+import {
+  fetchDailyReport,
+  type DailyReportHoldingInput,
+  type DailyReportPayload,
+} from "../lib/dailyReportService";
+import { canGenerateDailyReport, getMarketStatusHeader } from "../lib/marketInsights";
 import { EDUCATIONAL_DISCLAIMER } from "../lib/sproutAi";
 import type { DailyReportMode } from "./SocratesPortfolioReport";
 
-export type DailyReportHoldingInput = {
-  symbol: string;
-  description?: string;
-  quantity: number;
-  avgCost: number;
-  currentPrice: number;
-  dayChangePct?: number;
-  industry?: string;
-};
+export type { DailyReportHoldingInput };
 
 type DailyReportScreenProps = {
   mode: DailyReportMode;
@@ -31,26 +27,13 @@ type DailyReportScreenProps = {
   onConsultSocrates?: () => void;
 };
 
-type DailyReportResponse = {
-  mode?: DailyReportMode;
-  marketOpen: boolean;
-  title: string;
-  macroDrivers: string;
-  indexMovements: string;
-  sentimentTakeaway: string;
-  source: "ai" | "fallback";
-  warning?: string;
-  disclaimer?: string;
-  limitedLiveData?: boolean;
-};
-
 const BODY = "#F3F4F6";
 const CARD = "#111827";
 const LIMITED_LIVE_DATA_NOTE = "Note: Generated with limited live data";
 
 /**
  * Full-screen AI daily report — general market or specialized portfolio mode.
- * Navigated to from the Investments portfolio card — not a pop-up modal.
+ * General Market Report calls Gemini directly in the browser (no serverless / stock APIs).
  */
 export default function DailyReportScreen({
   mode,
@@ -62,7 +45,8 @@ export default function DailyReportScreen({
   const localStatus = useMemo(() => getMarketStatusHeader(), []);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [report, setReport] = useState<DailyReportResponse | null>(null);
+  const [report, setReport] = useState<DailyReportPayload | null>(null);
+  const [fromCache, setFromCache] = useState(false);
   const [retryToken, setRetryToken] = useState(0);
 
   const isSpecialized = mode === "specialized";
@@ -89,32 +73,38 @@ export default function DailyReportScreen({
     async function loadReport() {
       setLoading(true);
       setError(null);
-      try {
-        const res = await fetch(`${getApiBaseUrl()}/api/market/daily-report`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          signal: controller.signal,
-          body: JSON.stringify({
-            mode,
-            limitedLiveData: isSpecialized ? limitedLiveData : false,
-            holdings: holdingsSnapshot,
-          }),
-        });
-        if (!res.ok) {
-          throw new Error(`Report request failed (${res.status})`);
+      setFromCache(false);
+
+      if (!canGenerateDailyReport()) {
+        if (!cancelled) {
+          setError(
+            "Daily reports are available during US market hours after 10:30 ET (17:30 TRT), once the first hour of trading data is established."
+          );
+          setReport(null);
+          setLoading(false);
         }
-        const data = (await res.json()) as DailyReportResponse;
+        return;
+      }
+
+      try {
+        const { report: data, fromCache: cached } = await fetchDailyReport({
+          mode,
+          limitedLiveData: isSpecialized ? limitedLiveData : false,
+          holdings: holdingsSnapshot,
+          signal: controller.signal,
+        });
         if (cancelled) return;
         if (!data?.macroDrivers || !data?.indexMovements || !data?.sentimentTakeaway) {
           throw new Error("Incomplete report payload");
         }
         setReport(data);
+        setFromCache(cached);
       } catch (err) {
         if (cancelled || (err instanceof DOMException && err.name === "AbortError")) return;
         setError(
           isSpecialized
-            ? "We couldn't reach the AI portfolio service right now. Please try again in a moment."
-            : "We couldn't reach the AI market service right now. Please try again in a moment."
+            ? "We couldn't reach Gemini for your portfolio briefing right now. Please try again in a moment."
+            : "We couldn't reach Gemini for the market briefing right now. Please try again in a moment."
         );
         setReport(null);
       } finally {
@@ -140,7 +130,10 @@ export default function DailyReportScreen({
       : localStatus.title);
   const marketOpen = report?.marketOpen ?? localStatus.marketOpen;
   const showLimitedNote =
-    isSpecialized && (Boolean(report?.limitedLiveData) || limitedLiveData || Boolean(report?.warning?.includes("limited live data")));
+    isSpecialized &&
+    (Boolean(report?.limitedLiveData) ||
+      limitedLiveData ||
+      Boolean(report?.warning?.includes("limited live data")));
 
   const sectionLabels = isSpecialized
     ? {
@@ -157,12 +150,12 @@ export default function DailyReportScreen({
     : {
         heading: "Core Market Synthesis",
         loadingTitle: "Synthesizing US market tape…",
-        loadingSub: "Pulling macro catalysts, index tone, and sentiment",
+        loadingSub: "Pulling macro catalysts, index tone, and sentiment via Gemini",
         first: "Macro Drivers",
         second: "Index Movements",
         third: "General Sentiment & Takeaway",
         chips: ["S&P 500", "Nasdaq", "Dow Jones"],
-        sourceAi: "Live AI synthesis",
+        sourceAi: "Live Gemini synthesis",
         sourceFallback: "Macro fallback",
       };
 
@@ -207,6 +200,11 @@ export default function DailyReportScreen({
                 {isSpecialized ? <Briefcase size={10} /> : <Globe2 size={10} />}
                 {isSpecialized ? "Specialized" : "General"}
               </div>
+              {fromCache && !loading && report && (
+                <div className="inline-flex items-center gap-1.5 rounded-full border border-[#1F2937] bg-[#0A0A0A] px-2.5 py-1 text-[10px] font-bold text-[#9CA3AF]">
+                  Cached · refreshes hourly
+                </div>
+              )}
             </div>
           </div>
         </div>

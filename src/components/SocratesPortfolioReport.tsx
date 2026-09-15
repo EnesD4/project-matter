@@ -1,7 +1,9 @@
 import React, { useEffect, useId, useState } from "react";
 import { Briefcase, Globe2, ScrollText, X } from "lucide-react";
+import type { DailyReportMode } from "../lib/dailyReportService";
+import { getDailyReportAvailability } from "../lib/marketInsights";
 
-export type DailyReportMode = "general" | "specialized";
+export type { DailyReportMode };
 
 type SocratesPortfolioReportProps = {
   /** Opens the full-screen Daily Report screen for the chosen mode. */
@@ -13,13 +15,24 @@ type SocratesPortfolioReportProps = {
 /**
  * Clickable card that opens a mode-selection modal, then navigates to the
  * full-screen AI daily report.
+ *
+ * Visible only while the US cash session is open (09:30–16:00 ET).
+ * Generation unlocks after the first trading hour (10:30 ET / 17:30 TRT).
  */
 export default function SocratesPortfolioReport({
   onOpenReport,
   hasHoldings = true,
 }: SocratesPortfolioReportProps) {
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [availability, setAvailability] = useState(() => getDailyReportAvailability());
   const titleId = useId();
+
+  useEffect(() => {
+    const refresh = () => setAvailability(getDailyReportAvailability());
+    refresh();
+    const id = window.setInterval(refresh, 30_000);
+    return () => window.clearInterval(id);
+  }, []);
 
   useEffect(() => {
     if (!pickerOpen) return;
@@ -30,23 +43,41 @@ export default function SocratesPortfolioReport({
     return () => window.removeEventListener("keydown", onKey);
   }, [pickerOpen]);
 
+  if (!availability.showButton) return null;
+
+  const generationLocked = !availability.canGenerate;
+
   return (
     <>
       <button
         type="button"
-        onClick={() => setPickerOpen(true)}
-        className="flex w-full items-center gap-3 rounded-2xl border border-[#10B981]/35 bg-[#000000] px-4 py-3.5 text-left transition hover:border-[#10B981]/55 hover:bg-[#0A0A0A] active:scale-[0.995]"
+        disabled={generationLocked}
+        onClick={() => {
+          if (generationLocked) return;
+          setPickerOpen(true);
+        }}
+        title={availability.lockReason ?? undefined}
+        className="flex w-full items-center gap-3 rounded-2xl border border-[#10B981]/35 bg-[#000000] px-4 py-3.5 text-left transition hover:border-[#10B981]/55 hover:bg-[#0A0A0A] active:scale-[0.995] disabled:cursor-not-allowed disabled:opacity-55 disabled:hover:border-[#10B981]/35 disabled:hover:bg-[#000000] disabled:active:scale-100"
       >
         <span className="grid h-9 w-9 flex-shrink-0 place-items-center rounded-xl bg-[#10B981]/15 text-[#10B981]">
           <ScrollText size={16} />
         </span>
-        <span className="min-w-0 flex-1 text-sm font-semibold text-white">Get the daily report</span>
-        <span className="text-[#10B981]" aria-hidden>
-          →
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm font-semibold text-white">Get the daily report</span>
+          {generationLocked && availability.lockReason && (
+            <span className="mt-0.5 block text-[11px] font-medium text-amber-200/80">
+              {availability.lockReason}
+            </span>
+          )}
         </span>
+        {!generationLocked && (
+          <span className="text-[#10B981]" aria-hidden>
+            →
+          </span>
+        )}
       </button>
 
-      {pickerOpen && (
+      {pickerOpen && !generationLocked && (
         <div
           className="fixed inset-0 z-[70] flex items-end justify-center bg-black/70 p-4 backdrop-blur-sm sm:items-center"
           role="dialog"
