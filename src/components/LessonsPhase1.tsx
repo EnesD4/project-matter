@@ -66,8 +66,12 @@ import {
   type PhaseId,
 } from "../lib/lessons";
 import { LessonDeck, LessonQuiz } from "./LessonCard";
+import InteractiveQuiz from "./InteractiveQuiz";
 import LessonsHeader from "./LessonsHeader";
+import PracticalQuest from "./PracticalQuest";
 import StreakBadge from "./StreakBadge";
+import { questForModule, scenarioForModule, type PracticalQuestDef } from "../lib/lessonQuests";
+import { markQuestComplete, QUEST_XP, SCENARIO_XP, isQuestComplete } from "../lib/userProgress";
 
 export type { PhaseId };
 
@@ -99,7 +103,7 @@ const PHASE_ICONS: Record<PhaseIconName, LucideIcon> = {
   compass: Compass,
 };
 
-type PlayerPhase = "cards" | "quiz" | "complete";
+type PlayerPhase = "cards" | "quiz" | "scenario" | "quest" | "complete";
 
 type LessonCelebration = {
   xpEarned: number;
@@ -148,6 +152,7 @@ export default function LessonsPhase1({
   const [playerPhase, setPlayerPhase] = useState<PlayerPhase>("cards");
   const [cardIndex, setCardIndex] = useState(0);
   const [quizSolved, setQuizSolved] = useState(false);
+  const [scenarioDone, setScenarioDone] = useState(false);
   const [celebration, setCelebration] = useState<LessonCelebration | null>(null);
   const awardedCardsRef = useRef<Set<string>>(new Set());
   const quizAwardedRef = useRef(false);
@@ -213,6 +218,7 @@ export default function LessonsPhase1({
       setPlayerPhase("cards");
       setCardIndex(0);
       setQuizSolved(false);
+      setScenarioDone(false);
     };
     window.addEventListener(OPEN_LESSON_EVENT, onOpenLesson);
     return () => window.removeEventListener(OPEN_LESSON_EVENT, onOpenLesson);
@@ -248,6 +254,7 @@ export default function LessonsPhase1({
     setPlayerPhase("cards");
     setCardIndex(0);
     setQuizSolved(false);
+    setScenarioDone(false);
   };
 
   const closeModal = () => {
@@ -334,6 +341,15 @@ export default function LessonsPhase1({
       streak: result.streak.current,
       incremented: result.incremented,
     });
+    setPlayerPhase("complete");
+  };
+
+  const revealReward = () => {
+    if (celebration) {
+      setPlayerPhase("complete");
+      return;
+    }
+    finishModule();
   };
 
   const openPaperCta = () => {
@@ -344,9 +360,76 @@ export default function LessonsPhase1({
     onOpenPaperPortfolio?.();
   };
 
-  const playerSteps = activeModule ? activeModule.cards.length + 2 : 0;
-  const playerStep =
-    playerPhase === "cards" ? cardIndex : playerPhase === "quiz" ? (activeModule?.cards.length ?? 0) : playerSteps - 1;
+  const advanceAfterQuiz = () => {
+    if (!activeModule) return;
+    if (scenarioForModule(activeModule.id)) {
+      setPlayerPhase("scenario");
+      return;
+    }
+    if (questForModule(activeModule.id)) {
+      setPlayerPhase("quest");
+      return;
+    }
+    revealReward();
+  };
+
+  const advanceAfterScenario = (awardedXp = 0) => {
+    if (awardedXp > 0) sessionXpRef.current += awardedXp;
+    setScenarioDone(true);
+    setProgress(hydrateProgress(userId));
+  };
+
+  const goToQuestOrComplete = () => {
+    if (!activeModule) return;
+    if (questForModule(activeModule.id)) {
+      setPlayerPhase("quest");
+      return;
+    }
+    revealReward();
+  };
+
+  const executeQuest = (quest: PracticalQuestDef) => {
+    const already = isQuestComplete(quest.id, userId);
+    if (quest.kind === "paper-trade" && quest.symbol) {
+      requestPaperTicker({
+        symbol: quest.symbol,
+        description: quest.description || quest.symbol,
+        monthlyAmount: quest.monthlyAmount,
+        questId: quest.id,
+        questLabel: quest.actionLabel,
+      });
+      markQuestComplete(quest.id, userId, QUEST_XP);
+      if (!already) sessionXpRef.current += QUEST_XP;
+      setProgress(hydrateProgress(userId));
+      persistCompletion();
+      closeModal();
+      onOpenPaperPortfolio?.();
+      return;
+    }
+    markQuestComplete(quest.id, userId, QUEST_XP);
+    if (!already) sessionXpRef.current += QUEST_XP;
+    setProgress(hydrateProgress(userId));
+    revealReward();
+  };
+
+  const activeQuest = activeModule ? questForModule(activeModule.id) : null;
+  const activeScenario = activeModule ? scenarioForModule(activeModule.id) : null;
+
+  const playerSteps = activeModule
+    ? activeModule.cards.length + 1 + (activeScenario ? 1 : 0) + (activeQuest ? 1 : 0) + 1
+    : 0;
+  const playerStep = (() => {
+    if (!activeModule) return 0;
+    const cards = activeModule.cards.length;
+    if (playerPhase === "cards") return cardIndex;
+    if (playerPhase === "quiz") return cards;
+    let step = cards + 1;
+    if (playerPhase === "scenario") return step;
+    if (activeScenario) step += 1;
+    if (playerPhase === "quest") return step;
+    if (activeQuest) step += 1;
+    return step; // complete
+  })();
 
   return (
     <div className="space-y-4">
@@ -478,13 +561,22 @@ export default function LessonsPhase1({
                     const done = Boolean(completed[moduleDef.id]);
                     const Icon = ICONS[moduleDef.icon];
                     const expanded = expandedModuleId === moduleDef.id;
-                    const xpPossible = lessonXpPossible(moduleDef);
+                    const hasQuest = Boolean(questForModule(moduleDef.id));
+                    const hasScenario = Boolean(scenarioForModule(moduleDef.id));
+                    const xpPossible =
+                      lessonXpPossible(moduleDef) +
+                      (hasQuest ? QUEST_XP : 0) +
+                      (hasScenario ? SCENARIO_XP : 0);
 
                     return (
                       <div
                         key={moduleDef.id}
                         className={`rounded-2xl border transition-colors ${
-                          unlocked ? "border-[#1F1F1F] bg-[#0A0A0A]" : "border-[#1F1F1F]/60 bg-[#0A0A0A]/50 opacity-60"
+                          unlocked
+                            ? done
+                              ? "border-emerald-500/35 bg-emerald-500/[0.06]"
+                              : "border-[#1F1F1F] bg-[#0A0A0A]"
+                            : "border-[#1F1F1F]/60 bg-[#0A0A0A]/50 opacity-60"
                         }`}
                       >
                         <button
@@ -509,6 +601,23 @@ export default function LessonsPhase1({
                             <div className="min-w-0">
                               <p className="text-sm font-extrabold leading-snug text-white">{moduleDef.title}</p>
                               <p className="mt-0.5 text-[11px] text-slate-500">{moduleDef.subtitle}</p>
+                              <div className="mt-1.5 flex flex-wrap gap-1">
+                                {done && (
+                                  <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-emerald-300">
+                                    <Check size={10} /> Done
+                                  </span>
+                                )}
+                                {hasQuest && (
+                                  <span className="rounded-full border border-cyan-500/25 bg-cyan-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-cyan-300">
+                                    Quest
+                                  </span>
+                                )}
+                                {hasScenario && (
+                                  <span className="rounded-full border border-violet-500/25 bg-violet-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-violet-300">
+                                    AI scenario
+                                  </span>
+                                )}
+                              </div>
                             </div>
                           </div>
                           <div className="flex flex-shrink-0 flex-col items-end gap-2">
@@ -531,14 +640,16 @@ export default function LessonsPhase1({
                           <div className="h-1.5 w-full overflow-hidden rounded-full bg-black/30">
                             <div
                               className="h-full rounded-full transition-all duration-500"
-                              style={{ width: `${done ? 100 : 0}%`, background: moduleDef.accent }}
+                              style={{ width: `${done ? 100 : unlocked ? 8 : 0}%`, background: moduleDef.accent }}
                             />
                           </div>
                           <p className="mt-1.5 pb-3 text-[11px] font-semibold text-slate-400">
                             {done
-                              ? "Completed ✓"
+                              ? "Completed ✓ · review anytime"
                               : unlocked
-                                ? `${moduleDef.cards.length} cards · ${moduleDef.minutes} min`
+                                ? `${moduleDef.cards.length} cards · quiz · ${hasScenario ? "scenario · " : ""}${
+                                    hasQuest ? "quest · " : ""
+                                  }${moduleDef.minutes} min`
                                 : "Complete the previous lesson"}
                           </p>
                         </div>
@@ -549,12 +660,12 @@ export default function LessonsPhase1({
                           }`}
                         >
                           <div className="space-y-3 border-t border-[#1F1F1F] px-4 py-3">
-                            <div className="flex items-center gap-3 text-[11px] text-slate-500">
+                            <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-500">
                               <span className="flex items-center gap-1">
                                 <Sparkles size={12} /> {moduleDef.cards.length} story cards
                               </span>
                               <span className="flex items-center gap-1">
-                                <HelpCircle size={12} /> 1 check
+                                <HelpCircle size={12} /> check + scenario
                               </span>
                               <span className="flex items-center gap-1">
                                 <Trophy size={12} /> +{xpPossible} XP
@@ -660,13 +771,46 @@ export default function LessonsPhase1({
                 {quizSolved && (
                   <button
                     type="button"
-                    onClick={() => setPlayerPhase("complete")}
+                    onClick={advanceAfterQuiz}
                     className="mt-4 flex w-full items-center justify-center rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-bold text-[#042F2E] transition hover:bg-emerald-400 active:scale-[0.99]"
                   >
-                    See your reward
+                    {activeScenario ? "Real-world scenario" : activeQuest ? "Practical Quest" : "See your reward"}
                   </button>
                 )}
               </>
+            )}
+
+            {playerPhase === "scenario" && activeScenario && (
+              <>
+                <InteractiveQuiz
+                  key={activeScenario.id}
+                  scenario={activeScenario}
+                  userId={userId}
+                  userName={userName}
+                  accent={activeModule.accent}
+                  onComplete={advanceAfterScenario}
+                />
+                {scenarioDone && (
+                  <button
+                    type="button"
+                    onClick={goToQuestOrComplete}
+                    className="mt-4 flex w-full items-center justify-center rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-bold text-[#042F2E] transition hover:bg-emerald-400 active:scale-[0.99]"
+                  >
+                    {activeQuest ? "Practical Quest" : "See your reward"}
+                  </button>
+                )}
+              </>
+            )}
+
+            {playerPhase === "quest" && activeQuest && (
+              <PracticalQuest
+                key={activeQuest.id}
+                quest={activeQuest}
+                userId={userId}
+                accent={activeModule.accent}
+                onExecute={executeQuest}
+                onSkip={revealReward}
+              />
             )}
 
             {playerPhase === "complete" && celebration && (

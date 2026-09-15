@@ -17,6 +17,11 @@ export type LessonProgress = {
 export type PaperTickerIntent = {
   symbol: string;
   description: string;
+  /** Optional DCA / quest monthly dollar amount to prefill Paper Trading */
+  monthlyAmount?: number;
+  /** Quest id so Paper Trading can show a banner and complete the quest on save */
+  questId?: string;
+  questLabel?: string;
 };
 
 export const PAPER_TICKER_INTENT_KEY = "sprout_paper_ticker_intent";
@@ -147,7 +152,13 @@ export function peekPaperTickerIntent(): PaperTickerIntent | null {
     if (typeof parsed.symbol !== "string" || typeof parsed.description !== "string") return null;
     const symbol = parsed.symbol.trim().toUpperCase();
     if (!symbol) return null;
-    return { symbol, description: parsed.description };
+    const monthlyRaw = Number(parsed.monthlyAmount);
+    const monthlyAmount =
+      Number.isFinite(monthlyRaw) && monthlyRaw > 0 ? Math.round(monthlyRaw) : undefined;
+    const questId = typeof parsed.questId === "string" && parsed.questId.trim() ? parsed.questId.trim() : undefined;
+    const questLabel =
+      typeof parsed.questLabel === "string" && parsed.questLabel.trim() ? parsed.questLabel.trim() : undefined;
+    return { symbol, description: parsed.description, monthlyAmount, questId, questLabel };
   } catch {
     return null;
   }

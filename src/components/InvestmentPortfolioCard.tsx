@@ -85,7 +85,12 @@ import { toFiniteNumber } from "../lib/money";
 import { privacyAxis, privacyMoney, privacyShares, privacySignedMoney, formatMoney } from "../lib/privacy";
 import { todayISODate } from "../lib/age";
 import { parseAccountKind, type AccountKind } from "../lib/accountKind";
-import { clearPaperTickerIntent, peekPaperTickerIntent } from "../lib/lessonProgress";
+import {
+  clearPaperTickerIntent,
+  peekPaperTickerIntent,
+  type PaperTickerIntent,
+} from "../lib/lessonProgress";
+import { markQuestComplete } from "../lib/userProgress";
 import { readLocalItem } from "../lib/storage";
 import { isoToUsDate, maskUsDateInput, parseToIsoDate } from "../lib/usDate";
 import { useMarketPolling } from "../hooks/useMarketPolling";
@@ -798,6 +803,7 @@ export default function InvestmentPortfolioCard({
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyMeta, setHistoryMeta] = useState<HistoryMeta | null>(null);
   const [chartAnimate, setChartAnimate] = useState(true);
+  const [paperQuestIntent, setPaperQuestIntent] = useState<PaperTickerIntent | null>(null);
 
   const holdingsRef = useRef(holdings);
   holdingsRef.current = holdings;
@@ -1368,11 +1374,13 @@ export default function InvestmentPortfolioCard({
   const openModal = (tab: "connect" | "manual" = "connect") => {
     setModalTab(tab);
     resetManualForm();
+    if (tab !== "manual") setPaperQuestIntent(null);
     setModalOpen(true);
   };
 
   const closeModal = () => {
     clearPaperTickerIntent();
+    setPaperQuestIntent(null);
     setModalOpen(false);
   };
 
@@ -1558,6 +1566,7 @@ export default function InvestmentPortfolioCard({
   useEffect(() => {
     const intent = peekPaperTickerIntent();
     if (!intent) return;
+    setPaperQuestIntent(intent);
     setModalTab("manual");
     resetManualForm();
     setModalOpen(true);
@@ -1570,6 +1579,16 @@ export default function InvestmentPortfolioCard({
     // Open once when the dashboard remounts after a lesson CTA.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    const monthly = paperQuestIntent?.monthlyAmount;
+    if (!monthly || monthly <= 0) return;
+    const price = Number(purchasePrice) || 0;
+    if (price <= 0) return;
+    const shares = monthly / price;
+    if (!Number.isFinite(shares) || shares <= 0) return;
+    setQuantity(shares >= 1 ? shares.toFixed(4).replace(/\.?0+$/, "") : shares.toFixed(6).replace(/\.?0+$/, ""));
+  }, [paperQuestIntent?.monthlyAmount, purchasePrice]);
 
   const clearSelectedTicker = () => {
     setSelectedTicker(null);
@@ -1742,9 +1761,13 @@ export default function InvestmentPortfolioCard({
           : prev
       );
       markUpdated();
+      if (paperQuestIntent?.questId) {
+        markQuestComplete(paperQuestIntent.questId);
+      }
       resetManualForm();
       setJustAddedId(holding.id);
       clearPaperTickerIntent();
+      setPaperQuestIntent(null);
       setModalOpen(false);
       setHoldingsExpanded(true);
       window.setTimeout(() => setJustAddedId(null), 2000);
@@ -2523,6 +2546,24 @@ export default function InvestmentPortfolioCard({
                 <X size={16} />
               </button>
             </div>
+
+            {modalTab === "manual" && paperQuestIntent && (
+              <div className="mt-3 rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-3 py-2.5">
+                <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-cyan-300">Lesson quest</p>
+                <p className="mt-1 text-xs font-semibold leading-snug text-cyan-50">
+                  {paperQuestIntent.questLabel ||
+                    (paperQuestIntent.monthlyAmount
+                      ? `Simulated $${paperQuestIntent.monthlyAmount}/mo allocation to ${paperQuestIntent.symbol}`
+                      : `Add ${paperQuestIntent.symbol} to your Paper Account`)}
+                </p>
+                {paperQuestIntent.monthlyAmount && Number(purchasePrice) > 0 && (
+                  <p className="mt-1 text-[11px] text-slate-400">
+                    Prefilling ~{(paperQuestIntent.monthlyAmount / Number(purchasePrice)).toFixed(4)} shares so you
+                    can see the live impact of one month&apos;s habit.
+                  </p>
+                )}
+              </div>
+            )}
 
             {modalTab === "connect" && (
               <div className="mt-4 space-y-2.5">
