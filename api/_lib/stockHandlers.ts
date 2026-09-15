@@ -51,19 +51,27 @@ type SearchResult = {
   type: string;
 };
 
-const SEARCH_CATALOG: SearchResult[] = [
-  { symbol: "AAPL", displaySymbol: "AAPL", description: "Apple Inc.", type: "Common Stock" },
-  { symbol: "MSFT", displaySymbol: "MSFT", description: "Microsoft Corp.", type: "Common Stock" },
-  { symbol: "NVDA", displaySymbol: "NVDA", description: "NVIDIA Corp.", type: "Common Stock" },
-  { symbol: "GOOGL", displaySymbol: "GOOGL", description: "Alphabet Inc.", type: "Common Stock" },
-  { symbol: "AMZN", displaySymbol: "AMZN", description: "Amazon.com Inc.", type: "Common Stock" },
-  { symbol: "META", displaySymbol: "META", description: "Meta Platforms", type: "Common Stock" },
-  { symbol: "TSLA", displaySymbol: "TSLA", description: "Tesla Inc.", type: "Common Stock" },
+const SEARCH_CATALOG: Array<SearchResult & { aliases?: string[] }> = [
+  { symbol: "AAPL", displaySymbol: "AAPL", description: "Apple Inc.", type: "Common Stock", aliases: ["apple"] },
+  { symbol: "MSFT", displaySymbol: "MSFT", description: "Microsoft Corp.", type: "Common Stock", aliases: ["microsoft"] },
+  { symbol: "NVDA", displaySymbol: "NVDA", description: "NVIDIA Corp.", type: "Common Stock", aliases: ["nvidia"] },
+  { symbol: "GOOGL", displaySymbol: "GOOGL", description: "Alphabet Inc.", type: "Common Stock", aliases: ["google", "alphabet"] },
+  { symbol: "AMZN", displaySymbol: "AMZN", description: "Amazon.com Inc.", type: "Common Stock", aliases: ["amazon"] },
+  { symbol: "META", displaySymbol: "META", description: "Meta Platforms", type: "Common Stock", aliases: ["facebook", "meta"] },
+  { symbol: "TSLA", displaySymbol: "TSLA", description: "Tesla Inc.", type: "Common Stock", aliases: ["tesla"] },
+  { symbol: "RCAT", displaySymbol: "RCAT", description: "Red Cat Holdings Inc.", type: "Common Stock", aliases: ["red cat", "redcat", "red cat holdings"] },
+  { symbol: "NFLX", displaySymbol: "NFLX", description: "Netflix Inc.", type: "Common Stock", aliases: ["netflix"] },
+  { symbol: "AMD", displaySymbol: "AMD", description: "Advanced Micro Devices", type: "Common Stock" },
+  { symbol: "PLTR", displaySymbol: "PLTR", description: "Palantir Technologies", type: "Common Stock", aliases: ["palantir"] },
+  { symbol: "COIN", displaySymbol: "COIN", description: "Coinbase Global", type: "Common Stock", aliases: ["coinbase"] },
   { symbol: "SPY", displaySymbol: "SPY", description: "SPDR S&P 500 ETF", type: "ETF" },
   { symbol: "QQQ", displaySymbol: "QQQ", description: "Invesco QQQ Trust", type: "ETF" },
   { symbol: "VOO", displaySymbol: "VOO", description: "Vanguard S&P 500 ETF", type: "ETF" },
   { symbol: "VTI", displaySymbol: "VTI", description: "Vanguard Total Stock Market", type: "ETF" },
-  { symbol: "SCHD", displaySymbol: "SCHD", description: "Schwab US Dividend Equity", type: "ETF" },
+  { symbol: "SCHD", displaySymbol: "SCHD", description: "Schwab US Dividend Equity", type: "ETF", aliases: ["schwab dividend"] },
+  { symbol: "VXUS", displaySymbol: "VXUS", description: "Vanguard Total International", type: "ETF" },
+  { symbol: "IVV", displaySymbol: "IVV", description: "iShares Core S&P 500 ETF", type: "ETF" },
+  { symbol: "VIG", displaySymbol: "VIG", description: "Vanguard Dividend Appreciation", type: "ETF" },
 ];
 
 async function yahooChart(symbol: string, range: string) {
@@ -166,19 +174,17 @@ function matchesStockQuery(query: string, symbol: string, name: string | null | 
 }
 
 function catalogMatches(query: string): SearchResult[] {
-  const rows = SEARCH_CATALOG.filter((row) =>
-    matchesStockQuery(query, row.symbol, row.description)
-  );
-  const needle = normalizeSearchText(query).replace(/\s+/g, "");
-  if (/^[A-Z][A-Z0-9.\-]{0,9}$/.test(needle) && !rows.some((row) => row.symbol === needle)) {
-    rows.unshift({
-      symbol: needle,
-      displaySymbol: needle,
-      description: needle,
-      type: "Common Stock",
-    });
-  }
-  return rows.slice(0, 8);
+  // Known catalog only — never invent a fake card for an unrecognized typed ticker.
+  return SEARCH_CATALOG.filter((row) =>
+    matchesStockQuery(query, row.symbol, [row.description, ...(row.aliases || [])].join(" "))
+  )
+    .map(({ symbol, displaySymbol, description, type }) => ({
+      symbol,
+      displaySymbol,
+      description,
+      type,
+    }))
+    .slice(0, 8);
 }
 
 async function handleQuote(req: IncomingMessage | any, res: ServerResponse | any) {

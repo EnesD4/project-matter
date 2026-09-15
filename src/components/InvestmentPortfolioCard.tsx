@@ -276,7 +276,7 @@ function moveItemToIndex<T extends { id: string }>(items: T[], fromId: string, t
   return next;
 }
 
-const SEARCH_DEBOUNCE_MS = 350;
+const SEARCH_DEBOUNCE_MS = 450;
 
 export type { StockQuote };
 
@@ -1038,7 +1038,7 @@ export default function InvestmentPortfolioCard({
     setChartAnimate(true);
   }, [range, benchmarkOn]);
 
-  // Live stock search — remote first, catalog/typed-ticker fallback so add never dead-ends.
+  // Live stock search — local catalog for instant name/ticker hits, then debounced live API.
   useEffect(() => {
     if (selectedTicker) {
       return;
@@ -1066,6 +1066,7 @@ export default function InvestmentPortfolioCard({
         // but keep ticker + company-name matches at the front of the list.
         const primary = data.filter((r) => !r.symbol.includes("."));
         const ranked = (primary.length > 0 ? primary : data).slice(0, 8);
+        // Keep local catalog hits when the API returns nothing — never invent unknown tickers.
         setSearchResults(ranked.length > 0 ? ranked : local);
       } catch (err) {
         if ((err as Error).name !== "AbortError") {
@@ -1457,6 +1458,7 @@ export default function InvestmentPortfolioCard({
     const query = (raw ?? searchQuery).trim();
     if (!query) return searchResults[0] ?? null;
     const upper = query.toUpperCase();
+    // Only select a real search hit — never invent a ticker from free text.
     return (
       searchResults.find((row) => (row.displaySymbol || row.symbol).toUpperCase() === upper) ||
       searchResults.find((row) => matchesStockQuery(query, row.symbol, row.description)) ||
@@ -2691,9 +2693,7 @@ export default function InvestmentPortfolioCard({
                         !searchLoading &&
                         searchQuery.trim().length > 0 &&
                         searchResults.length === 0 && (
-                          <p className="mt-1.5 text-[11px] text-slate-500">
-                            No matches. Try a different ticker or company name.
-                          </p>
+                          <p className="mt-1.5 text-[11px] text-slate-500">No stocks found</p>
                         )}
                     </div>
                   ) : (

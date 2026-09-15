@@ -61,6 +61,8 @@ export const TICKER_DOMAINS: Record<string, string> = {
   SHOP: "shopify.com",
   COIN: "coinbase.com",
   PLTR: "palantir.com",
+  RCAT: "redcatholdings.com",
+  SOFI: "sofi.com",
   CRWD: "crowdstrike.com",
   PANW: "paloaltonetworks.com",
   F: "ford.com",

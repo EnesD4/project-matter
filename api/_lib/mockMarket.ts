@@ -33,6 +33,7 @@ const MOCK_TICKERS: Record<string, { name: string; c: number; dp: number }> = {
   AMZN: { name: "Amazon.com Inc.", c: 191.3, dp: 0.18 },
   META: { name: "Meta Platforms", c: 512.7, dp: 0.55 },
   TSLA: { name: "Tesla Inc.", c: 248.9, dp: -0.68 },
+  RCAT: { name: "Red Cat Holdings Inc.", c: 8.4, dp: 0.35 },
   SPY: { name: "SPDR S&P 500 ETF", c: 562.1, dp: 0.21 },
   QQQ: { name: "Invesco QQQ Trust", c: 481.5, dp: 0.38 },
   VOO: { name: "Vanguard S&P 500 ETF", c: 516.4, dp: 0.19 },

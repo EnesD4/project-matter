@@ -33,6 +33,7 @@ import {
   fetchStockProfile,
   fetchStockQuotes,
   fetchStockSearch,
+  localTickerMatches,
   resolveLiveMark,
 } from "../lib/stockService";
 import Sparkline from "./Sparkline";
@@ -40,7 +41,7 @@ import StockLogo from "./StockLogo";
 
 const GAIN_GREEN = "#10B981";
 const LOSS_RED = "#EF4444";
-const SEARCH_DEBOUNCE_MS = 350;
+const SEARCH_DEBOUNCE_MS = 450;
 
 type StockSearchResult = {
   symbol: string;
@@ -81,6 +82,8 @@ const KNOWN_NAMES: Record<string, string> = {
   QQQ: "Invesco QQQ Trust",
   VOO: "Vanguard S&P 500 ETF",
   VTI: "Vanguard Total Stock Market",
+  SCHD: "Schwab US Dividend Equity",
+  RCAT: "Red Cat Holdings Inc.",
   JPM: "JPMorgan Chase & Co.",
   V: "Visa Inc.",
   MA: "Mastercard Inc.",
@@ -195,15 +198,18 @@ function WatchlistCard({
       return;
     }
 
+    const local = localTickerMatches(query).slice(0, 6);
+    setSearchResults(local);
     setSearchLoading(true);
     const controller = new AbortController();
     const timeoutId = window.setTimeout(async () => {
       try {
         const data = await fetchStockSearch(query, controller.signal);
         const primary = data.filter((r) => !r.symbol.includes("."));
-        setSearchResults((primary.length > 0 ? primary : data).slice(0, 6));
+        const ranked = (primary.length > 0 ? primary : data).slice(0, 6);
+        setSearchResults(ranked.length > 0 ? ranked : local);
       } catch (err) {
-        if ((err as Error).name !== "AbortError") setSearchResults([]);
+        if ((err as Error).name !== "AbortError") setSearchResults(local);
       } finally {
         setSearchLoading(false);
       }
@@ -225,10 +231,14 @@ function WatchlistCard({
   const submitTicker = (e: React.FormEvent) => {
     e.preventDefault();
     const top = searchResults[0];
+    if (!top?.symbol) {
+      setAddError("No stocks found");
+      return;
+    }
     void (async () => {
       try {
         setAddError(null);
-        await onAddTicker(list, top?.displaySymbol || top?.symbol || tickerQuery, top?.description);
+        await onAddTicker(list, top.displaySymbol || top.symbol, top.description);
         setTickerQuery("");
         setSearchResults([]);
       } catch (err) {
@@ -278,16 +288,16 @@ function WatchlistCard({
                   type="text"
                   value={tickerQuery}
                   onChange={(e) => {
-                    setTickerQuery(e.target.value.toUpperCase());
+                    setTickerQuery(e.target.value);
                     setAddError(null);
                   }}
-                  placeholder="Add ticker (AAPL, NVDA, TSLA)"
+                  placeholder="Search ticker or company (AAPL, Tesla)"
                   autoComplete="off"
-                  className="w-full bg-transparent text-xs font-semibold uppercase tracking-wide text-white outline-none placeholder:text-slate-600 placeholder:normal-case placeholder:tracking-normal"
+                  className="w-full bg-transparent text-xs font-semibold tracking-wide text-white outline-none placeholder:text-slate-600 placeholder:font-medium placeholder:tracking-normal"
                 />
                 <button
                   type="submit"
-                  disabled={adding || !tickerQuery.trim()}
+                  disabled={adding || !tickerQuery.trim() || (searchResults.length === 0 && !searchLoading)}
                   className="flex-shrink-0 rounded-lg bg-[#10B981] px-2 py-1 text-[10px] font-extrabold text-[#042F2E] transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   Add
@@ -327,6 +337,13 @@ function WatchlistCard({
                   })}
                 </div>
               )}
+
+              {!addError &&
+                !searchLoading &&
+                tickerQuery.trim().length > 0 &&
+                searchResults.length === 0 && (
+                  <p className="mt-1.5 text-[11px] text-slate-500">No stocks found</p>
+                )}
             </form>
 
             {addError && <p className="mt-1.5 text-[11px] font-semibold text-rose-300">{addError}</p>}

@@ -1,6 +1,6 @@
 import { allowClientMockFallback, apiUrl } from "./apiBase";
 import { clearbitLogoUrl, extractWebsiteDomain } from "./assetLogos";
-import { DEMO_TICKER_CATALOG, resolveDemoTicker } from "./demoScenarios";
+import { DEMO_TICKER_CATALOG } from "./demoScenarios";
 import { getCachedQuote, setCachedChart, setCachedQuote, setCachedSpark } from "./marketCache";
 import {
   buildHistoricalSeries,
@@ -9,6 +9,7 @@ import {
   RangeOption,
   SeriesPoint,
 } from "./priceSimulation";
+import { catalogSearchText, US_STOCK_SEARCH_CATALOG } from "./usStockCatalog";
 
 export type StockQuote = {
   c: number;
@@ -416,8 +417,6 @@ export async function fetchStockProfile(
   return mockProfileForSymbol(ticker);
 }
 
-const TICKER_QUERY = /^[A-Z][A-Z0-9.\-]{0,9}$/;
-
 /** Normalize free-text queries/names for case-insensitive ticker + company matching. */
 export function normalizeSearchText(value: string | null | undefined): string {
   return String(value || "")
@@ -524,33 +523,43 @@ function mergeSearchResults(query: string, ...groups: StockSearchResult[][]): St
     .slice(0, 8);
 }
 
-/** Local catalog + typed-ticker fallback so paper search still works when APIs are down. */
+/**
+ * Instant local matches from the US stock/ETF dictionary (ticker + company name + aliases).
+ * Never invents unknown tickers — unknown queries return [] so the UI can show "No stocks found".
+ */
 export function localTickerMatches(query: string): StockSearchResult[] {
   const raw = String(query || "").trim();
   if (!raw) return [];
-  const q = normalizeSymbol(raw);
-  const rows = Object.entries(DEMO_TICKER_CATALOG)
-    .filter(([symbol, meta]) => matchesStockQuery(raw, symbol, meta.name))
-    .map(([symbol, meta]) => ({
+
+  const fromSearchCatalog = US_STOCK_SEARCH_CATALOG.filter((entry) =>
+    matchesStockQuery(raw, entry.symbol, catalogSearchText(entry))
+  ).map((entry) => ({
+    symbol: entry.symbol,
+    displaySymbol: entry.symbol,
+    description: entry.name,
+    type: entry.type,
+  }));
+
+  // Merge demo catalog names so lesson/demo tickers stay searchable even if omitted above.
+  const seen = new Set(fromSearchCatalog.map((row) => row.symbol));
+  for (const [symbol, meta] of Object.entries(DEMO_TICKER_CATALOG)) {
+    if (seen.has(symbol)) continue;
+    if (!matchesStockQuery(raw, symbol, meta.name)) continue;
+    seen.add(symbol);
+    fromSearchCatalog.push({
       symbol,
       displaySymbol: symbol,
       description: meta.name,
       type: "Common Stock",
-    }))
+    });
+  }
+
+  return fromSearchCatalog
     .sort(
       (a, b) =>
         searchRelevance(raw, a.symbol, a.description) - searchRelevance(raw, b.symbol, b.description)
-    );
-  if (TICKER_QUERY.test(q) && !rows.some((row) => row.symbol === q)) {
-    const resolved = resolveDemoTicker(q);
-    rows.unshift({
-      symbol: resolved.symbol,
-      displaySymbol: resolved.symbol,
-      description: resolved.name,
-      type: "Common Stock",
-    });
-  }
-  return rows.slice(0, 8);
+    )
+    .slice(0, 8);
 }
 
 const MOCK_DAY_CHANGE: Record<string, number> = {
@@ -561,6 +570,7 @@ const MOCK_DAY_CHANGE: Record<string, number> = {
   GOOGL: 0.22,
   AMZN: 0.18,
   META: 0.55,
+  RCAT: 0.35,
   SPY: 0.21,
   QQQ: 0.38,
   VOO: 0.19,

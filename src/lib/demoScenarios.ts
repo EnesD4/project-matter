@@ -76,6 +76,7 @@ export const DEMO_TICKER_CATALOG: Record<string, { name: string; buyPrice: numbe
   AMZN: { name: "Amazon.com Inc.", buyPrice: 191.3 },
   META: { name: "Meta Platforms", buyPrice: 512.7 },
   TSLA: { name: "Tesla Inc.", buyPrice: 248.9 },
+  RCAT: { name: "Red Cat Holdings Inc.", buyPrice: 8.4 },
   SPY: { name: "SPDR S&P 500 ETF", buyPrice: 562.1 },
   QQQ: { name: "Invesco QQQ Trust", buyPrice: 481.5 },
   VOO: { name: "Vanguard S&P 500 ETF", buyPrice: 516.4 },
