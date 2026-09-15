@@ -94,14 +94,20 @@ app.use('/api/watchlists', watchlistRoutes);
 app.use('/api/cash-flow', cashFlowRoutes);
 app.use('/api/plaid', plaidRoutes);
 
-type MarketNewsItem = {
-  headline?: string;
-  summary?: string;
-  source?: string;
-  datetime?: number;
+type DailyReportMode = 'general' | 'specialized';
+
+type PortfolioHoldingInput = {
+  symbol: string;
+  description?: string;
+  quantity: number;
+  avgCost: number;
+  currentPrice: number;
+  dayChangePct?: number;
+  industry?: string;
 };
 
 type DailyReportPayload = {
+  mode: DailyReportMode;
   marketOpen: boolean;
   title: string;
   macroDrivers: string;
@@ -109,7 +115,12 @@ type DailyReportPayload = {
   sentimentTakeaway: string;
   source: 'ai' | 'fallback';
   disclaimer: string;
+  warning?: string;
+  limitedLiveData?: boolean;
 };
+
+const LIMITED_LIVE_DATA_NOTE = 'Note: Generated with limited live data';
+const MAX_DAILY_REPORT_HOLDINGS = 40;
 
 function isUsMarketOpen(date = new Date()): boolean {
   const parts = new Intl.DateTimeFormat('en-US', {
@@ -142,8 +153,32 @@ function reportTitle(marketOpen: boolean): string {
     : 'Latest Market Wrap & Macro Outlook';
 }
 
-function fallbackReport(marketOpen: boolean): DailyReportPayload {
+function specializedTitle(marketOpen: boolean): string {
+  return marketOpen ? 'Your Portfolio Daily Briefing' : 'Your Portfolio Wrap & Outlook';
+}
+
+function fallbackReport(mode: DailyReportMode, marketOpen: boolean): DailyReportPayload {
+  if (mode === 'specialized') {
+    return {
+      mode,
+      marketOpen,
+      title: specializedTitle(marketOpen),
+      macroDrivers: marketOpen
+        ? "Today's macro tape still revolves around Fed expectations, Treasury yields, and growth/inflation data. Those same catalysts are the backdrop for how a concentrated equity book tends to move with broad risk appetite."
+        : 'While cash equities are offline, the carry-forward macro story is still Fed stance, yields, and inflation/growth surprises — the same forces that usually set the tone for a personalized equity book at the next open.',
+      indexMovements: marketOpen
+        ? 'Without a fresh AI pass, treat your largest weights as the main sensitivity to market beta: mega-cap and growth names track Nasdaq tone, while cyclicals lean more with the Dow. Relative day moves across your book matter more than any single headline ticker.'
+        : 'In the latest cash session, portfolio P&L typically mirrored whether growth or cyclicals led. Re-check your top weights versus the S&P 500, Nasdaq, and Dow to see which sleeve drove most of the move.',
+      sentimentTakeaway: marketOpen
+        ? 'Educational takeaway: stay focused on concentration, sector tilt, and how macro catalysts map to your weights — not on trade calls. Use the session to understand risk, not to chase names.'
+        : 'Educational takeaway: use the closed session to review allocation risk and which holdings dominate outcomes. This is context for learning, not a buy/sell recommendation.',
+      source: 'fallback',
+      disclaimer: EDUCATIONAL_DISCLAIMER,
+    };
+  }
+
   return {
+    mode,
     marketOpen,
     title: reportTitle(marketOpen),
     macroDrivers: marketOpen
@@ -158,27 +193,6 @@ function fallbackReport(marketOpen: boolean): DailyReportPayload {
     source: 'fallback',
     disclaimer: EDUCATIONAL_DISCLAIMER,
   };
-}
-
-async function fetchMarketHeadlines(): Promise<string[]> {
-  if (!FINNHUB_API_KEY) return [];
-  try {
-    const response = await axios.get<MarketNewsItem[]>(
-      `https://finnhub.io/api/v1/news?category=general&token=${FINNHUB_API_KEY}`,
-      { timeout: 8000 }
-    );
-    const items = Array.isArray(response.data) ? response.data : [];
-    const keyword =
-      /\b(fed|fomc|treasury|yield|inflation|cpi|jobs|payroll|gdp|s&p|nasdaq|dow|equity|equities|wall street|earnings|rate cut|rate hike|recession|soft landing)\b/i;
-    const scored = items
-      .map((n) => (n.headline || n.summary || '').trim())
-      .filter(Boolean)
-      .sort((a, b) => Number(keyword.test(b)) - Number(keyword.test(a)));
-    return scored.slice(0, 8);
-  } catch (error) {
-    console.error('Error fetching market news:', error);
-    return [];
-  }
 }
 
 function parseAiJson(text: string): {
@@ -207,10 +221,72 @@ function parseAiJson(text: string): {
   }
 }
 
-async function generateAiReport(
-  marketOpen: boolean,
-  headlines: string[]
-): Promise<DailyReportPayload | null> {
+function sanitizeDailyReportHoldings(raw: unknown): PortfolioHoldingInput[] {
+  if (!Array.isArray(raw)) return [];
+  const out: PortfolioHoldingInput[] = [];
+  for (const item of raw.slice(0, MAX_DAILY_REPORT_HOLDINGS)) {
+    const rec = item && typeof item === 'object' ? (item as Record<string, unknown>) : {};
+    const symbol = String(rec.symbol || '')
+      .trim()
+      .toUpperCase()
+      .slice(0, 12);
+    if (!symbol) continue;
+    const quantity = Number(rec.quantity);
+    const avgCost = Number(rec.avgCost);
+    const currentPrice = Number(rec.currentPrice);
+    out.push({
+      symbol,
+      description: String(rec.description || '').trim().slice(0, 80) || undefined,
+      quantity: Number.isFinite(quantity) ? quantity : 0,
+      avgCost: Number.isFinite(avgCost) ? avgCost : 0,
+      currentPrice: Number.isFinite(currentPrice) ? currentPrice : 0,
+      dayChangePct: Number.isFinite(Number(rec.dayChangePct)) ? Number(rec.dayChangePct) : undefined,
+      industry: String(rec.industry || '').trim().slice(0, 60) || undefined,
+    });
+  }
+  return out;
+}
+
+function detectLimitedLiveData(holdings: PortfolioHoldingInput[], flagged: boolean): boolean {
+  if (flagged) return true;
+  if (holdings.length === 0) return true;
+  return holdings.some((h) => !(h.currentPrice > 0));
+}
+
+function formatHoldingsBlock(holdings: PortfolioHoldingInput[]): string {
+  if (holdings.length === 0) {
+    return 'No portfolio holdings were provided. Speak in general educational terms about how a typical equity book interacts with today\'s macro tape.';
+  }
+  return holdings
+    .map((h, i) => {
+      const value = h.quantity * h.currentPrice;
+      const cost = h.quantity * h.avgCost;
+      const pnlPct = cost > 0 ? ((value - cost) / cost) * 100 : null;
+      const day = Number.isFinite(h.dayChangePct) ? `${h.dayChangePct!.toFixed(2)}% day` : 'day n/a';
+      const price = h.currentPrice > 0 ? `$${h.currentPrice.toFixed(2)}` : 'price unavailable';
+      const industry = h.industry ? ` · ${h.industry}` : '';
+      const name = h.description ? ` (${h.description})` : '';
+      const pnl =
+        pnlPct == null || !Number.isFinite(pnlPct) ? 'P&L n/a' : `${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}% vs cost`;
+      return `${i + 1}. ${h.symbol}${name}${industry} — qty ${h.quantity}, mark ${price}, ${day}, ${pnl}`;
+    })
+    .join('\n');
+}
+
+function withLimitedDataNotice(payload: DailyReportPayload, limitedLiveData: boolean): DailyReportPayload {
+  if (!limitedLiveData) return { ...payload, limitedLiveData: false };
+  return {
+    ...payload,
+    limitedLiveData: true,
+    warning: payload.warning?.includes('limited live data')
+      ? payload.warning
+      : payload.warning
+        ? `${LIMITED_LIVE_DATA_NOTE} ${payload.warning}`
+        : LIMITED_LIVE_DATA_NOTE,
+  };
+}
+
+async function generateGeneralAiReport(marketOpen: boolean): Promise<DailyReportPayload | null> {
   if (!GEMINI_API_KEY) return null;
 
   const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
@@ -220,18 +296,13 @@ async function generateAiReport(
   });
 
   const sessionLabel = marketOpen ? 'US cash equity markets are OPEN' : 'US cash equity markets are CLOSED';
-  const headlineBlock =
-    headlines.length > 0
-      ? headlines.map((h, i) => `${i + 1}. ${h}`).join('\n')
-      : 'No live headlines available — reason from current US macro consensus.';
 
   const prompt = `${SPROUT_SYSTEM_INSTRUCTION}
 
-Write a concise educational US market briefing. You are teaching context, not giving trade signals.
+Write a concise educational US market briefing powered directly from your market knowledge. You are teaching context, not giving trade signals.
 
 Context: ${sessionLabel} (America/New_York session).
-Recent market headlines:
-${headlineBlock}
+Do not wait for or invent live quote feeds. Reason from widely known macro consensus and typical index relationships.
 
 Return ONLY valid JSON with exactly these keys (no markdown, no extra keys):
 {
@@ -254,6 +325,7 @@ Rules:
       return null;
     }
     return {
+      mode: 'general',
       marketOpen,
       title: reportTitle(marketOpen),
       ...parsed,
@@ -262,6 +334,72 @@ Rules:
     };
   } catch (error) {
     console.error('Error generating AI market report:', error);
+    return null;
+  }
+}
+
+async function generateSpecializedAiReport(
+  marketOpen: boolean,
+  holdings: PortfolioHoldingInput[],
+  limitedLiveData: boolean
+): Promise<DailyReportPayload | null> {
+  if (!GEMINI_API_KEY) return null;
+
+  const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+  const model = genAI.getGenerativeModel({
+    model: 'gemini-3.6-flash',
+    systemInstruction: SPROUT_SYSTEM_INSTRUCTION,
+  });
+
+  const sessionLabel = marketOpen ? 'US cash equity markets are OPEN' : 'US cash equity markets are CLOSED';
+  const holdingsBlock = formatHoldingsBlock(holdings);
+  const dataNote = limitedLiveData
+    ? 'Live marks may be missing, stale, or rate-limited. Still produce a useful educational briefing and do not refuse.'
+    : 'Use the provided marks as context only; they may lag.';
+
+  const prompt = `${SPROUT_SYSTEM_INSTRUCTION}
+
+Write a concise educational personalized portfolio briefing. You are teaching how macro context maps to THIS user's holdings — not giving trade signals.
+
+Context: ${sessionLabel} (America/New_York session).
+${dataNote}
+
+Portfolio holdings:
+${holdingsBlock}
+
+Return ONLY valid JSON with exactly these keys (no markdown, no extra keys):
+{
+  "macroDrivers": "1 short paragraph: today's macro catalysts and how they generally affect a book with this mix of holdings/sectors.",
+  "indexMovements": "1 short paragraph: educational breakdown of concentration, sector tilt, and how key holdings typically relate to S&P 500 / Nasdaq / Dow tone. Reference tickers from the list when helpful, but no buy/sell calls.",
+  "sentimentTakeaway": "1 short paragraph: high-level portfolio learning takeaway (risk, diversification, what to watch). No trade recommendations."
+}
+
+Rules:
+- Exactly 3 paragraphs as the three JSON string values.
+- Personalized but educational. Do not recommend buying or selling. No tax advice.
+- If marks are missing, still reason from symbols, weights, and macro context.
+- Clear everyday language. Each paragraph 2–4 sentences.`;
+
+  try {
+    const result = await model.generateContent(prompt);
+    const text = result.response.text().trim();
+    const parsed = parseAiJson(text);
+    if (!parsed) {
+      console.error('AI portfolio report JSON parse failed. Raw:', text.slice(0, 400));
+      return null;
+    }
+    return {
+      mode: 'specialized',
+      marketOpen,
+      title: specializedTitle(marketOpen),
+      ...parsed,
+      source: 'ai',
+      disclaimer: EDUCATIONAL_DISCLAIMER,
+      limitedLiveData: limitedLiveData || undefined,
+      warning: limitedLiveData ? LIMITED_LIVE_DATA_NOTE : undefined,
+    };
+  } catch (error) {
+    console.error('Error generating AI portfolio report:', error);
     return null;
   }
 }
@@ -908,27 +1046,60 @@ app.post('/api/stocks/analysis', async (req, res) => {
 });
 
 /**
- * Holistic US market AI daily report — macro only, no single-stock breakdowns.
- * GET /api/market/daily-report
+ * Dual-mode AI daily report — general (Gemini-only) or specialized (portfolio holdings).
+ * GET/POST /api/market/daily-report
  */
-app.get('/api/market/daily-report', async (_req, res) => {
+app.all('/api/market/daily-report', async (req, res) => {
   try {
-    const marketOpen = isUsMarketOpen();
-    const headlines = await fetchMarketHeadlines();
-    const aiReport = await generateAiReport(marketOpen, headlines);
-    if (aiReport) {
-      return res.json(aiReport);
+    const method = (req.method || 'GET').toUpperCase();
+    if (method !== 'GET' && method !== 'POST') {
+      return res.status(405).json({ error: 'Method not allowed' });
     }
-    return res.json({
-      ...fallbackReport(marketOpen),
-      warning: 'Live AI synthesis was unavailable. Showing a high-level macro fallback.',
-    });
+
+    let mode: DailyReportMode = 'general';
+    let holdings: PortfolioHoldingInput[] = [];
+    let limitedLiveData = false;
+
+    if (method === 'POST') {
+      const body = (req.body && typeof req.body === 'object' ? req.body : {}) as Record<string, unknown>;
+      mode = body.mode === 'specialized' ? 'specialized' : 'general';
+      holdings = mode === 'specialized' ? sanitizeDailyReportHoldings(body.holdings) : [];
+      limitedLiveData =
+        mode === 'specialized'
+          ? detectLimitedLiveData(holdings, Boolean(body.limitedLiveData))
+          : false;
+    } else if (req.query?.mode === 'specialized') {
+      mode = 'specialized';
+    }
+
+    const marketOpen = isUsMarketOpen();
+
+    if (mode === 'general') {
+      const aiReport = await generateGeneralAiReport(marketOpen);
+      if (aiReport) return res.json(aiReport);
+      return res.json({
+        ...fallbackReport('general', marketOpen),
+        warning: 'Live AI synthesis was unavailable. Showing a high-level macro fallback.',
+      });
+    }
+
+    const aiReport = await generateSpecializedAiReport(marketOpen, holdings, limitedLiveData);
+    if (aiReport) return res.json(withLimitedDataNotice(aiReport, limitedLiveData));
+    return res.json(
+      withLimitedDataNotice(
+        {
+          ...fallbackReport('specialized', marketOpen),
+          warning: 'Live AI synthesis was unavailable. Showing a high-level portfolio fallback.',
+        },
+        limitedLiveData
+      )
+    );
   } catch (error) {
     console.error('Error building daily market report:', error);
     const marketOpen = isUsMarketOpen();
     return res.status(200).json({
-      ...fallbackReport(marketOpen),
-      warning: 'AI and news services were unavailable. Showing a high-level macro fallback.',
+      ...fallbackReport('general', marketOpen),
+      warning: 'AI services were unavailable. Showing a high-level macro fallback.',
     });
   }
 });

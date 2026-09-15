@@ -106,7 +106,7 @@ import DarkCalendar from "./DarkCalendar";
 import LiveStatusBadge from "./LiveStatusBadge";
 import LoadingSpinner, { EmptyChartPlaceholder } from "./LoadingSpinner";
 import PlaidConnectButton from "./PlaidConnectButton";
-import SocratesPortfolioReport from "./SocratesPortfolioReport";
+import SocratesPortfolioReport, { type DailyReportMode } from "./SocratesPortfolioReport";
 import Sparkline from "./Sparkline";
 import StockDetailPage from "./StockDetailPage";
 import StockLogo from "./StockLogo";
@@ -774,6 +774,8 @@ export default function InvestmentPortfolioCard({
   const [holdingsExpanded, setHoldingsExpanded] = useState(true);
   const [selectedHolding, setSelectedHolding] = useState<StockHolding | null>(null);
   const [dailyReportOpen, setDailyReportOpen] = useState(false);
+  const [dailyReportMode, setDailyReportMode] = useState<DailyReportMode>("general");
+  const [liveQuotesLimited, setLiveQuotesLimited] = useState(false);
 
   const [modalOpen, setModalOpen] = useState(false);
   const [modalTab, setModalTab] = useState<"connect" | "manual">("connect");
@@ -819,6 +821,31 @@ export default function InvestmentPortfolioCard({
   const stocks = safeHoldings.filter((h): h is StockHolding => h?.kind === "stock");
   const hasStockHoldings = stocks.length > 0;
   const canReorderHoldings = safeHoldings.length > 1;
+  const dailyReportHoldings = useMemo(
+    () =>
+      stocks.map((h) => ({
+        symbol: h.symbol,
+        description: h.description,
+        quantity: h.quantity,
+        avgCost: h.avgCost,
+        currentPrice: h.currentPrice,
+        dayChangePct: h.dayChangePct,
+        industry: h.industry,
+      })),
+    [stocks]
+  );
+  const dailyReportLimitedLiveData = useMemo(() => {
+    if (!hasStockHoldings) return true;
+    if (liveQuotesLimited) return true;
+    return stocks.some(
+      (h) =>
+        !(h.currentPrice > 0) ||
+        (h.prevClose <= 0 &&
+          h.dayChangePct === 0 &&
+          h.dayChangeAbs === 0 &&
+          h.currentPrice === h.avgCost)
+    );
+  }, [hasStockHoldings, liveQuotesLimited, stocks]);
 
   const { markUpdated, marketOpen } = useMarketPolling({
     enabled: hasStockHoldings,
@@ -829,8 +856,12 @@ export default function InvestmentPortfolioCard({
       if (stocks.length === 0) return;
       const uniqueSymbols = [...new Set(stocks.map((s) => s?.symbol).filter(Boolean))];
       const quotes = await fetchStockQuotes(uniqueSymbols);
-      if (quotes.size === 0) return;
+      if (quotes.size === 0) {
+        setLiveQuotesLimited(true);
+        return;
+      }
 
+      setLiveQuotesLimited(false);
       setChartAnimate(false);
       setHoldings((prev) =>
         (prev || []).map((h) => {
@@ -1989,7 +2020,13 @@ export default function InvestmentPortfolioCard({
 
       {/* AI daily report — above chart (below portfolio value) */}
       <div className="mt-4">
-        <SocratesPortfolioReport onOpenReport={() => setDailyReportOpen(true)} />
+        <SocratesPortfolioReport
+          hasHoldings={hasStockHoldings}
+          onOpenReport={(mode) => {
+            setDailyReportMode(mode);
+            setDailyReportOpen(true);
+          }}
+        />
       </div>
 
       {!hasHoldings ? (
@@ -2840,6 +2877,9 @@ export default function InvestmentPortfolioCard({
 
       {dailyReportOpen && (
         <DailyReportScreen
+          mode={dailyReportMode}
+          holdings={dailyReportHoldings}
+          limitedLiveData={dailyReportLimitedLiveData}
           onBack={() => setDailyReportOpen(false)}
           onConsultSocrates={onConsultSocrates}
         />
