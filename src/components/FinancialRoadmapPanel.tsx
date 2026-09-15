@@ -189,19 +189,19 @@ export default function FinancialRoadmapPanel({
 
   return (
     <div
-      className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-[70] flex items-center justify-center overflow-x-hidden bg-slate-950/80 p-4 backdrop-blur-sm"
       onClick={onClose}
       role="presentation"
     >
       <div
-        className="matter-pop flex max-h-[min(92vh,820px)] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-[#1F1F1F] bg-[#0A0A0A] shadow-[0_24px_60px_rgba(0,0,0,0.55)]"
+        className="matter-pop flex max-h-[min(92vh,820px)] w-full max-w-md flex-col overflow-hidden overflow-x-hidden rounded-2xl border border-[#1F1F1F] bg-[#0A0A0A] shadow-[0_24px_60px_rgba(0,0,0,0.55)]"
         onClick={(event) => event.stopPropagation()}
         role="dialog"
         aria-modal="true"
         aria-labelledby="financial-roadmap-panel-title"
       >
         <div className="flex items-start justify-between gap-3 border-b border-neutral-800 px-4 py-3.5">
-          <div className="flex min-w-0 items-center gap-2">
+          <div className="flex min-w-0 flex-1 items-center gap-2">
             <button
               type="button"
               onClick={onClose}
@@ -210,13 +210,13 @@ export default function FinancialRoadmapPanel({
             >
               <ChevronLeft size={16} />
             </button>
-            <div className="min-w-0">
-              <h3 id="financial-roadmap-panel-title" className="m-0 text-sm font-extrabold text-white">
+            <div className="min-w-0 flex-1 overflow-hidden">
+              <h3 id="financial-roadmap-panel-title" className="m-0 truncate text-sm font-extrabold text-white">
                 Personal Financial Roadmap
               </h3>
-              <p className="mt-0.5 text-[11px] font-semibold text-neutral-500">
+              <p className="mt-0.5 truncate text-[11px] font-semibold text-neutral-500">
                 {roadmap ? (
-                  <span className="inline-flex items-center gap-1">
+                  <span className="inline-flex max-w-full items-center gap-1">
                     <RoadmapGlyph archetype={roadmap.archetype} size={12} color={roadmap.accent} />
                     AI quest · {doneCount}/{total} milestones
                   </span>
@@ -226,7 +226,7 @@ export default function FinancialRoadmapPanel({
               </p>
             </div>
           </div>
-          <div className="relative flex-shrink-0 rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-[11px] font-extrabold text-amber-300">
+          <div className="relative max-w-[42%] flex-shrink-0 truncate rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-[11px] font-extrabold text-amber-300">
             Lv {levelFromXp(xp)} · {formatNumber(xp)} XP
             {floatKey > 0 && floatXp > 0 && (
               <span
@@ -320,14 +320,22 @@ export default function FinancialRoadmapPanel({
                             {checked ? <Check size={14} strokeWidth={3} /> : "X"}
                           </button>
                           <div className="min-w-0 flex-1">
-                            <div className="flex items-start justify-between gap-2">
+                            <div className="flex min-w-0 items-start justify-between gap-2">
                               <p
-                                className={`m-0 flex items-center gap-1.5 text-[13px] font-extrabold leading-snug ${
+                                className={`m-0 flex min-w-0 items-start gap-1.5 text-[13px] font-extrabold leading-snug ${
                                   checked ? "text-emerald-100" : "text-white"
                                 }`}
                               >
-                                <Icon size={14} className={checked ? "text-emerald-300" : accent} aria-hidden />
-                                <span className={checked ? "line-through decoration-emerald-500/60" : undefined}>
+                                <Icon
+                                  size={14}
+                                  className={`mt-0.5 flex-shrink-0 ${checked ? "text-emerald-300" : accent}`}
+                                  aria-hidden
+                                />
+                                <span
+                                  className={`min-w-0 break-words [overflow-wrap:anywhere] ${
+                                    checked ? "line-through decoration-emerald-500/60" : ""
+                                  }`}
+                                >
                                   Step {index + 1}: {todo.title}
                                 </span>
                               </p>

@@ -57,6 +57,11 @@ export type SproutSpendingCategory = {
   amount: number;
 };
 
+export type SproutPortfolioSleeve = {
+  label: string;
+  weightPct: number;
+};
+
 export type SproutAiFinancialSnapshot = {
   userName: string;
   cash: {
@@ -82,6 +87,16 @@ export type SproutAiFinancialSnapshot = {
     netCashFlow: number;
     isSurplus: boolean;
     categories: SproutSpendingCategory[];
+    summary: string;
+  };
+  /** Linked / paper holdings facts for diversification coaching (not trade advice). */
+  portfolio?: {
+    equityValue: number;
+    brokerageCash: number;
+    holdingCount: number;
+    diversificationLabel: string;
+    diversificationDetail: string;
+    topSleeves: SproutPortfolioSleeve[];
     summary: string;
   };
 };
@@ -135,6 +150,16 @@ export function buildEducationalMilestones(snapshot: SproutAiFinancialSnapshot):
     milestones.push(
       "With a 3-month cushion and no high-interest debt, introduce compound-interest math and automating surplus toward long-term goals — no stock picks."
     );
+    const tilt = snapshot.portfolio?.diversificationLabel;
+    if (tilt && /tech heavy|concentrated|name heavy/i.test(tilt)) {
+      milestones.push(
+        `Explain how a "${tilt}" book differs from broad market index exposure (S&P 500 / total market) — teach diversification concepts only, never recommend trades.`
+      );
+    } else if ((snapshot.portfolio?.holdingCount ?? 0) > 0) {
+      milestones.push(
+        "Use the linked holdings only as context to teach diversification vs concentration — never recommend buying or selling any ticker."
+      );
+    }
   }
 
   if (milestones.length === 0) {
@@ -156,7 +181,7 @@ export function firstNameOf(name: string, fallback = "Investor"): string {
 }
 
 export function formatEducationalContext(snapshot: SproutAiFinancialSnapshot): string {
-  const { cash, debt, spending } = snapshot;
+  const { cash, debt, spending, portfolio } = snapshot;
   const userName = firstNameOf(snapshot.userName);
   const monthsLabel =
     cash.safetyNetMonths == null ? "spending not tracked yet" : `${cash.safetyNetMonths.toFixed(1)} months of spending`;
@@ -167,12 +192,16 @@ export function formatEducationalContext(snapshot: SproutAiFinancialSnapshot): s
     .join(", ");
 
   const milestones = buildEducationalMilestones(snapshot);
+  const portfolioLine = portfolio?.summary
+    ? `- Portfolio diversification (facts only): ${portfolio.summary}`
+    : "- Portfolio diversification: no linked brokerage holdings yet.";
 
   return [
     `${userName}'s automated financial context (use these numbers; do not invent others):`,
     `- Cash: liquid $${usd(cash.liquidCash)}, HYSA $${usd(cash.hysaCash)}, safety net $${usd(cash.safetyNetTotal)} (${monthsLabel}). Starter cash goal $${usd(cash.starterCashGoal)}; ${cash.starterMonths}-month reserve target $${usd(spending.monthlyExpenses * cash.starterMonths)}; ${cash.recommendedMonths}-month target $${usd(cash.recommendedGoal)}.`,
     `- Debt: ${debt.summary}`,
     `- Spending patterns: ${spending.summary}${topSpend ? ` Largest categories: ${topSpend}.` : ""}`,
+    portfolioLine,
     `- Tailored educational milestones to teach (in this order, only as education):`,
     ...milestones.map((line, index) => `  ${index + 1}. ${line}`),
   ].join("\n");

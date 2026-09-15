@@ -24,6 +24,7 @@ function buildPayload(input: {
   institution: string;
   accounts: PlaidAccount[];
   holdings?: PlaidHolding[];
+  brokerageCash?: number;
   transactions?: PlaidTransaction[];
   source?: 'plaid' | 'supabase';
 }) {
@@ -39,6 +40,7 @@ function buildPayload(input: {
   const moneyMarket = pickBalance(accounts, (account) =>
     /money/.test(`${account.subtype} ${account.name}`.toLowerCase())
   );
+  const brokerageCash = Math.max(0, Number(input.brokerageCash) || 0);
   return {
     sandbox: true,
     source: input.source || 'plaid',
@@ -46,7 +48,8 @@ function buildPayload(input: {
     chaseChecking,
     marcusHysa,
     moneyMarket,
-    cash: { chaseChecking, marcusHysa, moneyMarket },
+    brokerageCash,
+    cash: { chaseChecking, marcusHysa, moneyMarket, brokerageCash },
     accounts,
     holdings: input.holdings || [],
     transactions: input.transactions || [],
@@ -103,6 +106,7 @@ router.post('/exchange-token', async (req: AuthedRequest, res: Response) => {
         institution: snapshot.institution,
         accounts: snapshot.accounts,
         holdings: snapshot.holdings,
+        brokerageCash: snapshot.brokerageCash,
         transactions: snapshot.transactions,
       })
     );
@@ -125,6 +129,7 @@ async function sendAccounts(req: AuthedRequest, res: Response) {
     const accounts: PlaidAccount[] = [];
     const holdings: PlaidHolding[] = [];
     const transactions: PlaidTransaction[] = [];
+    let brokerageCash = 0;
     let institution = items[0]?.institutionName || 'Linked bank';
     for (const item of items) {
       try {
@@ -133,11 +138,12 @@ async function sendAccounts(req: AuthedRequest, res: Response) {
         accounts.push(...snapshot.accounts);
         holdings.push(...snapshot.holdings);
         transactions.push(...snapshot.transactions);
+        brokerageCash += Number(snapshot.brokerageCash) || 0;
       } catch (error) {
         console.error('Plaid accounts refresh failed:', error);
       }
     }
-    return res.json(buildPayload({ institution, accounts, holdings, transactions }));
+    return res.json(buildPayload({ institution, accounts, holdings, brokerageCash, transactions }));
   } catch (error) {
     console.error('Plaid accounts error:', error);
     return res.status(500).json({

@@ -84,6 +84,18 @@ export function formatPercent(val: any, digits = 2): string {
   })}%`;
 }
 
+/** Signed change percent (`+12.34%` / `-12.34%`) for gains/losses. */
+export function formatSignedPercent(val: any, digits = 2): string {
+  if (val === undefined || val === null || isNaN(Number(val))) {
+    return `${(0).toFixed(digits)}%`;
+  }
+  const n = toFiniteNumber(val, 0);
+  const abs = Math.abs(n).toFixed(digits);
+  if (n > 0) return `+${abs}%`;
+  if (n < 0) return `-${abs}%`;
+  return `${abs}%`;
+}
+
 /** Strip currency formatting and parse a typed money string into a finite number. */
 export function parseCurrency(raw: string): number {
   const cleaned = String(raw ?? "").replace(/[^0-9.]/g, "");

@@ -39,6 +39,15 @@ export type PlaidHolding = {
   accountType: "verified";
   createdAt: string;
   name?: string;
+  accountId?: string;
+  securityType?: string;
+  isCashEquivalent?: boolean;
+};
+
+export type PlaidInvestmentsMap = {
+  holdings: PlaidHolding[];
+  /** Sweep / settlement / money-market cash sitting uninvested in brokerage accounts. */
+  brokerageCash: number;
 };
 
 export type PlaidTransaction = {
@@ -54,6 +63,8 @@ export type PlaidSnapshot = {
   itemId: string;
   accounts: PlaidAccount[];
   holdings: PlaidHolding[];
+  /** Uninvested cash inside investment/brokerage accounts. */
+  brokerageCash: number;
   transactions: PlaidTransaction[];
 };
 
@@ -142,7 +153,10 @@ export async function linkTokenCreate(user_id?: string): Promise<string> {
   const payload: Record<string, unknown> = {
     user: { client_user_id: sanitizePlaidClientUserId(user_id || "user_default") || "user_default" },
     client_name: "Sprout",
+    // Transactions for checking/savings cash flow; investments when the institution supports it
+    // (Robinhood, Fidelity, Schwab, E*TRADE, etc.).
     products: ["transactions"],
+    optional_products: ["investments"],
     country_codes: ["US"],
     language: "en",
   };
@@ -218,7 +232,35 @@ export function mapPlaidTransactions(raw: unknown): PlaidTransaction[] {
     });
 }
 
-export function mapPlaidHoldings(raw: unknown, securities: unknown, now = new Date().toISOString()): PlaidHolding[] {
+const CASH_TICKER_RE = /^(CUR:)?USD$|^USD[A-Z]{0,3}$|^SPAXX$|^VMFXX$|^FDRXX$|^SPRXX$|^SNSXX$|^QCASH$|^CASH$/i;
+const CASH_NAME_RE = /\b(cash|sweep|settlement|money\s*market|uninvested|pending\s*cash)\b/i;
+
+function isCashLikeSecurity(security: Record<string, unknown>, symbol: string, name: string): boolean {
+  const type = String(security.type || "").toLowerCase();
+  if (type === "cash" || type === "currency") return true;
+  if (security.is_cash_equivalent === true) return true;
+  if (CASH_TICKER_RE.test(symbol)) return true;
+  if (CASH_NAME_RE.test(name)) return true;
+  return false;
+}
+
+function isInvestmentAccount(account: PlaidAccount): boolean {
+  if (account.type === "investment") return true;
+  return /\b(brokerage|investment|401\s*\(?k\)?|ira|roth|hsa)\b/i.test(
+    `${account.subtype} ${account.name} ${account.officialName}`
+  );
+}
+
+/**
+ * Maps Plaid Investments holdings. Equity/ETF lots become portfolio rows;
+ * cash / currency / sweep securities contribute to uninvested brokerage cash.
+ */
+export function mapPlaidInvestments(
+  raw: unknown,
+  securities: unknown,
+  accounts: PlaidAccount[] = [],
+  now = new Date().toISOString()
+): PlaidInvestmentsMap {
   const securityById = new Map<string, Record<string, unknown>>();
   if (Array.isArray(securities)) {
     for (const item of securities) {
@@ -228,29 +270,69 @@ export function mapPlaidHoldings(raw: unknown, securities: unknown, now = new Da
       }
     }
   }
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
-    .map((item) => {
-      const security = securityById.get(String(item.security_id || "")) || {};
-      const symbol = String(security.ticker_symbol || item.ticker_symbol || "").trim().toUpperCase();
-      const shares = Number(item.quantity ?? item.shares) || 0;
-      const value = Number(item.institution_value);
+
+  const holdings: PlaidHolding[] = [];
+  let cashFromSecurities = 0;
+
+  if (Array.isArray(raw)) {
+    for (const item of raw) {
+      if (!item || typeof item !== "object") continue;
+      const rec = item as Record<string, unknown>;
+      const security = securityById.get(String(rec.security_id || "")) || {};
+      const symbol = String(security.ticker_symbol || rec.ticker_symbol || "").trim().toUpperCase();
+      const name = typeof security.name === "string" ? security.name : "";
+      const shares = Number(rec.quantity ?? rec.shares) || 0;
+      const institutionValue = Number(rec.institution_value);
+      const institutionPrice = Number(rec.institution_price || rec.buyPrice) || 0;
+      const value =
+        Number.isFinite(institutionValue) && institutionValue > 0
+          ? institutionValue
+          : shares > 0 && institutionPrice > 0
+            ? shares * institutionPrice
+            : 0;
+
+      if (isCashLikeSecurity(security, symbol, name)) {
+        cashFromSecurities += Math.max(0, value);
+        continue;
+      }
+
       const buyPrice =
-        (shares > 0 && Number.isFinite(value) ? value / shares : Number(item.institution_price || item.buyPrice)) || 0;
-      return {
-        id: String(item.security_id || `plaid-${symbol.toLowerCase()}`),
+        (shares > 0 && Number.isFinite(institutionValue) && institutionValue > 0
+          ? institutionValue / shares
+          : institutionPrice) || 0;
+      if (!symbol || shares <= 0 || buyPrice <= 0) continue;
+
+      holdings.push({
+        id: String(rec.security_id || `plaid-${symbol.toLowerCase()}`),
         userId: "local",
         symbol,
         shares,
         buyPrice,
         purchasedAt: null,
-        accountType: "verified" as const,
+        accountType: "verified",
         createdAt: now,
-        name: typeof security.name === "string" ? security.name : undefined,
-      };
-    })
-    .filter((item) => item.symbol && item.shares > 0 && item.buyPrice > 0);
+        name: name || undefined,
+        accountId: typeof rec.account_id === "string" ? rec.account_id : undefined,
+        securityType: typeof security.type === "string" ? security.type : undefined,
+        isCashEquivalent: false,
+      });
+    }
+  }
+
+  const equityValue = holdings.reduce((sum, lot) => sum + lot.shares * lot.buyPrice, 0);
+  const investmentBalance = accounts
+    .filter(isInvestmentAccount)
+    .reduce((sum, account) => sum + (Number(account.balance) || 0), 0);
+  // Prefer explicit cash securities; otherwise infer sweep cash as account balance − equity.
+  const inferredCash = Math.max(0, investmentBalance - equityValue);
+  const brokerageCash = cashFromSecurities > 0 ? cashFromSecurities : inferredCash;
+
+  return { holdings, brokerageCash };
+}
+
+/** @deprecated Prefer mapPlaidInvestments — kept for callers that only need equity lots. */
+export function mapPlaidHoldings(raw: unknown, securities: unknown, now = new Date().toISOString()): PlaidHolding[] {
+  return mapPlaidInvestments(raw, securities, [], now).holdings;
 }
 
 export async function fetchPlaidSnapshot(accessToken: string, institution: string, itemId = ""): Promise<PlaidSnapshot> {
@@ -274,14 +356,22 @@ export async function fetchPlaidSnapshot(accessToken: string, institution: strin
   }
 
   let holdings: PlaidHolding[] = [];
+  let brokerageCash = 0;
   try {
     const investments = await plaidRequest("/investments/holdings/get", { access_token: accessToken });
-    holdings = mapPlaidHoldings(investments.holdings, investments.securities, now);
+    const mapped = mapPlaidInvestments(investments.holdings, investments.securities, accounts, now);
+    holdings = mapped.holdings;
+    brokerageCash = mapped.brokerageCash;
   } catch {
+    // Item may only have Transactions product — still surface investment account balances as cash.
+    const investmentBalance = accounts
+      .filter(isInvestmentAccount)
+      .reduce((sum, account) => sum + (Number(account.balance) || 0), 0);
+    brokerageCash = investmentBalance;
     holdings = [];
   }
 
-  return { institution, itemId, accounts, holdings, transactions };
+  return { institution, itemId, accounts, holdings, brokerageCash, transactions };
 }
 
 export function pickBalance(accounts: PlaidAccount[], match: (account: PlaidAccount) => boolean): number {

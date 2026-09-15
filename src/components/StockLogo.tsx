@@ -31,8 +31,12 @@ function TickerGlyph({
 }) {
   const etf = getEtfIcon(symbol);
   const crypto = getCryptoAsset(symbol);
-  const text = etf?.label ?? tickerInitials(symbol);
-  const fontSize = text.length >= 4 ? 17 : text.length === 3 ? 20 : 24;
+  const initials = tickerInitials(symbol);
+  // Prefer a clean 1–2 letter badge when the ticker is long and not an ETF/crypto mark.
+  const text =
+    etf?.label ??
+    (crypto ? initials : initials.length > 2 ? initials.slice(0, 2) : initials);
+  const fontSize = text.length >= 4 ? 17 : text.length === 3 ? 20 : text.length === 1 ? 28 : 24;
   const fill = etf?.bg ?? crypto?.color ?? "transparent";
   const fg = etf?.fg ?? (crypto ? "#FFFFFF" : EMERALD);
 
@@ -44,7 +48,14 @@ function TickerGlyph({
       className="absolute inset-0 h-full w-full"
       aria-hidden
     >
-      {fill !== "transparent" ? <rect width="64" height="64" fill={fill} /> : null}
+      {fill !== "transparent" ? (
+        <rect width="64" height="64" fill={fill} />
+      ) : (
+        <>
+          <rect width="64" height="64" fill="#0C241C" />
+          <circle cx="32" cy="32" r="28" fill="rgba(16, 185, 129, 0.12)" />
+        </>
+      )}
       <text
         x="32"
         y="34"

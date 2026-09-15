@@ -17,3 +17,11 @@ export {
   type PlaidSandboxHolding,
   type PlaidSandboxResult,
 } from "./plaidLink";
+
+export {
+  brokerageCashFromPlaidResult,
+  formatInvestmentDiversificationContext,
+  isPlaidInvestmentAccount,
+  summarizePlaidInvestments,
+  type PlaidInvestmentSummary,
+} from "./plaid";

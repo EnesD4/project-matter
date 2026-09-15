@@ -35,53 +35,55 @@ export default function PracticalQuest({
   }, [quest.annualReturn, quest.monthlyAmount, quest.years]);
 
   return (
-    <div className="mt-4">
-      <div className="flex items-center gap-2">
+    <div className="mt-4 min-w-0 overflow-x-hidden">
+      <div className="flex min-w-0 items-center gap-2">
         <span
-          className="grid h-8 w-8 place-items-center rounded-lg"
+          className="grid h-8 w-8 flex-shrink-0 place-items-center rounded-lg"
           style={{ background: `${accent}22`, color: accent }}
         >
           <Rocket size={15} />
         </span>
         <div className="min-w-0 flex-1">
-          <p className="text-[10px] font-bold uppercase tracking-[0.14em]" style={{ color: accent }}>
+          <p className="truncate text-[10px] font-bold uppercase tracking-[0.14em]" style={{ color: accent }}>
             {quest.title}
           </p>
-          <p className="text-xs font-semibold text-slate-400">Turn the lesson into a move</p>
+          <p className="truncate text-xs font-semibold text-slate-400">Turn the lesson into a move</p>
         </div>
-        <span className="rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[10px] font-bold text-amber-300">
+        <span className="flex-shrink-0 rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[10px] font-bold text-amber-300">
           +{QUEST_XP} XP
         </span>
       </div>
 
       <div
-        className="mt-3 rounded-xl border p-3"
+        className="mt-3 min-w-0 overflow-hidden rounded-xl border p-3"
         style={{ borderColor: `${accent}40`, background: `${accent}12` }}
       >
-        <p className="text-sm leading-relaxed text-slate-100">{quest.blurb}</p>
+        <p className="break-words text-sm leading-relaxed text-slate-100 [overflow-wrap:anywhere]">{quest.blurb}</p>
 
         {impact && quest.monthlyAmount && (
-          <div className="mt-3 rounded-lg border border-white/10 bg-black/25 p-2.5">
-            <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-emerald-300">
-              <TrendingUp size={12} />
-              Simulated impact · {quest.years ?? 20} yrs @ {((quest.annualReturn ?? 0.07) * 100).toFixed(0)}%
+          <div className="mt-3 min-w-0 rounded-lg border border-white/10 bg-black/25 p-2.5">
+            <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-emerald-300">
+              <TrendingUp size={12} className="flex-shrink-0" />
+              <span className="min-w-0 break-words [overflow-wrap:anywhere]">
+                Simulated impact · {quest.years ?? 20} yrs @ {((quest.annualReturn ?? 0.07) * 100).toFixed(0)}%
+              </span>
             </div>
-            <div className="mt-2 grid grid-cols-3 gap-2 text-center">
-              <div>
+            <div className="mt-2 grid grid-cols-3 gap-1.5 text-center sm:gap-2">
+              <div className="min-w-0">
                 <p className="text-[9px] font-semibold uppercase text-slate-500">Monthly</p>
-                <p className="text-xs font-extrabold text-white">{formatUsd(quest.monthlyAmount)}</p>
+                <p className="truncate text-xs font-extrabold text-white">{formatUsd(quest.monthlyAmount)}</p>
               </div>
-              <div>
+              <div className="min-w-0">
                 <p className="text-[9px] font-semibold uppercase text-slate-500">You put in</p>
-                <p className="text-xs font-extrabold text-white">{formatUsd(impact.invested)}</p>
+                <p className="truncate text-xs font-extrabold text-white">{formatUsd(impact.invested)}</p>
               </div>
-              <div>
+              <div className="min-w-0">
                 <p className="text-[9px] font-semibold uppercase text-slate-500">Projected</p>
-                <p className="text-xs font-extrabold text-emerald-300">{formatUsd(impact.projected)}</p>
+                <p className="truncate text-xs font-extrabold text-emerald-300">{formatUsd(impact.projected)}</p>
               </div>
             </div>
             {quest.symbol && (
-              <p className="mt-2 text-center text-[10px] font-semibold text-slate-400">
+              <p className="mt-2 break-words text-center text-[10px] font-semibold text-slate-400 [overflow-wrap:anywhere]">
                 Paper habit ticker · {quest.symbol}
                 {quest.description ? ` · ${quest.description}` : ""}
               </p>
@@ -93,12 +95,12 @@ export default function PracticalQuest({
           type="button"
           onClick={() => onExecute(quest)}
           disabled={done && quest.kind === "checklist"}
-          className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-xl px-4 py-2.5 text-sm font-bold transition active:scale-[0.99] disabled:opacity-70"
+          className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-xl px-3 py-2.5 text-center text-sm font-bold leading-snug break-words transition active:scale-[0.99] disabled:opacity-70 [overflow-wrap:anywhere]"
           style={{ background: accent, color: "#042F2E" }}
         >
           {done && quest.kind === "checklist" ? (
             <>
-              <Check size={15} />
+              <Check size={15} className="flex-shrink-0" />
               Quest complete
             </>
           ) : (

@@ -153,7 +153,7 @@ export function buildBenchmarkChartData(args: {
   });
 }
 
-export function formatSignedPct(n: unknown, digits = 1): string {
+export function formatSignedPct(n: unknown, digits = 2): string {
   const value = toFiniteNumber(n, 0);
   const abs = Math.abs(value).toFixed(digits);
   if (value > 0) return `+${abs}%`;

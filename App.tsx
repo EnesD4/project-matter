@@ -121,6 +121,7 @@ import {
   stripEducationalDisclaimer,
   type SproutAiFinancialSnapshot,
 } from "./src/lib/sproutAi";
+import { analyzePortfolioHealth } from "./src/lib/portfolioHealth";
 import {
   PLAID_CONNECTED_EVENT,
   hydrateLinkedBank,
@@ -198,7 +199,7 @@ function ChatInlineMarkdown({ text }: { text: string }) {
           return (
             <code
               key={index}
-              className="rounded-md bg-white/10 px-1 py-0.5 font-mono text-[13px] text-emerald-200"
+              className="break-all rounded-md bg-white/10 px-1 py-0.5 font-mono text-[13px] text-emerald-200"
             >
               {part.slice(1, -1)}
             </code>
@@ -213,12 +214,12 @@ function ChatInlineMarkdown({ text }: { text: string }) {
 function SproutChatMarkdown({ text }: { text: string }) {
   const blocks = text.replace(/\r\n/g, "\n").trim().split(/\n{2,}/);
   return (
-    <div className="space-y-3">
+    <div className="min-w-0 max-w-full space-y-3 overflow-x-hidden">
       {blocks.map((block, index) => {
         const heading = /^(#{1,3})\s+(.+)$/.exec(block);
         if (heading) {
           return (
-            <p key={index} className="m-0 text-[15px] font-extrabold text-white">
+            <p key={index} className="m-0 break-words text-[15px] font-extrabold text-white [overflow-wrap:anywhere]">
               <ChatInlineMarkdown text={heading[2]} />
             </p>
           );
@@ -229,7 +230,7 @@ function SproutChatMarkdown({ text }: { text: string }) {
           return (
             <ul key={index} className="m-0 list-disc space-y-1 pl-4">
               {lines.map((line, lineIndex) => (
-                <li key={lineIndex} className="pl-0.5">
+                <li key={lineIndex} className="min-w-0 break-words pl-0.5 [overflow-wrap:anywhere]">
                   <ChatInlineMarkdown text={line.replace(/^\s*(?:[-*•]|\d+\.)\s+/, "")} />
                 </li>
               ))}
@@ -237,7 +238,7 @@ function SproutChatMarkdown({ text }: { text: string }) {
           );
         }
         return (
-          <p key={index} className="m-0 whitespace-pre-wrap">
+          <p key={index} className="m-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
             <ChatInlineMarkdown text={block} />
           </p>
         );
@@ -1029,12 +1030,17 @@ const App: React.FC = () => {
   // Live portfolio context — real holdings, so Socrates can answer "which stocks do I own?" accurately.
   const portfolioContext = useMemo(() => {
     if (safeHoldings.length === 0) return "No investments or connected accounts yet.";
-    const totalValue = safeHoldings.reduce((sum, h) => {
+    const equityValue = safeHoldings.reduce((sum, h) => {
       if (h?.kind === "stock") {
         return sum + toFiniteNumber(h?.quantity, 0) * toFiniteNumber(h?.currentPrice, 0);
       }
-      return sum + toFiniteNumber(h?.balance, 0);
+      return sum;
     }, 0);
+    const brokerageCash = safeHoldings
+      .filter((h) => h?.kind === "broker")
+      .reduce((sum, h) => sum + toFiniteNumber(h?.balance, 0), 0);
+    const totalValue = equityValue + brokerageCash;
+    const health = analyzePortfolioHealth(safeHoldings, 0);
     const lines = safeHoldings.map((h) => {
       if (h?.kind === "stock") {
         const qty = toFiniteNumber(h?.quantity, 0);
@@ -1044,9 +1050,12 @@ const App: React.FC = () => {
           qty * price
         )} (today ${dayPct >= 0 ? "+" : ""}${dayPct.toFixed(2)}%)`;
       }
-      return `${h.name} (${h.account === "verified" ? "Verified Brokerage" : "Paper Account"} balance): $${money(h?.balance)}`;
+      return `${h.name} (${h.account === "verified" ? "Verified Brokerage" : "Paper Account"} uninvested cash): $${money(h?.balance)}`;
     });
-    return `Total portfolio value: $${money(totalValue)}. Investment achievement badges only count Verified Brokerage holdings; Paper Account lots are excluded. Holdings:\n- ${lines.join("\n- ")}`;
+    const diversify = health.empty
+      ? ""
+      : ` Diversification: ${health.diversification.label} — ${health.diversification.detail}. Teach concentration vs broad-market index exposure; never recommend trades.`;
+    return `Total portfolio value: $${money(totalValue)} (equity $${money(equityValue)}, brokerage cash $${money(brokerageCash)}). Investment achievement badges only count Verified Brokerage holdings; Paper Account lots are excluded.${diversify} Holdings:\n- ${lines.join("\n- ")}`;
   }, [safeHoldings]);
 
   const stockHoldingsValue = useMemo(
@@ -1193,6 +1202,28 @@ const App: React.FC = () => {
     const safetyNetMonths = monthlyExpenses > 0 ? safetyTotals.total / monthlyExpenses : null;
     const highestApr =
       safeDebts.length === 0 ? null : Math.max(...safeDebts.map((d) => toFiniteNumber(d?.apr, 0)));
+    const health = analyzePortfolioHealth(safeHoldings, 0);
+    const topSleeves = health.empty
+      ? []
+      : (() => {
+          const weights = new Map<string, number>();
+          for (const h of safeHoldings) {
+            if (!h) continue;
+            if (h.kind === "broker") {
+              weights.set("Cash", (weights.get("Cash") || 0) + toFiniteNumber(h.balance, 0));
+              continue;
+            }
+            const value = toFiniteNumber(h.quantity, 0) * toFiniteNumber(h.currentPrice, 0);
+            if (value <= 0) continue;
+            const label = h.symbol;
+            weights.set(label, (weights.get(label) || 0) + value);
+          }
+          const total = [...weights.values()].reduce((sum, v) => sum + v, 0) || 1;
+          return [...weights.entries()]
+            .map(([label, value]) => ({ label, weightPct: (value / total) * 100 }))
+            .sort((a, b) => b.weightPct - a.weightPct)
+            .slice(0, 6);
+        })();
     return {
       userName: firstName,
       cash: {
@@ -1223,6 +1254,21 @@ const App: React.FC = () => {
         })),
         summary: cashFlowContext,
       },
+      portfolio: {
+        equityValue: stockHoldingsValue,
+        brokerageCash: brokerCashValue,
+        holdingCount: stocks.length,
+        diversificationLabel: health.empty ? "No holdings yet" : health.diversification.label,
+        diversificationDetail: health.empty
+          ? "Connect a brokerage or add paper lots to score sector mix"
+          : health.diversification.detail,
+        topSleeves,
+        summary: health.empty
+          ? "No linked brokerage holdings yet."
+          : `Equity $${money(stockHoldingsValue)}, uninvested brokerage cash $${money(brokerCashValue)}. ${health.diversification.label} — ${health.diversification.detail}. Top weights: ${
+              topSleeves.map((s) => `${s.label} ${s.weightPct.toFixed(0)}%`).join(", ") || "n/a"
+            }. Teach tech-heavy vs broad-market index exposure without recommending trades.`,
+      },
     };
   }, [
     firstName,
@@ -1238,6 +1284,10 @@ const App: React.FC = () => {
     monthlyIncome,
     financialDiagnostics,
     cashFlowContext,
+    safeHoldings,
+    stockHoldingsValue,
+    brokerCashValue,
+    stocks.length,
   ]);
 
   useEffect(() => {
@@ -1534,9 +1584,9 @@ const App: React.FC = () => {
               >
                 <Sparkles size={12} color="#ECFDF5" />
               </div>
-              <div className="min-w-0 flex-1 pt-0.5 text-[15px] leading-relaxed text-slate-100">
+              <div className="min-w-0 flex-1 overflow-x-hidden pt-0.5 text-[15px] leading-relaxed text-slate-100">
                 <SproutChatMarkdown text={stripEducationalDisclaimer(msg.text)} />
-                <p className="mt-2 text-[10px] font-semibold italic leading-snug text-slate-500">
+                <p className="mt-2 break-words text-[10px] font-semibold italic leading-snug text-slate-500 [overflow-wrap:anywhere]">
                   {EDUCATIONAL_DISCLAIMER}
                 </p>
               </div>

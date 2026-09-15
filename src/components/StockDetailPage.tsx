@@ -19,7 +19,7 @@ import { getApiBaseUrl } from "../lib/auth";
 import { isEtfAsset } from "../lib/etfIcons";
 import { getCachedChart, getCachedQuote, setCachedChart, setCachedQuote } from "../lib/marketCache";
 import { fetchStockChart, fetchStockQuote, isLiveChartSource } from "../lib/stockService";
-import { formatNumber, formatPercent, toFiniteNumber } from "../lib/money";
+import { formatNumber, formatPercent, formatSignedPercent, toFiniteNumber } from "../lib/money";
 import { privacyMoney, privacyShares, privacySignedMoney } from "../lib/privacy";
 import {
   buildHistoricalSeries,
@@ -631,8 +631,7 @@ export default function StockDetailPage({
                 {displayDown ? <TrendingDown size={15} /> : <TrendingUp size={15} />}
                 <span>
                   {displayUp ? "+" : displayDown ? "-" : ""}
-                  ${Math.abs(toFiniteNumber(displayGainAbs, 0)).toFixed(2)} ({displayUp ? "+" : ""}
-                  {formatPercent(displayGainPct)})
+                  ${Math.abs(toFiniteNumber(displayGainAbs, 0)).toFixed(2)} ({formatSignedPercent(displayGainPct)})
                 </span>
                 {hoverPoint ? (
                   <span className="text-[11px] font-semibold text-[#9CA3AF]">· {hoverPoint.label}</span>
@@ -819,8 +818,7 @@ export default function StockDetailPage({
                   >
                     {privacySignedMoney(privacyMode, (price - avgCost) * quantity)}
                     <span className="ml-1 text-sm">
-                      ({price >= avgCost ? "+" : ""}
-                      {formatPercent(((price - avgCost) / avgCost) * 100)})
+                      ({formatSignedPercent(((price - avgCost) / avgCost) * 100)})
                     </span>
                   </p>
                   <p className="mt-0.5 text-[10px] font-semibold text-[#6B7280]">
@@ -1139,6 +1137,9 @@ export default function StockDetailPage({
                     id="sell-qty"
                     type="text"
                     inputMode="decimal"
+                    autoComplete="off"
+                    autoCorrect="off"
+                    spellCheck={false}
                     value={sellShares}
                     onChange={(e) => {
                       setSellShares(e.target.value.replace(/[^0-9.]/g, ""));
@@ -1173,6 +1174,10 @@ export default function StockDetailPage({
                       id="sell-price"
                       type="text"
                       inputMode="decimal"
+                      autoComplete="off"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      name="paper-trading-sell-price"
                       value={sellPrice}
                       onChange={(e) => {
                         setSellPrice(e.target.value.replace(/[^0-9.]/g, ""));

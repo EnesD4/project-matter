@@ -46,6 +46,7 @@ export function buildPlaidPayload(input: {
   institution: string;
   accounts: PlaidAccount[];
   holdings?: PlaidHolding[];
+  brokerageCash?: number;
   transactions?: PlaidTransaction[];
   source?: "plaid" | "supabase";
 }) {
@@ -61,6 +62,7 @@ export function buildPlaidPayload(input: {
   const moneyMarket = pickBalance(accounts, (account) =>
     /money/.test(`${account.subtype} ${account.name}`.toLowerCase())
   );
+  const brokerageCash = Math.max(0, Number(input.brokerageCash) || 0);
   return {
     sandbox: true,
     source: input.source || "plaid",
@@ -68,7 +70,8 @@ export function buildPlaidPayload(input: {
     chaseChecking,
     marcusHysa,
     moneyMarket,
-    cash: { chaseChecking, marcusHysa, moneyMarket },
+    brokerageCash,
+    cash: { chaseChecking, marcusHysa, moneyMarket, brokerageCash },
     accounts,
     holdings: input.holdings || [],
     transactions: input.transactions || [],
@@ -168,6 +171,7 @@ export async function handleExchangeToken(req: IncomingMessage, res: ServerRespo
         institution: snapshot.institution,
         accounts: snapshot.accounts,
         holdings: snapshot.holdings,
+        brokerageCash: snapshot.brokerageCash,
         transactions: snapshot.transactions,
       })
     );
@@ -197,6 +201,7 @@ export async function handleGetAccounts(req: IncomingMessage, res: ServerRespons
       const accounts: PlaidAccount[] = [];
       const holdings: PlaidHolding[] = [];
       const transactions: PlaidTransaction[] = [];
+      let brokerageCash = 0;
       let institution = items[0]?.institutionName || "Linked bank";
 
       for (const item of items) {
@@ -206,6 +211,7 @@ export async function handleGetAccounts(req: IncomingMessage, res: ServerRespons
           accounts.push(...snapshot.accounts);
           holdings.push(...snapshot.holdings);
           transactions.push(...snapshot.transactions);
+          brokerageCash += Number(snapshot.brokerageCash) || 0;
         } catch (error) {
           console.error("Plaid accounts refresh failed for item:", item.itemId, error);
         }
@@ -227,6 +233,7 @@ export async function handleGetAccounts(req: IncomingMessage, res: ServerRespons
             institution,
             accounts,
             holdings,
+            brokerageCash,
             transactions,
           })
         );

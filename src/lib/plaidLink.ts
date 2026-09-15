@@ -40,6 +40,8 @@ export type PlaidLinkResult = {
   chaseChecking: number;
   marcusHysa: number;
   moneyMarket: number;
+  /** Uninvested cash inside linked brokerage / investment accounts. */
+  brokerageCash: number;
   monthlyIncome: number;
   accounts: PlaidLinkAccount[];
   holdings: PlaidLinkHolding[];
@@ -102,6 +104,7 @@ export function resultFromAccounts(
     institution?: string;
     holdings?: PlaidLinkHolding[];
     transactions?: BankTransaction[];
+    brokerageCash?: number;
   } = {}
 ): PlaidLinkResult {
   const accounts = accountsInput
@@ -122,14 +125,30 @@ export function resultFromAccounts(
   const moneyMarket = pickBalance(accounts, (account) =>
     /money/.test(`${account.subtype} ${account.name}`.toLowerCase())
   );
+  const holdings = extras.holdings || [];
+  const equityValue = holdings.reduce(
+    (sum, lot) => sum + (Number(lot.shares) || 0) * (Number(lot.buyPrice) || 0),
+    0
+  );
+  const investmentBalances = accounts
+    .filter((account) => {
+      if (account.type === "investment") return true;
+      return /\b(brokerage|investment|401\s*\(?k\)?|ira|roth|hsa)\b/i.test(
+        `${account.subtype} ${account.name} ${account.officialName}`
+      );
+    })
+    .reduce((sum, account) => sum + (Number(account.balance) || 0), 0);
+  const inferredCash = Math.max(0, investmentBalances - equityValue);
+  const brokerageCash = Math.max(0, Number(extras.brokerageCash) || inferredCash);
   return {
     institution: extras.institution || accounts[0]?.institution || "Linked bank",
     chaseChecking: reserves.liquidCash || chaseChecking,
     marcusHysa: marcusHysa || reserves.yieldCash - moneyMarket,
     moneyMarket,
+    brokerageCash,
     monthlyIncome: activity.monthlyIncome,
     accounts,
-    holdings: extras.holdings || [],
+    holdings,
     transactions,
     expenses: activity.expenses,
     retirement: retirement.present ? retirement : null,
@@ -161,11 +180,19 @@ export function parsePlaidLinkResult(raw: unknown): PlaidLinkResult | null {
         .filter((item) => item.symbol && item.shares > 0 && item.buyPrice > 0)
     : [];
   const transactions = Array.isArray(rec.transactions) ? (rec.transactions as BankTransaction[]) : [];
-  if (accounts.length === 0 && holdings.length === 0 && transactions.length === 0) return null;
+  const nestedCash = rec.cash && typeof rec.cash === "object" ? (rec.cash as Record<string, unknown>) : null;
+  const brokerageCash =
+    Number(rec.brokerageCash) ||
+    Number(nestedCash?.brokerageCash) ||
+    0;
+  if (accounts.length === 0 && holdings.length === 0 && transactions.length === 0 && brokerageCash <= 0) {
+    return null;
+  }
   return resultFromAccounts(accounts, {
     institution: typeof rec.institution === "string" ? rec.institution : undefined,
     holdings,
     transactions,
+    brokerageCash,
   });
 }
 

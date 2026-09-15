@@ -154,6 +154,17 @@ type BrokerHolding = {
 
 export type Holding = StockHolding | BrokerHolding;
 
+type PaperTradeLogEntry = {
+  id: string;
+  at: number;
+  side: "buy" | "sell";
+  symbol: string;
+  shares: number;
+  price: number;
+  notional: number;
+  portfolioValue: number;
+};
+
 /** Hard-guard StockHolding numerics so Recharts/tables never see undefined/NaN. */
 function sanitizeStockHolding(holding: StockHolding): StockHolding {
   const safeStock = sanitizeSafeStock({
@@ -785,6 +796,32 @@ export default function InvestmentPortfolioCard({
   const [modalOpen, setModalOpen] = useState(false);
   const [modalTab, setModalTab] = useState<"connect" | "manual">("connect");
   const [justAddedId, setJustAddedId] = useState<string | null>(null);
+  const [executionLog, setExecutionLog] = useState<PaperTradeLogEntry[]>([]);
+
+  const pushExecutionLog = (
+    entry: Omit<PaperTradeLogEntry, "id" | "at"> & { portfolioValue?: number },
+    nextHoldings?: Holding[]
+  ) => {
+    const book = nextHoldings ?? holdingsRef.current ?? [];
+    const portfolioValue =
+      entry.portfolioValue ??
+      book.reduce((sum, h) => sum + (Number(holdingValue(h)) || 0), 0) + Math.max(0, cashBalance);
+    setExecutionLog((prev) =>
+      [
+        {
+          side: entry.side,
+          symbol: entry.symbol,
+          shares: entry.shares,
+          price: entry.price,
+          notional: entry.notional,
+          portfolioValue,
+          id: `exec-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          at: Date.now(),
+        },
+        ...prev,
+      ].slice(0, 8)
+    );
+  };
 
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<StockSearchResult[]>([]);
@@ -911,7 +948,7 @@ export default function InvestmentPortfolioCard({
 
     const onPlaidSandbox = (event: Event) => {
       const detail = (event as CustomEvent<PlaidLinkResult>).detail;
-      if (!detail?.holdings) return;
+      if (!detail) return;
       const portfolioStocks = detail?.holdings || [];
       const stocks = (portfolioStocks ?? [])
         .filter(Boolean)
@@ -920,8 +957,38 @@ export default function InvestmentPortfolioCard({
           account: "verified" as const,
           description: item?.name || item?.symbol,
         }));
-      applyStocks(stocks, false);
-      const first = stocks[0];
+      const brokerageCash = Math.max(0, Number(detail.brokerageCash) || 0);
+      const brokerRows: BrokerHolding[] =
+        brokerageCash > 0
+          ? [
+              {
+                id: `broker-cash-${String(detail.institution || "broker")
+                  .toLowerCase()
+                  .replace(/[^a-z0-9]+/g, "-")}`,
+                kind: "broker",
+                name: `${detail.institution || "Brokerage"} cash`,
+                icon: Wallet,
+                balance: brokerageCash,
+                account: "verified",
+              },
+            ]
+          : [];
+      setHoldings((prev) => {
+        const kept = (prev || []).filter((holding) => {
+          if (!holding) return false;
+          if (holding.kind === "broker") {
+            // Replace prior verified brokerage cash rows from Plaid.
+            return holding.account !== "verified";
+          }
+          const incomingSymbols = new Set(stocks.map((s) => s.symbol.toUpperCase()));
+          return !(holding.account === "verified" && incomingSymbols.has(holding.symbol.toUpperCase()));
+        });
+        return sortHoldingsByOrder([...kept, ...stocks, ...brokerRows], readHoldingOrder());
+      });
+      setHoldingsExpanded(true);
+      setModalOpen(false);
+      if (stocks.length > 0 || brokerRows.length > 0) markUpdated();
+      const first = stocks[0] || brokerRows[0];
       if (first) {
         setJustAddedId(first.id);
         window.setTimeout(() => setJustAddedId(null), 2000);
@@ -1753,7 +1820,21 @@ export default function InvestmentPortfolioCard({
       });
 
       // Upsert keeps one paper row per ticker; still guard empty/undefined prev.
-      setHoldings((prev) => upsertPaperHolding([...(prev || [])], holding));
+      const nextHoldings = upsertPaperHolding([...(holdings || [])], holding);
+      setHoldings(nextHoldings);
+      pushExecutionLog(
+        {
+          side: "buy",
+          symbol: holding.symbol,
+          shares: holding.quantity,
+          price: holding.avgCost,
+          notional: holding.quantity * holding.avgCost,
+          portfolioValue:
+            nextHoldings.reduce((sum, h) => sum + (Number(holdingValue(h)) || 0), 0) +
+            Math.max(0, cashBalance),
+        },
+        nextHoldings
+      );
       setSelectedHolding((prev) =>
         prev &&
         String(prev.symbol || "").toUpperCase() === holding.symbol.toUpperCase()
@@ -1929,18 +2010,43 @@ export default function InvestmentPortfolioCard({
     sellPrice: number
   ): Promise<{ remainingShares: number }> => {
     const result = await sellPortfolioItem(holding.id, { shares, sellPrice });
+    const notional = shares * sellPrice;
     if (result.deleted) {
-      setHoldings((prev) => (prev || []).filter((h) => h?.id !== holding.id));
+      const next = (holdings || []).filter((h) => h?.id !== holding.id);
+      setHoldings(next);
+      pushExecutionLog(
+        {
+          side: "sell",
+          symbol: holding.symbol,
+          shares,
+          price: sellPrice,
+          notional,
+          portfolioValue:
+            next.reduce((sum, h) => sum + (Number(holdingValue(h)) || 0), 0) + Math.max(0, cashBalance),
+        },
+        next
+      );
       if (selectedHolding?.id === holding.id) setSelectedHolding(null);
       return { remainingShares: 0 };
     }
 
     const remaining = Number(result?.item?.shares) || 0;
     const avgCost = Number(result?.item?.buyPrice) || 0;
-    setHoldings((prev) =>
-      (prev || []).map((h) =>
-        h?.kind === "stock" && h.id === holding.id ? { ...h, quantity: remaining, avgCost } : h
-      )
+    const next = (holdings || []).map((h) =>
+      h?.kind === "stock" && h.id === holding.id ? { ...h, quantity: remaining, avgCost } : h
+    );
+    setHoldings(next);
+    pushExecutionLog(
+      {
+        side: "sell",
+        symbol: holding.symbol,
+        shares,
+        price: sellPrice,
+        notional,
+        portfolioValue:
+          next.reduce((sum, h) => sum + (Number(holdingValue(h)) || 0), 0) + Math.max(0, cashBalance),
+      },
+      next
     );
     setSelectedHolding((prev) =>
       prev && prev.id === holding.id
@@ -2484,6 +2590,37 @@ export default function InvestmentPortfolioCard({
                 })}
               </div>
             </div>
+
+            {executionLog.length > 0 ? (
+              <div className="mt-3 overflow-hidden rounded-xl border border-[#1F2937] bg-[#0A0A0A] px-3 py-2.5">
+                <p className="text-[10px] font-bold uppercase tracking-wide text-[#9CA3AF]">
+                  Paper trading activity
+                </p>
+                <ul className="mt-1.5 m-0 list-none space-y-1.5 p-0">
+                  {executionLog.map((entry) => (
+                    <li
+                      key={entry.id}
+                      className="flex min-w-0 items-baseline justify-between gap-2 text-[11px] leading-snug"
+                    >
+                      <p className="m-0 min-w-0 break-words text-slate-300 [overflow-wrap:anywhere]">
+                        <span
+                          className={`font-extrabold ${
+                            entry.side === "buy" ? "text-emerald-400" : "text-rose-400"
+                          }`}
+                        >
+                          {entry.side === "buy" ? "BUY" : "SELL"}
+                        </span>{" "}
+                        {entry.shares.toLocaleString("en-US", { maximumFractionDigits: 4 })} {entry.symbol} @ $
+                        {entry.price.toFixed(2)}
+                      </p>
+                      <p className="m-0 flex-shrink-0 tabular-nums font-semibold text-slate-500">
+                        Bal {privacyMoney(privacyMode, entry.portfolioValue)}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
           </div>
         </>
       )}
@@ -2832,6 +2969,10 @@ export default function InvestmentPortfolioCard({
                       id="asset-price"
                       type="text"
                       inputMode="decimal"
+                      name="paper-trading-price-unique"
+                      autoComplete="off"
+                      autoCorrect="off"
+                      spellCheck={false}
                       value={purchasePrice}
                       onChange={(e) => {
                         priceTouchedRef.current = true;
