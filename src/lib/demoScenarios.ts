@@ -292,10 +292,13 @@ export function inferProfileFromBalances(input: {
       : input.investments >= 20000 || input.cash >= 20000
         ? scenarioToProfile(DEMO_SCENARIOS.advanced)
         : scenarioToProfile(DEMO_SCENARIOS.balanced);
+  const liquidSavings = Math.round(Math.max(0, input.cash) + Math.max(0, input.hysa));
   return {
     ...base,
     monthlyIncome: input.monthlyIncome ?? base.monthlyIncome,
     monthlyEssentialExpenses: input.monthlyEssentialExpenses ?? base.monthlyEssentialExpenses,
+    // Derived from linked checking / HYSA balances — not a manual intake answer.
+    liquidSavings,
   };
 }
 

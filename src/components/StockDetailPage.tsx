@@ -32,6 +32,11 @@ import {
 } from "../lib/priceSimulation";
 import { useMarketPolling } from "../hooks/useMarketPolling";
 import { EDUCATIONAL_DISCLAIMER } from "../lib/sproutAi";
+import {
+  buildFallbackStockBriefing,
+  normalizeStockBriefing,
+  type SproutStockAnalysis,
+} from "../lib/gemini";
 import type { StockHolding, StockQuote } from "./InvestmentPortfolioCard";
 import StockLogo from "./StockLogo";
 
@@ -57,15 +62,7 @@ type StockMetricsSnapshot = {
   } | null;
 };
 
-type SproutAnalysis = {
-  growthDrivers: string[];
-  keyRisks: string[];
-  analystConsensus: string;
-  sentiment: "Buy" | "Hold" | "Sell";
-  source: "ai" | "fallback";
-  warning?: string;
-  disclaimer?: string;
-};
+type SproutAnalysis = SproutStockAnalysis;
 
 export type SellPositionResult = {
   remainingShares: number;
@@ -486,6 +483,22 @@ export default function StockDetailPage({
     if (analysisLoading) return;
     setAnalysisLoading(true);
     setAnalysisError(null);
+    const fallback = buildFallbackStockBriefing(
+      holding.symbol,
+      holding.description || holding.symbol,
+      {
+        symbol: holding.symbol,
+        name: holding.description,
+        revenueGrowthYoy: metrics?.revenueGrowthYoy ?? null,
+        cash: metrics?.cash ?? null,
+        debt: metrics?.debt ?? null,
+        fcf: metrics?.fcf ?? null,
+        pe: metrics?.pe ?? null,
+        peTag: metrics?.peTag,
+        recommendation: metrics?.recommendation ?? null,
+      },
+      EDUCATIONAL_DISCLAIMER
+    );
     try {
       const res = await fetch(`${apiBase()}/api/stocks/analysis`, {
         method: "POST",
@@ -500,15 +513,16 @@ export default function StockDetailPage({
             : "User is watching this name and does not currently hold a position.",
         }),
       });
-      if (!res.ok) throw new Error("analysis failed");
-      const data = (await res.json()) as SproutAnalysis;
-      if (!data?.growthDrivers?.length || !data?.keyRisks?.length || !data?.analystConsensus) {
-        throw new Error("incomplete analysis");
-      }
-      setAnalysis(data);
+      const data = (await res.json().catch(() => null)) as unknown;
+      if (!res.ok && !data) throw new Error("analysis failed");
+      const normalized = normalizeStockBriefing(data, fallback);
+      setAnalysis(normalized);
     } catch {
-      setAnalysisError("Sprout AI couldn't finish this briefing. Please try again.");
-      setAnalysis(null);
+      setAnalysis({
+        ...fallback,
+        warning: "Sprout AI couldn't finish this briefing. Showing a fundamentals-based fallback.",
+      });
+      setAnalysisError(null);
     } finally {
       setAnalysisLoading(false);
     }

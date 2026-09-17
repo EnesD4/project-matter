@@ -1,10 +1,24 @@
 import type { IncomingMessage, ServerResponse } from "http";
+import { GoogleGenAI } from "@google/genai";
 import {
   mockChartPayload,
   mockHistoryPayload,
   mockProfilePayload,
   mockQuoteForSymbol,
 } from "./mockMarket.js";
+import { GEMINI_FLASH_MODEL, getGeminiApiKey, getGeminiModel } from "./env.js";
+import { readJsonBody } from "./security.js";
+import {
+  buildFallbackStockBriefing,
+  buildStockBriefingPrompt,
+  parseStockBriefingJson,
+  type StockBriefingFundamentals,
+} from "../../src/lib/gemini.js";
+import {
+  EDUCATIONAL_DISCLAIMER,
+  SPROUT_SYSTEM_INSTRUCTION,
+} from "../../src/lib/sproutAi.js";
+import { isDividendEtf } from "../../src/lib/allocation.js";
 
 function sendJson(res: any, status: number, payload: unknown) {
   if (typeof res.status === "function" && typeof res.json === "function") {
@@ -279,6 +293,258 @@ async function handleSearch(req: IncomingMessage | any, res: ServerResponse | an
   return sendJson(res, 200, catalogMatches(query));
 }
 
+const GEMINI_TIMEOUT_MS = 20_000;
+
+type YahooDividendQuote = {
+  dividendYield?: number | null;
+  dividendRate?: number | null;
+  trailingAnnualDividendRate?: number | null;
+  trailingAnnualDividendYield?: number | null;
+  exDividendDate?: number | null;
+};
+
+function asFinite(value: unknown): number | null {
+  const n = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function isoFromUnixSeconds(value: unknown): string | null {
+  const n = asFinite(value);
+  if (n == null || n <= 0) return null;
+  const ms = n > 1e12 ? n : n * 1000;
+  try {
+    return new Date(ms).toISOString().slice(0, 10);
+  } catch {
+    return null;
+  }
+}
+
+async function yahooDividendDetails(symbol: string) {
+  const ticker = symbol.trim().toUpperCase();
+  if (!ticker) return null;
+  try {
+    const res = await fetch(
+      `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(ticker)}`,
+      { headers: { "User-Agent": "Sprout/1.0" } }
+    );
+    if (!res.ok) return null;
+    const json = (await res.json().catch(() => null)) as {
+      quoteResponse?: { result?: YahooDividendQuote[] };
+    } | null;
+    const quote = json?.quoteResponse?.result?.[0];
+    if (!quote) return null;
+    const dividendYield = asFinite(quote.dividendYield);
+    const dividendRate = asFinite(quote.dividendRate);
+    const trailingAnnualDividendRate = asFinite(quote.trailingAnnualDividendRate);
+    const trailingAnnualDividendYield = asFinite(quote.trailingAnnualDividendYield);
+    const exDividendDate = isoFromUnixSeconds(quote.exDividendDate);
+    const pays =
+      (dividendYield != null && dividendYield > 0) ||
+      (dividendRate != null && dividendRate > 0) ||
+      (trailingAnnualDividendRate != null && trailingAnnualDividendRate > 0) ||
+      isDividendEtf(ticker);
+    if (!pays) {
+      return {
+        symbol: ticker,
+        dividendYield: null,
+        dividendRate: null,
+        trailingAnnualDividendRate: null,
+        trailingAnnualDividendYield: null,
+        exDividendDate: null,
+        dividendDate: null,
+        lastDividendAmount: null,
+        frequency: "unknown" as const,
+        paymentsPerYear: 0,
+        nextExDividendDate: null,
+        nextPaymentDate: null,
+        estimatedDividendPerShare: null,
+        status: "estimated" as const,
+      };
+    }
+    const estimated =
+      dividendRate != null && dividendRate > 0
+        ? Math.round((dividendRate / 4) * 10000) / 10000
+        : trailingAnnualDividendRate != null && trailingAnnualDividendRate > 0
+          ? Math.round((trailingAnnualDividendRate / 4) * 10000) / 10000
+          : null;
+    return {
+      symbol: ticker,
+      dividendYield: dividendYield ?? trailingAnnualDividendYield,
+      dividendRate,
+      trailingAnnualDividendRate,
+      trailingAnnualDividendYield,
+      exDividendDate,
+      dividendDate: null,
+      lastDividendAmount: estimated,
+      frequency: "quarterly" as const,
+      paymentsPerYear: 4,
+      nextExDividendDate: exDividendDate,
+      nextPaymentDate: null,
+      estimatedDividendPerShare: estimated,
+      status: exDividendDate ? ("confirmed" as const) : ("estimated" as const),
+    };
+  } catch {
+    if (isDividendEtf(ticker)) {
+      return {
+        symbol: ticker,
+        dividendYield: 0.035,
+        dividendRate: null,
+        trailingAnnualDividendRate: null,
+        trailingAnnualDividendYield: 0.035,
+        exDividendDate: null,
+        dividendDate: null,
+        lastDividendAmount: null,
+        frequency: "quarterly" as const,
+        paymentsPerYear: 4,
+        nextExDividendDate: null,
+        nextPaymentDate: null,
+        estimatedDividendPerShare: null,
+        status: "estimated" as const,
+      };
+    }
+    return null;
+  }
+}
+
+async function buildMetricsSnapshot(symbol: string): Promise<StockBriefingFundamentals & { peTag: string }> {
+  const ticker = symbol.trim().toUpperCase();
+  const quote = mockQuoteForSymbol(ticker);
+  let pe: number | null = null;
+  let revenueGrowthYoy: number | null = null;
+  try {
+    const res = await fetch(
+      `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(ticker)}?modules=defaultKeyStatistics,financialData,summaryDetail`,
+      { headers: { "User-Agent": "Sprout/1.0" } }
+    );
+    if (res.ok) {
+      const json = (await res.json().catch(() => null)) as {
+        quoteSummary?: {
+          result?: Array<{
+            defaultKeyStatistics?: { trailingPE?: { raw?: number }; forwardPE?: { raw?: number } };
+            financialData?: {
+              revenueGrowth?: { raw?: number };
+              totalCash?: { raw?: number };
+              totalDebt?: { raw?: number };
+              freeCashflow?: { raw?: number };
+            };
+            summaryDetail?: { trailingPE?: { raw?: number } };
+          }>;
+        };
+      } | null;
+      const row = json?.quoteSummary?.result?.[0];
+      pe =
+        asFinite(row?.summaryDetail?.trailingPE?.raw) ??
+        asFinite(row?.defaultKeyStatistics?.trailingPE?.raw) ??
+        asFinite(row?.defaultKeyStatistics?.forwardPE?.raw);
+      const growthRaw = asFinite(row?.financialData?.revenueGrowth?.raw);
+      revenueGrowthYoy = growthRaw != null ? growthRaw * 100 : null;
+      return {
+        symbol: ticker,
+        revenueGrowthYoy,
+        cash: asFinite(row?.financialData?.totalCash?.raw),
+        debt: asFinite(row?.financialData?.totalDebt?.raw),
+        fcf: asFinite(row?.financialData?.freeCashflow?.raw),
+        pe,
+        peTag: pe == null ? "N/A" : pe < 20 ? "Value" : pe < 35 ? "Fair" : "Premium",
+        recommendation: null,
+      };
+    }
+  } catch {
+    // fall through
+  }
+  return {
+    symbol: ticker,
+    revenueGrowthYoy: null,
+    cash: null,
+    debt: null,
+    fcf: null,
+    pe: null,
+    peTag: "N/A",
+    recommendation: null,
+    ...(quote ? { name: quote.name } : {}),
+  };
+}
+
+async function generateStockAnalysisPayload(body: Record<string, unknown>) {
+  const symbol = String(body.symbol || "")
+    .trim()
+    .toUpperCase();
+  if (!symbol) return { error: "Symbol is required", status: 400 as const };
+  const name = String(body.name || symbol).trim() || symbol;
+  const price = asFinite(body.price) ?? undefined;
+  const changePct = asFinite(body.changePct) ?? undefined;
+  const positionNote = typeof body.positionNote === "string" ? body.positionNote.trim() : "";
+  const fundamentals = await buildMetricsSnapshot(symbol);
+  const fallback = buildFallbackStockBriefing(symbol, name, fundamentals, EDUCATIONAL_DISCLAIMER);
+
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    return {
+      status: 200 as const,
+      payload: {
+        ...fallback,
+        warning: "Live Sprout AI synthesis was unavailable. Showing a fundamentals-based briefing.",
+      },
+    };
+  }
+
+  const model = getGeminiModel() || GEMINI_FLASH_MODEL;
+  const ai = new GoogleGenAI({ apiKey });
+  const prompt = buildStockBriefingPrompt({
+    symbol,
+    name,
+    price,
+    changePct,
+    positionNote,
+    fundamentals,
+    systemInstruction: SPROUT_SYSTEM_INSTRUCTION,
+  });
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
+    let text = "";
+    try {
+      const response = await ai.models.generateContent({
+        model,
+        contents: prompt,
+        config: {
+          systemInstruction: SPROUT_SYSTEM_INSTRUCTION,
+          abortSignal: controller.signal,
+          httpOptions: { timeout: GEMINI_TIMEOUT_MS },
+        },
+      });
+      text = String(response.text || "").trim();
+    } finally {
+      clearTimeout(timer);
+    }
+    const parsed = parseStockBriefingJson(text);
+    if (!parsed) {
+      console.error("Sprout stock analysis JSON parse failed. Raw:", text.slice(0, 400));
+      return {
+        status: 200 as const,
+        payload: {
+          ...fallback,
+          warning: "Live Sprout AI synthesis was unavailable. Showing a fundamentals-based briefing.",
+        },
+      };
+    }
+    return {
+      status: 200 as const,
+      payload: { ...parsed, source: "ai" as const, disclaimer: EDUCATIONAL_DISCLAIMER },
+    };
+  } catch (error) {
+    console.error("Error generating Sprout stock analysis:", error);
+    return {
+      status: 200 as const,
+      payload: {
+        ...fallback,
+        warning: "Sprout AI was unavailable. Showing a high-level fallback briefing.",
+      },
+    };
+  }
+}
+
 export default async function handleStockPath(req: IncomingMessage | any, res: ServerResponse | any) {
   const url = urlOf(req);
   const parts = stocksParts(req);
@@ -302,24 +568,47 @@ export default async function handleStockPath(req: IncomingMessage | any, res: S
   }
 
   if (parts[0] === "dividends") {
-    return sendJson(res, 200, { items: [] });
+    const symbols = String(url.searchParams.get("symbols") || url.searchParams.get("symbol") || "")
+      .split(",")
+      .map((item) => item.trim().toUpperCase())
+      .filter(Boolean)
+      .slice(0, 30);
+    const items = (
+      await Promise.all(symbols.map(async (symbol) => yahooDividendDetails(symbol)))
+    ).filter((row): row is NonNullable<typeof row> => row != null);
+    return sendJson(res, 200, { items });
   }
 
   if (parts[0] === "metrics") {
     const symbol = String(url.searchParams.get("symbol") || "").trim().toUpperCase();
-    const quote = mockQuoteForSymbol(symbol);
-    return sendJson(res, 200, {
-      symbol,
-      marketCap: null,
-      pe: null,
-      eps: null,
-      price: quote?.c ?? 0,
-      source: "mock",
-    });
+    if (!symbol) return sendJson(res, 400, { error: "Symbol is required" });
+    const metrics = await buildMetricsSnapshot(symbol);
+    return sendJson(res, 200, metrics);
   }
 
   if (parts[0] === "analysis") {
-    return sendJson(res, 200, {});
+    if (method !== "POST" && method !== "GET") {
+      return sendJson(res, 405, { error: "Method not allowed" });
+    }
+    try {
+      const body =
+        method === "POST"
+          ? ((await readJsonBody(req)) as Record<string, unknown>)
+          : {
+              symbol: url.searchParams.get("symbol"),
+              name: url.searchParams.get("name"),
+            };
+      const result = await generateStockAnalysisPayload(body || {});
+      if ("error" in result) return sendJson(res, result.status, { error: result.error });
+      return sendJson(res, result.status, result.payload);
+    } catch (error) {
+      const symbol = "STOCK";
+      return sendJson(res, 200, {
+        ...buildFallbackStockBriefing(symbol, symbol, { symbol }, EDUCATIONAL_DISCLAIMER),
+        warning: "Sprout AI was unavailable. Showing a high-level fallback briefing.",
+        detail: error instanceof Error ? error.message : undefined,
+      });
+    }
   }
 
   if (parts.length >= 2 && parts[1] === "chart") {

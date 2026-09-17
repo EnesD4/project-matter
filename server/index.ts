@@ -828,21 +828,31 @@ function parseStockAnalysisJson(
     .replace(/^```\s*/i, '')
     .replace(/\s*```$/i, '')
     .trim();
+  const jsonText =
+    cleaned.startsWith('{') && cleaned.endsWith('}')
+      ? cleaned
+      : (() => {
+          const start = cleaned.indexOf('{');
+          const end = cleaned.lastIndexOf('}');
+          return start >= 0 && end > start ? cleaned.slice(start, end + 1) : cleaned;
+        })();
   try {
-    const parsed = JSON.parse(cleaned) as Record<string, unknown>;
+    const parsed = JSON.parse(jsonText) as Record<string, unknown>;
     const growthDrivers = Array.isArray(parsed.growthDrivers)
       ? parsed.growthDrivers.map((s) => String(s).trim()).filter(Boolean)
-      : String(parsed.growthDrivers || '')
+      : String(parsed.growthDrivers || parsed.growth_drivers || '')
           .split('\n')
           .map((s) => s.replace(/^[-*•]\s*/, '').trim())
           .filter(Boolean);
     const keyRisks = Array.isArray(parsed.keyRisks)
       ? parsed.keyRisks.map((s) => String(s).trim()).filter(Boolean)
-      : String(parsed.keyRisks || '')
+      : String(parsed.keyRisks || parsed.key_risks || '')
           .split('\n')
           .map((s) => s.replace(/^[-*•]\s*/, '').trim())
           .filter(Boolean);
-    const analystConsensus = String(parsed.analystConsensus || '').trim();
+    const analystConsensus = String(
+      parsed.analystConsensus || parsed.analyst_consensus || parsed.consensus || ''
+    ).trim();
     const rawSentiment = String(parsed.sentiment || 'Hold').trim();
     const sentiment: StockAnalysisPayload['sentiment'] =
       rawSentiment.toLowerCase() === 'buy'

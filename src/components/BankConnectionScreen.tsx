@@ -55,9 +55,10 @@ export default function BankConnectionScreen({
     try {
       const userId = getStoredUser()?.id;
       const existing = loadFinancialProfile(userId);
+      const liquidSavings = existing?.liquidSavings ?? null;
       const bottleneck =
         result.primaryGoal != null
-          ? bottleneckFromPrimaryGoal(result.primaryGoal, result.liquidSavings)
+          ? bottleneckFromPrimaryGoal(result.primaryGoal, liquidSavings)
           : existing?.bottleneck ?? "emergency-safety-net";
       const answers: FinancialProfileAnswers = {
         stateCode: existing?.stateCode ?? null,
@@ -65,7 +66,7 @@ export default function BankConnectionScreen({
         monthlyEssentialExpenses: existing?.monthlyEssentialExpenses ?? 0,
         bottleneck,
         knowledgeLevel: existing?.knowledgeLevel ?? "beginner",
-        liquidSavings: result.liquidSavings,
+        liquidSavings,
         primaryGoal: result.primaryGoal,
       };
       saveFinancialProfile(answers, userId);

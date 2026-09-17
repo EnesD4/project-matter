@@ -50,6 +50,7 @@ import {
 } from "../lib/roadmapService";
 import type { Holding, StockHolding } from "./InvestmentPortfolioCard";
 import StockLogo from "./StockLogo";
+import { isDividendEtf } from "../lib/allocation";
 
 type CashFlowScreenProps = {
   holdings: Holding[];
@@ -220,6 +221,22 @@ export default function CashFlowScreen({
   const monthlyIncome = annualIncome / 12;
   const payerCount = positions.filter((position) => annualDividendIncome(position, metaBySymbol[position.symbol]) > 0)
     .length;
+  const hasDividendAssets = useMemo(() => {
+    if (positions.length === 0) return false;
+    return positions.some((position) => {
+      if (isDividendEtf(position.symbol)) return true;
+      const meta = metaBySymbol[position.symbol];
+      if (!meta) return false;
+      if (annualDividendIncome(position, meta) > 0) return true;
+      return (
+        (meta.dividendYield != null && meta.dividendYield > 0) ||
+        (meta.trailingAnnualDividendYield != null && meta.trailingAnnualDividendYield > 0) ||
+        (meta.trailingAnnualDividendRate != null && meta.trailingAnnualDividendRate > 0) ||
+        (meta.estimatedDividendPerShare != null && meta.estimatedDividendPerShare > 0)
+      );
+    });
+  }, [positions, metaBySymbol]);
+  const showDividendCalendar = hasDividendAssets;
   const stockValue = positions.reduce(
     (sum, position) =>
       sum + Math.max(0, toFiniteNumber(position?.price, 0)) * Math.max(0, toFiniteNumber(position?.shares, 0)),
@@ -228,6 +245,10 @@ export default function CashFlowScreen({
   const blendedYield = stockValue > 0 ? annualIncome / stockValue : 0;
   const upcoming = useMemo(() => buildUpcomingPayouts(positions, metaBySymbol), [positions, metaBySymbol]);
   const grouped = useMemo(() => groupByMonth(upcoming), [upcoming]);
+
+  useEffect(() => {
+    if (!showDividendCalendar && calendarOpen) setCalendarOpen(false);
+  }, [showDividendCalendar, calendarOpen]);
 
   return (
     <div className="flex flex-col gap-3" aria-label="Dividend calendar">
@@ -273,6 +294,7 @@ export default function CashFlowScreen({
         </div>
       </button>
 
+      {showDividendCalendar ? (
       <button
         type="button"
         onClick={() => setCalendarOpen(true)}
@@ -335,8 +357,9 @@ export default function CashFlowScreen({
                   }`}
         </p>
       </button>
+      ) : null}
 
-      {calendarOpen && (
+      {showDividendCalendar && calendarOpen ? (
         <div
           className="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm"
           onClick={() => setCalendarOpen(false)}
@@ -419,7 +442,7 @@ export default function CashFlowScreen({
             )}
           </div>
         </div>
-      )}
+      ) : null}
     </div>
   );
 }

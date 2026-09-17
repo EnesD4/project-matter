@@ -130,13 +130,13 @@ export default function OnboardingModal({
                   <>
                     Primary goal: <span className="text-amber-200">{goalLabel}</span>
                     {liquidSavings != null ? (
-                      <> · liquid savings reported at {money(liquidSavings)}.</>
+                      <> · linked liquid balances about {money(liquidSavings)}.</>
                     ) : (
                       "."
                     )}
                   </>
                 ) : (
-                  <>Liquid savings reported at {money(liquidSavings ?? 0)}.</>
+                  <>Linked liquid balances about {money(liquidSavings ?? 0)}.</>
                 )}{" "}
                 I&apos;ll tailor your 10-year roadmap milestones around that.
               </p>

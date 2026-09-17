@@ -183,6 +183,7 @@ export async function linkTokenCreate(
     payload.products = ["investments"];
     payload.optional_products = ["transactions"];
     // Restrict Institution + Account Select to investment accounts (brokerage, IRA, 401k, …).
+    // Plaid subtypes are case-sensitive — "403B" (not "403b") is required at this index.
     payload.account_filters = {
       investment: {
         account_subtypes: [
@@ -190,7 +191,7 @@ export async function linkTokenCreate(
           "ira",
           "roth",
           "401k",
-          "403b",
+          "403B",
           "529",
           "hsa",
           "mutual fund",

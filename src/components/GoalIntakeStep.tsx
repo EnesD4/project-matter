@@ -1,4 +1,4 @@
-import { Car, Home, PiggyBank, Sparkles, TrendingUp, Wallet } from "lucide-react";
+import { Car, Home, Sparkles, TrendingUp } from "lucide-react";
 import React, { useState } from "react";
 import {
   PRIMARY_GOAL_OPTIONS,
@@ -6,6 +6,7 @@ import {
 } from "../lib/roadmapService";
 
 export type GoalIntakeResult = {
+  /** Always null — liquid savings come from linked bank / brokerage balances. */
   liquidSavings: number | null;
   primaryGoal: PrimaryFinancialGoal | null;
 };
@@ -29,22 +30,13 @@ export default function GoalIntakeStep({
   saving = false,
   onComplete,
 }: GoalIntakeStepProps) {
-  const [savingsInput, setSavingsInput] = useState("");
   const [primaryGoal, setPrimaryGoal] = useState<PrimaryFinancialGoal | null>(null);
 
-  const parseSavings = (): number | null => {
-    const cleaned = savingsInput.replace(/[$,\s]/g, "").trim();
-    if (!cleaned) return null;
-    const value = Number(cleaned);
-    if (!Number.isFinite(value) || value < 0) return null;
-    return Math.round(value);
-  };
-
-  const submit = (skipSavings: boolean) => {
+  const submit = (skipGoal: boolean) => {
     if (saving) return;
     onComplete({
-      liquidSavings: skipSavings ? null : parseSavings(),
-      primaryGoal,
+      liquidSavings: null,
+      primaryGoal: skipGoal ? null : primaryGoal,
     });
   };
 
@@ -56,12 +48,13 @@ export default function GoalIntakeStep({
         <>
           <p style={styles.step}>Almost done</p>
           <div style={styles.iconBadge}>
-            <PiggyBank size={22} color="#10B981" />
+            <Sparkles size={22} color="#10B981" />
           </div>
           <p style={styles.eyebrow}>Goals</p>
           <h2 style={styles.headline}>Tell Sprout what matters</h2>
           <p style={styles.subhead}>
-            Two quick answers so your 10-year roadmap and milestones match your real starting point.
+            One quick answer so your 10-year roadmap matches your goal. Savings and investing capacity come
+            from your connected accounts.
           </p>
         </>
       ) : (
@@ -71,47 +64,11 @@ export default function GoalIntakeStep({
             Tell Sprout what matters
           </h3>
           <p className="mt-1.5 text-sm leading-relaxed text-slate-400">
-            Two quick answers so your roadmap and milestones match your starting point.
+            Pick a primary goal. Liquid savings and monthly capacity are derived from your linked bank and
+            brokerage balances.
           </p>
         </div>
       )}
-
-      <div className={isModal ? "rounded-2xl border border-[#1F1F1F] bg-black/30 p-4" : undefined} style={isModal ? undefined : styles.card}>
-        <div className={isModal ? "mb-3 flex items-center gap-2 text-sm font-extrabold text-white" : undefined} style={isModal ? undefined : styles.cardHead}>
-          <span className={isModal ? "grid h-9 w-9 place-items-center rounded-xl border border-emerald-500/30 bg-emerald-500/10 text-emerald-400" : undefined} style={isModal ? undefined : styles.cardIcon}>
-            <Wallet size={16} />
-          </span>
-          <span className={isModal ? undefined : undefined} style={isModal ? undefined : styles.cardTitle}>
-            Do you have existing liquid savings / an emergency fund?
-          </span>
-        </div>
-        <label className={isModal ? "block text-[10px] font-semibold uppercase tracking-wide text-slate-500" : undefined} style={isModal ? undefined : styles.label}>
-          Amount (USD)
-        </label>
-        <input
-          type="text"
-          inputMode="decimal"
-          value={savingsInput}
-          onChange={(e) => setSavingsInput(e.target.value)}
-          placeholder="e.g. 5000"
-          disabled={saving}
-          className={
-            isModal
-              ? "mt-1 w-full rounded-xl border border-[#1F1F1F] bg-black/40 px-3 py-2.5 text-sm font-semibold text-white outline-none placeholder:text-slate-600 focus:border-emerald-500/50"
-              : undefined
-          }
-          style={isModal ? undefined : styles.input}
-        />
-        <button
-          type="button"
-          disabled={saving}
-          onClick={() => setSavingsInput("")}
-          className={isModal ? "mt-2 text-[11px] font-bold text-slate-500 hover:text-slate-300" : undefined}
-          style={isModal ? undefined : styles.skipLink}
-        >
-          Skip savings for now
-        </button>
-      </div>
 
       <div className={isModal ? "rounded-2xl border border-[#1F1F1F] bg-black/30 p-4" : undefined} style={isModal ? undefined : styles.card}>
         <p className={isModal ? "mb-3 text-sm font-extrabold text-white" : undefined} style={isModal ? undefined : styles.cardTitle}>
@@ -267,56 +224,11 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: "column",
     gap: 8,
   },
-  cardHead: {
-    display: "flex",
-    alignItems: "center",
-    gap: 10,
-    marginBottom: 4,
-  },
-  cardIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
-    display: "grid",
-    placeItems: "center",
-    background: "rgba(16, 185, 129, 0.10)",
-    border: "1px solid rgba(16, 185, 129, 0.28)",
-    color: "#10B981",
-    flexShrink: 0,
-  },
   cardTitle: {
     fontSize: 14,
     fontWeight: 800,
     color: "#FFFFFF",
     lineHeight: 1.35,
-  },
-  label: {
-    margin: 0,
-    fontSize: 10,
-    fontWeight: 700,
-    letterSpacing: "0.08em",
-    textTransform: "uppercase",
-    color: "#6B7280",
-  },
-  input: {
-    border: "1px solid #1F1F1F",
-    borderRadius: 12,
-    background: "#0A0A0A",
-    color: "#FFFFFF",
-    fontSize: 14,
-    fontWeight: 600,
-    padding: "12px 14px",
-    outline: "none",
-  },
-  skipLink: {
-    alignSelf: "flex-start",
-    border: "none",
-    background: "transparent",
-    color: "#6B7280",
-    fontSize: 12,
-    fontWeight: 700,
-    padding: 0,
-    cursor: "pointer",
   },
   goalGrid: {
     display: "flex",

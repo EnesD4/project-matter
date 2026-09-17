@@ -59,9 +59,10 @@ export default function FinancialOnboardingModal({
   const applyGoalIntake = (result: GoalIntakeResult) => {
     const userId = getStoredUser()?.id;
     const existing = pendingRoadmap?.profile ?? loadFinancialProfile(userId);
+    const liquidSavings = existing?.liquidSavings ?? null;
     const bottleneck =
       result.primaryGoal != null
-        ? bottleneckFromPrimaryGoal(result.primaryGoal, result.liquidSavings)
+        ? bottleneckFromPrimaryGoal(result.primaryGoal, liquidSavings)
         : existing?.bottleneck ?? "emergency-safety-net";
     const answers: FinancialProfileAnswers = {
       stateCode: existing?.stateCode ?? null,
@@ -69,7 +70,7 @@ export default function FinancialOnboardingModal({
       monthlyEssentialExpenses: existing?.monthlyEssentialExpenses ?? 0,
       bottleneck,
       knowledgeLevel: existing?.knowledgeLevel ?? "beginner",
-      liquidSavings: result.liquidSavings,
+      liquidSavings,
       primaryGoal: result.primaryGoal,
     };
     const roadmap = saveFinancialProfile(answers, userId);

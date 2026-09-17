@@ -38,7 +38,7 @@ export const ALLOCATION_PALETTE = [
   "#8B5CF6", // Violet/Purple
 ] as const;
 
-const DIVIDEND_ETFS = new Set([
+export const DIVIDEND_ETFS = new Set([
   "SCHD",
   "VIG",
   "VYM",
@@ -56,6 +56,14 @@ const DIVIDEND_ETFS = new Set([
   "SCHY",
   "DHS",
 ]);
+
+/** True for known dividend-focused ETF tickers used across portfolio / calendar UI. */
+export function isDividendEtf(symbol: string | null | undefined): boolean {
+  const ticker = String(symbol || "")
+    .trim()
+    .toUpperCase();
+  return Boolean(ticker) && DIVIDEND_ETFS.has(ticker);
+}
 
 const TECH_ETFS = new Set([
   "QQQ",

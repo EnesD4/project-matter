@@ -7,7 +7,6 @@ import {
   Check,
   CheckCircle2,
   ChevronDown,
-  ChevronLeft,
   ExternalLink,
   Gift,
   HelpCircle,
@@ -52,7 +51,7 @@ export const RETIREMENT_UPDATED_EVENT = "matterpro:retirement-updated";
 export const RETIREMENT_SEEDED_EVENT = "matterpro:retirement-seeded";
 
 type AccountType = "roth" | "traditional" | "401k" | "hsa";
-type SetupStep = 1 | 2 | 3;
+type SetupStep = 1;
 
 const ACCOUNTS: Array<{
   id: AccountType;
@@ -550,7 +549,7 @@ function loadPlan(userId: string): StoredPlan {
     return {
       configured: Boolean(parsed.configured),
       editing: Boolean(parsed.editing),
-      step: parsed.step === 2 || parsed.step === 3 ? parsed.step : Number(parsed.step) === 4 ? 3 : 1,
+      step: 1,
       savings: Number.isFinite(parsed.savings) ? Math.max(0, Number(parsed.savings)) : 0,
       monthly: Number.isFinite(parsed.monthly) ? Math.max(0, Number(parsed.monthly)) : 0,
       accountType,
@@ -1236,10 +1235,7 @@ export default function RetirementPlanner({
     const stored = loadPlan(userId);
     return stored.editing || !stored.configured;
   });
-  const [step, setStep] = useState<SetupStep>(() => {
-    const stored = loadPlan(userId).step ?? 1;
-    return stored === 2 || stored === 3 ? stored : 1;
-  });
+  const [step, setStep] = useState<SetupStep>(1);
   const [savings, setSavings] = useState(() => loadPlan(userId).savings);
   const [monthly, setMonthly] = useState(() => loadPlan(userId).monthly);
   const [accountType, setAccountType] = useState<AccountType>(() => loadPlan(userId).accountType);
@@ -1247,7 +1243,6 @@ export default function RetirementPlanner({
   const [contributeOpen, setContributeOpen] = useState(false);
   const [monthlyEditOpen, setMonthlyEditOpen] = useState(false);
   const [stepError, setStepError] = useState<string | null>(null);
-  const [seededFromBudget, setSeededFromBudget] = useState(false);
   const [budgetTick, setBudgetTick] = useState(0);
 
   const budgetTargets = useMemo(() => {
@@ -1263,7 +1258,7 @@ export default function RetirementPlanner({
       const next = loadPlan(userId);
       setPlan(next);
       setEditing(next.editing || !next.configured);
-      setStep(next.step ?? 1);
+      setStep(1);
       setSavings(next.savings);
       setMonthly(next.monthly);
       setAccountType(next.accountType);
@@ -1271,6 +1266,29 @@ export default function RetirementPlanner({
     window.addEventListener(RETIREMENT_SEEDED_EVENT, sync);
     return () => window.removeEventListener(RETIREMENT_SEEDED_EVENT, sync);
   }, [userId]);
+
+  // Derive savings / monthly capacity from linked balances + budget — no manual quiz inputs.
+  useEffect(() => {
+    if (!editing && plan.configured) return;
+    const profile = loadFinancialProfile(userId);
+    const targets = profile
+      ? computeRetirementTargets(profile.monthlyIncome, profile.monthlyEssentialExpenses)
+      : null;
+    if (savings <= 0 && plan.savings > 0) setSavings(plan.savings);
+    if (monthly <= 0) {
+      const derived =
+        targets?.totalMonthly ||
+        plan.monthly ||
+        Math.max(0, Math.round((profile?.monthlyIncome ?? 0) - (profile?.monthlyEssentialExpenses ?? 0)));
+      if (derived > 0) {
+        setMonthly(derived);
+        if (!accountType || accountType === "roth") {
+          const prefer401k = (targets?.k401Monthly ?? 0) >= (targets?.rothMonthly ?? 0);
+          if (prefer401k) setAccountType("401k");
+        }
+      }
+    }
+  }, [editing, plan.configured, plan.savings, plan.monthly, userId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!plan.configured || plan.startedAt) return;
@@ -1441,23 +1459,21 @@ export default function RetirementPlanner({
 
   const goNext = () => {
     setStepError(null);
-    if (step === 1) {
-      if (!seededFromBudget && monthly <= 0 && budgetTargets && budgetTargets.totalMonthly > 0) {
-        setMonthly(budgetTargets.totalMonthly);
-        setAccountType(budgetTargets.k401Monthly >= budgetTargets.rothMonthly ? "401k" : "roth");
-        setSeededFromBudget(true);
-      }
-      setStep(2);
-      return;
-    }
-    if (step === 2) {
-      setStep(3);
-      return;
-    }
+    const profile = loadFinancialProfile(userId);
+    const targets = profile
+      ? computeRetirementTargets(profile.monthlyIncome, profile.monthlyEssentialExpenses)
+      : null;
+    const derivedMonthly =
+      monthly > 0
+        ? monthly
+        : targets?.totalMonthly ||
+          plan.monthly ||
+          Math.max(0, Math.round((profile?.monthlyIncome ?? 0) - (profile?.monthlyEssentialExpenses ?? 0)));
+    const derivedSavings = Math.max(0, savings > 0 ? savings : plan.savings);
     const nextPlan: StoredPlan = {
       configured: true,
-      savings: Math.max(0, savings),
-      monthly: Math.max(0, monthly),
+      savings: derivedSavings,
+      monthly: Math.max(0, derivedMonthly),
       accountType,
       annualReturn: DEFAULT_RETURN,
       age: userCurrentAge,
@@ -1465,13 +1481,15 @@ export default function RetirementPlanner({
       startedAt: plan.startedAt ?? todayISODate(),
     };
     writePlan(userId, nextPlan);
+    setSavings(nextPlan.savings);
+    setMonthly(nextPlan.monthly);
     setPlan(nextPlan);
     setEditing(false);
   };
 
   const goBack = () => {
     setStepError(null);
-    if (step > 1) setStep((step - 1) as SetupStep);
+    if (plan.configured) setEditing(false);
   };
 
   const startRecalculate = () => {
@@ -1531,7 +1549,7 @@ export default function RetirementPlanner({
           </h2>
           <p className="mt-1 text-[12px] font-medium italic leading-snug text-[#9CA3AF]">
             {showSetup
-              ? "Sprout AI will set this up with you in three quick questions"
+              ? "Sprout AI uses your linked balances — pick the account type that fits"
               : "Live pacing toward your freedom number"}
           </p>
         </div>
@@ -1544,146 +1562,88 @@ export default function RetirementPlanner({
         <div key={step} className="matter-pop mt-4 rounded-2xl border border-[#1F1F1F] bg-[#0A0A0A] p-4">
           <div className="flex items-center justify-between gap-3">
             <SproutBadge />
-            <span className="text-[11px] font-extrabold tabular-nums text-[#64748B]">
-              {step}/3
-            </span>
+            <span className="text-[11px] font-extrabold tabular-nums text-[#64748B]">1/1</span>
           </div>
           <div className="mt-3 h-1 overflow-hidden rounded-full bg-[#121212]" aria-hidden="true">
-            <div
-              className="h-full rounded-full bg-[#10B981] transition-[width] duration-300"
-              style={{ width: `${(step / 3) * 100}%` }}
-            />
+            <div className="h-full w-full rounded-full bg-[#10B981]" />
           </div>
           <p className="mt-3 text-[12px] font-medium text-[#9CA3AF]">
-            Using your profile age of {userCurrentAge} · retirement locked at {RETIRE_AGE}.
+            Using your profile age of {userCurrentAge} · retirement locked at {RETIRE_AGE}. Savings (
+            {formatDollars(Math.max(0, savings || plan.savings))}) and monthly capacity (
+            {formatDollars(Math.max(0, monthly || budgetTargets?.totalMonthly || 0))}/mo) come from linked
+            accounts and cash-flow surplus.
           </p>
 
-          {step === 1 ? (
-            <div className="mt-4">
-              <p className="text-[11px] font-extrabold uppercase tracking-[0.14em] text-emerald-300/80">
-                Step 1
-              </p>
-              <h3 className="mt-1 text-[18px] font-extrabold tracking-tight text-white">
-                How much savings do you have right now for retirement?
-              </h3>
-              <p className="mt-1 text-[12px] font-medium text-[#9CA3AF]">Zero is a perfectly honest starting point.</p>
-              <div className="mt-4">
-                <MoneyField
-                  id="retire-setup-savings"
-                  label="Current retirement savings"
-                  value={savings}
-                  onChange={(next) => setSavings(clamp(next, 0, 5_000_000))}
-                />
-              </div>
-            </div>
-          ) : null}
-
-          {step === 2 ? (
-            <div className="mt-4">
-              <p className="text-[11px] font-extrabold uppercase tracking-[0.14em] text-emerald-300/80">
-                Step 2
-              </p>
-              <h3 className="mt-1 text-[18px] font-extrabold tracking-tight text-white">
-                How much can you comfortably contribute monthly?
-              </h3>
-              <p className="mt-1 text-[12px] font-medium text-[#9CA3AF]">
-                {budgetTargets && budgetTargets.totalMonthly > 0
-                  ? `Suggested from your onboarding budget: ${formatDollars(budgetTargets.k401Monthly)} to 401(k) + ${formatDollars(budgetTargets.rothMonthly)} to Roth IRA.`
-                  : "Consistency beats size. You can change this later."}
-              </p>
-              <div className="mt-4">
-                <MoneyField
-                  id="retire-setup-monthly"
-                  label="Monthly contribution"
-                  value={monthly}
-                  onChange={(next) => setMonthly(clamp(next, 0, 20_000))}
-                  suffix="/mo"
-                />
-              </div>
-            </div>
-          ) : null}
-
-          {step === 3 ? (
-            <div className="mt-4">
-              <p className="text-[11px] font-extrabold uppercase tracking-[0.14em] text-emerald-300/80">
-                Step 3
-              </p>
-              <h3 className="mt-1 text-[18px] font-extrabold tracking-tight text-white">
-                Which account type fits your strategy?
-              </h3>
-              <div className="mt-3 space-y-2">
-                {ACCOUNTS.map((account) => {
-                  const active = accountType === account.id;
-                  return (
-                    <button
-                      key={account.id}
-                      type="button"
-                      onClick={() => setAccountType(account.id)}
-                      className={`flex w-full items-start gap-3 rounded-xl border px-3.5 py-3 text-left transition ${
-                        active
-                          ? "border-emerald-500/50 bg-emerald-500/10"
-                          : "border-[#1F1F1F] bg-black hover:border-[#2A2A2A]"
+          <div className="mt-4">
+            <p className="text-[11px] font-extrabold uppercase tracking-[0.14em] text-emerald-300/80">
+              Account type
+            </p>
+            <h3 className="mt-1 text-[18px] font-extrabold tracking-tight text-white">
+              Which account type fits your strategy?
+            </h3>
+            <div className="mt-3 space-y-2">
+              {ACCOUNTS.map((account) => {
+                const active = accountType === account.id;
+                return (
+                  <button
+                    key={account.id}
+                    type="button"
+                    onClick={() => setAccountType(account.id)}
+                    className={`flex w-full items-start gap-3 rounded-xl border px-3.5 py-3 text-left transition ${
+                      active
+                        ? "border-emerald-500/50 bg-emerald-500/10"
+                        : "border-[#1F1F1F] bg-black hover:border-[#2A2A2A]"
+                    }`}
+                  >
+                    <span
+                      className={`mt-0.5 grid h-4 w-4 flex-shrink-0 place-items-center rounded-full border ${
+                        active ? "border-emerald-400 bg-emerald-400" : "border-[#334155]"
                       }`}
                     >
-                      <span
-                        className={`mt-0.5 grid h-4 w-4 flex-shrink-0 place-items-center rounded-full border ${
-                          active ? "border-emerald-400 bg-emerald-400" : "border-[#334155]"
-                        }`}
-                      >
-                        {active ? <span className="h-1.5 w-1.5 rounded-full bg-[#042F2E]" /> : null}
-                      </span>
-                      <span>
-                        <span className="block text-[14px] font-extrabold text-white">{account.label}</span>
-                        <span className="mt-0.5 block text-[12px] font-medium text-[#9CA3AF]">{account.hint}</span>
-                      </span>
-                    </button>
-                  );
-                })}
-                {accountType === "401k" ? (
-                  <K401MatchCard
-                    monthly={monthly}
-                    matchCap={
-                      budgetTargets?.k401Monthly ||
-                      Math.round((budgetTargets?.monthlyIncome ?? 0) * K401_MATCH_RATE)
-                    }
-                    monthlyIncome={budgetTargets?.monthlyIncome ?? 0}
-                  />
-                ) : null}
-                <button
-                  type="button"
-                  onClick={() => setGuideOpen(true)}
-                  className="flex w-full items-start gap-3 rounded-xl border border-dashed border-emerald-500/35 bg-emerald-500/5 px-3.5 py-3 text-left hover:bg-emerald-500/10"
-                >
-                  <span className="mt-0.5 grid h-4 w-4 flex-shrink-0 place-items-center text-emerald-400">
-                    <HelpCircle size={16} />
-                  </span>
-                  <span>
-                    <span className="block text-[14px] font-extrabold text-white">I&apos;m not sure (Guide me)</span>
-                    <span className="mt-0.5 block text-[12px] font-medium text-[#9CA3AF]">
-                      Sprout AI will explain the difference and recommend one
+                      {active ? <span className="h-1.5 w-1.5 rounded-full bg-[#042F2E]" /> : null}
                     </span>
+                    <span>
+                      <span className="block text-[14px] font-extrabold text-white">{account.label}</span>
+                      <span className="mt-0.5 block text-[12px] font-medium text-[#9CA3AF]">{account.hint}</span>
+                    </span>
+                  </button>
+                );
+              })}
+              {accountType === "401k" ? (
+                <K401MatchCard
+                  monthly={monthly}
+                  matchCap={
+                    budgetTargets?.k401Monthly ||
+                    Math.round((budgetTargets?.monthlyIncome ?? 0) * K401_MATCH_RATE)
+                  }
+                  monthlyIncome={budgetTargets?.monthlyIncome ?? 0}
+                />
+              ) : null}
+              <button
+                type="button"
+                onClick={() => setGuideOpen(true)}
+                className="flex w-full items-start gap-3 rounded-xl border border-dashed border-emerald-500/35 bg-emerald-500/5 px-3.5 py-3 text-left hover:bg-emerald-500/10"
+              >
+                <span className="mt-0.5 grid h-4 w-4 flex-shrink-0 place-items-center text-emerald-400">
+                  <HelpCircle size={16} />
+                </span>
+                <span>
+                  <span className="block text-[14px] font-extrabold text-white">I&apos;m not sure (Guide me)</span>
+                  <span className="mt-0.5 block text-[12px] font-medium text-[#9CA3AF]">
+                    Sprout AI will explain the difference and recommend one
                   </span>
-                </button>
-              </div>
+                </span>
+              </button>
             </div>
-          ) : null}
+          </div>
 
           {stepError ? <p className="mt-3 text-[12px] font-semibold text-rose-300">{stepError}</p> : null}
 
           <div className="mt-4 flex items-center gap-2">
-            {step > 1 ? (
+            {plan.configured ? (
               <button
                 type="button"
                 onClick={goBack}
-                className="grid h-11 w-11 flex-shrink-0 place-items-center rounded-xl border border-[#1F1F1F] text-[#E2E8F0]"
-                aria-label="Go back"
-              >
-                <ChevronLeft size={18} />
-              </button>
-            ) : plan.configured ? (
-              <button
-                type="button"
-                onClick={() => setEditing(false)}
                 className="grid h-11 w-11 flex-shrink-0 place-items-center rounded-xl border border-[#1F1F1F] text-[#E2E8F0]"
                 aria-label="Cancel"
               >
@@ -1695,14 +1655,8 @@ export default function RetirementPlanner({
               onClick={goNext}
               className="flex h-11 min-w-0 flex-1 items-center justify-center gap-2 rounded-xl bg-[#10B981] px-4 text-sm font-extrabold text-[#042F2E]"
             >
-              {step === 3 ? (
-                <>
-                  <Sparkles size={16} />
-                  See my tracker
-                </>
-              ) : (
-                "Continue"
-              )}
+              <Sparkles size={16} />
+              See my tracker
             </button>
           </div>
         </div>
