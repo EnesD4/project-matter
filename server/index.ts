@@ -436,17 +436,86 @@ async function resolveStockQuote(symbol: string): Promise<(QuoteSnapshot & { sou
   };
 }
 
-// Stock Search Endpoint — Polygon first, Finnhub fallback, never 500
+// Stock Search Endpoint — Yahoo Finance (US equities & ETFs by name or ticker)
 app.get('/api/stocks/search', async (req, res) => {
   try {
-    const query = String(req.query.q || req.query.query || '').trim().slice(0, 40);
+    const query = String(req.query.q || req.query.query || '').trim().slice(0, 64);
     if (!query) {
       return res.json([]);
     }
+    const params = new URLSearchParams({
+      q: query,
+      quotesCount: '16',
+      newsCount: '0',
+      lang: 'en-US',
+      region: 'US',
+      enableFuzzyQuery: 'true',
+      quotesQueryId: 'tss_match_phrase_query',
+      multiQuoteQueryId: 'multi_quote_single_token_query',
+      enableEnhancedTrivialQuery: 'true',
+    });
+    const yahoo = await axios.get(
+      `https://query2.finance.yahoo.com/v1/finance/search?${params.toString()}`,
+      {
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          Accept: 'application/json',
+        },
+        timeout: 8000,
+        validateStatus: () => true,
+      }
+    );
+    const quotes = Array.isArray(yahoo.data?.quotes) ? yahoo.data.quotes : [];
+    const usEx = /\b(NASDAQ|NYSE|NYSEARCA|NYSE American|AMEX|Cboe|BATS|OTC|OTCQB|OTCQX|PINK)\b/i;
+    const seen = new Set<string>();
+    const remote = quotes
+      .map((row: Record<string, unknown>) => {
+        const symbol = String(row.symbol || '')
+          .trim()
+          .toUpperCase();
+        if (!symbol || symbol.includes('=') || symbol.includes('^')) return null;
+        if (row.isYahooFinance === false) return null;
+        const type = String(row.quoteType || '').toUpperCase();
+        if (!['EQUITY', 'ETF', 'MUTUALFUND'].includes(type)) return null;
+        const hasForeignSuffix = /[.=]/.test(symbol) || /\d/.test(symbol[0] || '');
+        const exch = `${row.exchDisp || ''} ${row.exchange || ''}`;
+        const isUs = usEx.test(exch) || (!hasForeignSuffix && !String(exch).trim());
+        let rank = 50;
+        if (type === 'EQUITY' || type === 'ETF') rank -= 10;
+        if (!hasForeignSuffix) rank -= 20;
+        if (isUs) rank -= 15;
+        return {
+          symbol,
+          displaySymbol: symbol,
+          description: String(row.shortname || row.longname || symbol).trim() || symbol,
+          type: type === 'ETF' ? 'ETF' : type === 'MUTUALFUND' ? 'Mutual Fund' : 'Common Stock',
+          rank,
+        };
+      })
+      .filter(Boolean)
+      .sort(
+        (a: { rank: number; symbol: string }, b: { rank: number; symbol: string }) =>
+          a.rank - b.rank || a.symbol.localeCompare(b.symbol)
+      )
+      .filter((row: { symbol: string }) => {
+        if (seen.has(row.symbol)) return false;
+        seen.add(row.symbol);
+        return true;
+      })
+      .slice(0, 10)
+      .map(({ symbol, displaySymbol, description, type }: {
+        symbol: string;
+        displaySymbol: string;
+        description: string;
+        type: string;
+      }) => ({ symbol, displaySymbol, description, type }));
+
+    if (remote.length > 0) return res.json(remote);
+
+    // Optional Polygon/Finnhub supplements only when Yahoo returns nothing.
     const polygonResults = await fetchPolygonSearch(query);
-    if (polygonResults.length > 0) {
-      return res.json(polygonResults);
-    }
+    if (polygonResults.length > 0) return res.json(polygonResults);
     if (FINNHUB_API_KEY) {
       const response = await axios.get(
         `https://finnhub.io/api/v1/search?q=${encodeURIComponent(query)}&token=${FINNHUB_API_KEY}`
@@ -807,17 +876,82 @@ function isoDateDaysAgo(days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
-async function fetchCompanyHeadlines(symbol: string): Promise<string[]> {
-  const from = isoDateDaysAgo(21);
-  const to = isoDateDaysAgo(0);
-  const items = await finnhubGet<CompanyNewsItem[]>(
-    `company-news?symbol=${encodeURIComponent(symbol)}&from=${from}&to=${to}`
+async function fetchCompanyHeadlines(symbol: string, name?: string): Promise<{
+  weekHeadlines: string[];
+  monthHeadlines: string[];
+}> {
+  const mapNews = (news: Array<Record<string, unknown>>, maxAgeDays: number, limit: number) => {
+    const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const item of news) {
+      const title = String(item.title || '').trim();
+      if (!title) continue;
+      const key = title.toLowerCase();
+      if (seen.has(key)) continue;
+      const publishedMs =
+        typeof item.providerPublishTime === 'number' && item.providerPublishTime > 0
+          ? item.providerPublishTime * 1000
+          : Date.now();
+      if (publishedMs < cutoff) continue;
+      seen.add(key);
+      const publisher = String(item.publisher || '').trim();
+      out.push(publisher ? `${title} (${publisher})` : title);
+      if (out.length >= limit) break;
+    }
+    return out;
+  };
+
+  const queries = [symbol, name || ''].map((q) => q.trim()).filter(Boolean);
+  const unique = [...new Set(queries)];
+  const bundles = await Promise.all(
+    unique.map(async (q) => {
+      try {
+        const params = new URLSearchParams({
+          q,
+          quotesCount: '4',
+          newsCount: '18',
+          lang: 'en-US',
+          region: 'US',
+        });
+        const yahoo = await axios.get(
+          `https://query2.finance.yahoo.com/v1/finance/search?${params.toString()}`,
+          {
+            headers: {
+              'User-Agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            },
+            timeout: 8000,
+            validateStatus: () => true,
+          }
+        );
+        return Array.isArray(yahoo.data?.news) ? (yahoo.data.news as Array<Record<string, unknown>>) : [];
+      } catch {
+        return [] as Array<Record<string, unknown>>;
+      }
+    })
   );
-  if (!Array.isArray(items)) return [];
-  return items
-    .map((n) => (n.headline || n.summary || '').trim())
-    .filter(Boolean)
-    .slice(0, 8);
+  const news = bundles.flat();
+  let weekHeadlines = mapNews(news, 7, 8);
+  let monthHeadlines = mapNews(news, 30, 12);
+
+  // Supplement with Finnhub when Yahoo news is thin.
+  if (monthHeadlines.length < 3 && FINNHUB_API_KEY) {
+    const from = isoDateDaysAgo(30);
+    const to = isoDateDaysAgo(0);
+    const items = await finnhubGet<CompanyNewsItem[]>(
+      `company-news?symbol=${encodeURIComponent(symbol)}&from=${from}&to=${to}`
+    );
+    if (Array.isArray(items)) {
+      const finnhubLines = items
+        .map((n) => (n.headline || n.summary || '').trim())
+        .filter(Boolean);
+      monthHeadlines = [...new Set([...monthHeadlines, ...finnhubLines])].slice(0, 12);
+      weekHeadlines = [...new Set([...weekHeadlines, ...finnhubLines.slice(0, 8)])].slice(0, 8);
+    }
+  }
+
+  return { weekHeadlines, monthHeadlines };
 }
 
 function parseStockAnalysisJson(
@@ -872,50 +1006,6 @@ function parseStockAnalysisJson(
   }
 }
 
-function fallbackStockAnalysis(
-  symbol: string,
-  name: string,
-  fundamentals: StockFundamentals
-): StockAnalysisPayload {
-  const rec = fundamentals.recommendation;
-  const total = rec ? rec.strongBuy + rec.buy + rec.hold + rec.sell + rec.strongSell : 0;
-  const bullish = rec ? rec.strongBuy + rec.buy : 0;
-  const bearish = rec ? rec.sell + rec.strongSell : 0;
-  const sentiment: StockAnalysisPayload['sentiment'] =
-    total === 0 ? 'Hold' : bullish / total >= 0.55 ? 'Buy' : bearish / total >= 0.3 ? 'Sell' : 'Hold';
-
-  const growth =
-    fundamentals.revenueGrowthYoy != null
-      ? `${name} (${symbol}) posted ${fundamentals.revenueGrowthYoy >= 0 ? 'positive' : 'negative'} revenue growth of ${fundamentals.revenueGrowthYoy.toFixed(1)}% year over year.`
-      : `Recent product cycles, category demand, and operating execution remain the core growth narrative for ${symbol}.`;
-  const cashFlow =
-    fundamentals.fcf != null && fundamentals.fcf > 0
-      ? 'The company is generating free cash flow, which can fund reinvestment, buybacks, or a stronger balance sheet.'
-      : 'Watch the next earnings print, major commercial wins, and any guidance updates for confirmation of the growth story.';
-
-  const leverageRisk =
-    fundamentals.debt != null && fundamentals.cash != null && fundamentals.debt > fundamentals.cash
-      ? 'Net leverage is worth monitoring if rates stay high or cash flow slows.'
-      : 'A miss on growth, margins, or guidance could re-rate the stock quickly.';
-
-  const consensus =
-    rec && total > 0
-      ? `Street sentiment leans ${sentiment}: ${bullish} buy-side ratings vs ${rec.hold} hold and ${bearish} sell in the latest snapshot.`
-      : `Analyst coverage is thin right now — treat the setup as a Hold until a clearer Street consensus is available.`;
-
-  return {
-    growthDrivers: [growth, cashFlow],
-    keyRisks: [
-      'Valuation, competition, and macro sensitivity (rates, consumer, or enterprise spend) can all reverse the near-term tape.',
-      leverageRisk,
-    ],
-    analystConsensus: consensus,
-    sentiment,
-    source: 'fallback',
-    disclaimer: EDUCATIONAL_DISCLAIMER,
-  };
-}
-
 async function generateStockAnalysis(
   symbol: string,
   name: string,
@@ -924,7 +1014,8 @@ async function generateStockAnalysis(
     changePct?: number;
     positionNote?: string;
     fundamentals: StockFundamentals;
-    headlines: string[];
+    weekHeadlines: string[];
+    monthHeadlines: string[];
   }
 ): Promise<StockAnalysisPayload | null> {
   if (!GEMINI_API_KEY) return null;
@@ -939,10 +1030,14 @@ async function generateStockAnalysis(
   const recLine = rec
     ? `Strong Buy ${rec.strongBuy}, Buy ${rec.buy}, Hold ${rec.hold}, Sell ${rec.sell}, Strong Sell ${rec.strongSell} (period ${rec.period || 'latest'})`
     : 'No live analyst rating snapshot available.';
-  const headlineBlock =
-    extras.headlines.length > 0
-      ? extras.headlines.map((h, i) => `${i + 1}. ${h}`).join('\n')
-      : 'No recent company headlines available.';
+  const weekBlock =
+    extras.weekHeadlines.length > 0
+      ? extras.weekHeadlines.map((h, i) => `${i + 1}. ${h}`).join('\n')
+      : 'No headlines captured for the last 7 days.';
+  const monthBlock =
+    extras.monthHeadlines.length > 0
+      ? extras.monthHeadlines.map((h, i) => `${i + 1}. ${h}`).join('\n')
+      : 'No headlines captured for the last 30 days.';
   const priceLine =
     extras.price != null
       ? `Current price: $${extras.price.toFixed(2)}${extras.changePct != null ? ` (${extras.changePct >= 0 ? '+' : ''}${extras.changePct.toFixed(2)}%)` : ''}`
@@ -950,7 +1045,11 @@ async function generateStockAnalysis(
 
   const prompt = `${SPROUT_SYSTEM_INSTRUCTION}
 
-Write a concise educational briefing about a company the user already opened. Teach context only — never a stock pick or trade signal.
+Write a detailed educational briefing about ${name} (${symbol}). Teach context only — never a stock pick or trade signal.
+
+Use the live market news and fundamentals below. Cover BOTH:
+1) Macro / market context that affects this name (rates, sector tape, risk appetite, peers), and
+2) Company-specific catalysts from the last 1 week and last 1 month (earnings, guidance, deals, product launches, regulatory news, capital actions).
 
 Stock: ${symbol} (${name})
 ${priceLine}
@@ -960,21 +1059,26 @@ Cash: ${f.cash != null ? Math.round(f.cash) : 'n/a'}  Debt: ${f.debt != null ? M
 Free cash flow: ${f.fcf != null ? Math.round(f.fcf) : 'n/a'}
 Published analyst ratings (report as facts, not as your recommendation): ${recLine}
 ${extras.positionNote ? `User already holds or viewed this name: ${extras.positionNote}` : ''}
-Recent headlines:
-${headlineBlock}
+
+Last 7 days — market & company news:
+${weekBlock}
+
+Last 30 days — market & company news:
+${monthBlock}
 
 Return ONLY valid JSON (no markdown) with exactly these keys:
 {
-  "growthDrivers": ["2-4 short educational bullets on recent earnings, key deals, product cycles, or operating highlights"],
-  "keyRisks": ["2-4 short bullets on material risks to watch"],
-  "analystConsensus": "1-2 sentences summarizing published Buy/Hold/Sell ratings in plain English. This is Street data, not your advice.",
+  "growthDrivers": ["2-4 specific bullets that cite recent catalysts, financial performance, strategic updates, and relevant macro/sector backdrop — not generic filler"],
+  "keyRisks": ["2-4 specific bullets on material risks tied to recent news, competition, valuation, or macro sensitivity"],
+  "analystConsensus": "1-2 sentences summarizing published Buy/Hold/Sell ratings in plain English, optionally noting how recent news may frame Street debate. This is Street data, not your advice.",
   "sentiment": "Buy" | "Hold" | "Sell"
 }
 
 Rules:
-- Everyday language. No ticker-dump. No fabricated precise earnings numbers that are not implied above.
-- Educational briefing only. Do not tell the user to buy, sell, or hold. sentiment must mirror published Street ratings, never a Sprout trade signal.
-- No licensed tax advice. Keep each bullet to 1-2 sentences.`;
+- Be specific and non-generic. Reference themes from the supplied headlines when present (without inventing precise dollar figures that are not implied above).
+- Everyday language. No ticker-dump. Educational briefing only — do not tell the user to buy, sell, or hold.
+- sentiment must mirror published Street ratings, never a Sprout trade signal.
+- No licensed tax advice. Keep each bullet to 1-2 sentences, but make them information-dense.`;
 
   try {
     const result = await model.generateContent(prompt);
@@ -1017,40 +1121,42 @@ app.post('/api/stocks/analysis', async (req, res) => {
     const positionNote =
       typeof req.body?.positionNote === 'string' ? req.body.positionNote.trim() : '';
 
-    const [fundamentals, headlines] = await Promise.all([
+    const [fundamentals, news] = await Promise.all([
       buildStockFundamentals(symbol),
-      fetchCompanyHeadlines(symbol),
+      fetchCompanyHeadlines(symbol, name),
     ]);
     const ai = await generateStockAnalysis(symbol, name, {
       price,
       changePct,
       positionNote,
       fundamentals,
-      headlines,
+      weekHeadlines: news.weekHeadlines,
+      monthHeadlines: news.monthHeadlines,
     });
     if (ai) {
       return res.json(ai);
     }
-    return res.json({
-      ...fallbackStockAnalysis(symbol, name, fundamentals),
-      warning: 'Live Sprout AI synthesis was unavailable. Showing a fundamentals-based briefing.',
+    return res.status(503).json({
+      growthDrivers: [],
+      keyRisks: [],
+      analystConsensus: '',
+      sentiment: 'Hold',
+      source: 'ai',
+      warning: 'Sprout AI was unavailable. Please try again shortly.',
+      error: 'Sprout AI was unavailable. Please try again shortly.',
+      disclaimer: EDUCATIONAL_DISCLAIMER,
     });
   } catch (error) {
     console.error('Error building stock analysis:', error);
-    const symbol = String(req.body?.symbol || 'STOCK').trim().toUpperCase() || 'STOCK';
-    const name = String(req.body?.name || symbol).trim() || symbol;
-    return res.status(200).json({
-      ...fallbackStockAnalysis(symbol, name, {
-        symbol,
-        revenueGrowthYoy: null,
-        cash: null,
-        debt: null,
-        fcf: null,
-        pe: null,
-        peTag: 'N/A',
-        recommendation: null,
-      }),
-      warning: 'Sprout AI was unavailable. Showing a high-level fallback briefing.',
+    return res.status(503).json({
+      growthDrivers: [],
+      keyRisks: [],
+      analystConsensus: '',
+      sentiment: 'Hold',
+      source: 'ai',
+      warning: 'Sprout AI was unavailable. Please try again shortly.',
+      error: 'Sprout AI was unavailable. Please try again shortly.',
+      disclaimer: EDUCATIONAL_DISCLAIMER,
     });
   }
 });

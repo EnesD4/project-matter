@@ -8,6 +8,7 @@ import { toFiniteNumber } from "./money";
 import type { Holding } from "../components/InvestmentPortfolioCard";
 import {
   PLAID_CONNECTED_EVENT,
+  createPlaidLinkToken,
   parsePlaidLinkResult,
   type PlaidLinkAccount,
   type PlaidLinkHolding,
@@ -27,6 +28,11 @@ export {
   type PlaidLinkHolding,
   type PlaidLinkResult,
 } from "./plaidLink";
+
+/** Always requests Plaid Link with products: ['investments'] + brokerage account filters. */
+export async function createBrokerageLinkToken(): Promise<string> {
+  return createPlaidLinkToken("brokerage");
+}
 
 export type PlaidInvestmentDistributionSlice = {
   label: string;

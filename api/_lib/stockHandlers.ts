@@ -9,7 +9,6 @@ import {
 import { GEMINI_FLASH_MODEL, getGeminiApiKey, getGeminiModel } from "./env.js";
 import { readJsonBody } from "./security.js";
 import {
-  buildFallbackStockBriefing,
   buildStockBriefingPrompt,
   parseStockBriefingJson,
   type StockBriefingFundamentals,
@@ -65,28 +64,31 @@ type SearchResult = {
   type: string;
 };
 
-const SEARCH_CATALOG: Array<SearchResult & { aliases?: string[] }> = [
-  { symbol: "AAPL", displaySymbol: "AAPL", description: "Apple Inc.", type: "Common Stock", aliases: ["apple"] },
-  { symbol: "MSFT", displaySymbol: "MSFT", description: "Microsoft Corp.", type: "Common Stock", aliases: ["microsoft"] },
-  { symbol: "NVDA", displaySymbol: "NVDA", description: "NVIDIA Corp.", type: "Common Stock", aliases: ["nvidia"] },
-  { symbol: "GOOGL", displaySymbol: "GOOGL", description: "Alphabet Inc.", type: "Common Stock", aliases: ["google", "alphabet"] },
-  { symbol: "AMZN", displaySymbol: "AMZN", description: "Amazon.com Inc.", type: "Common Stock", aliases: ["amazon"] },
-  { symbol: "META", displaySymbol: "META", description: "Meta Platforms", type: "Common Stock", aliases: ["facebook", "meta"] },
-  { symbol: "TSLA", displaySymbol: "TSLA", description: "Tesla Inc.", type: "Common Stock", aliases: ["tesla"] },
-  { symbol: "RCAT", displaySymbol: "RCAT", description: "Red Cat Holdings Inc.", type: "Common Stock", aliases: ["red cat", "redcat", "red cat holdings"] },
-  { symbol: "NFLX", displaySymbol: "NFLX", description: "Netflix Inc.", type: "Common Stock", aliases: ["netflix"] },
-  { symbol: "AMD", displaySymbol: "AMD", description: "Advanced Micro Devices", type: "Common Stock" },
-  { symbol: "PLTR", displaySymbol: "PLTR", description: "Palantir Technologies", type: "Common Stock", aliases: ["palantir"] },
-  { symbol: "COIN", displaySymbol: "COIN", description: "Coinbase Global", type: "Common Stock", aliases: ["coinbase"] },
-  { symbol: "SPY", displaySymbol: "SPY", description: "SPDR S&P 500 ETF", type: "ETF" },
-  { symbol: "QQQ", displaySymbol: "QQQ", description: "Invesco QQQ Trust", type: "ETF" },
-  { symbol: "VOO", displaySymbol: "VOO", description: "Vanguard S&P 500 ETF", type: "ETF" },
-  { symbol: "VTI", displaySymbol: "VTI", description: "Vanguard Total Stock Market", type: "ETF" },
-  { symbol: "SCHD", displaySymbol: "SCHD", description: "Schwab US Dividend Equity", type: "ETF", aliases: ["schwab dividend"] },
-  { symbol: "VXUS", displaySymbol: "VXUS", description: "Vanguard Total International", type: "ETF" },
-  { symbol: "IVV", displaySymbol: "IVV", description: "iShares Core S&P 500 ETF", type: "ETF" },
-  { symbol: "VIG", displaySymbol: "VIG", description: "Vanguard Dividend Appreciation", type: "ETF" },
-];
+type YahooSearchQuote = {
+  symbol?: string;
+  shortname?: string;
+  longname?: string;
+  quoteType?: string;
+  exchDisp?: string;
+  exchange?: string;
+  isYahooFinance?: boolean;
+};
+
+type YahooSearchNews = {
+  title?: string;
+  publisher?: string;
+  providerPublishTime?: number;
+  link?: string;
+};
+
+const YAHOO_SEARCH_HEADERS = {
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+  Accept: "application/json",
+};
+
+const US_EXCHANGE_RE =
+  /\b(NASDAQ|NYSE|NYSEARCA|NYSE American|AMEX|Cboe|BATS|OTC|OTCQB|OTCQX|PINK)\b/i;
 
 async function yahooChart(symbol: string, range: string) {
   const spec = YAHOO_RANGE[range] || YAHOO_RANGE["1M"];
@@ -160,45 +162,114 @@ function quoteFromMeta(symbol: string, meta: Record<string, unknown>) {
   };
 }
 
-function normalizeSearchText(value: string | null | undefined): string {
-  return String(value || "")
+function yahooSearchUrl(query: string, quotesCount: number, newsCount: number): string {
+  const params = new URLSearchParams({
+    q: query,
+    quotesCount: String(quotesCount),
+    newsCount: String(newsCount),
+    lang: "en-US",
+    region: "US",
+    enableFuzzyQuery: "true",
+    quotesQueryId: "tss_match_phrase_query",
+    multiQuoteQueryId: "multi_quote_single_token_query",
+    newsQueryId: "news_cie_vespa",
+    enableEnhancedTrivialQuery: "true",
+  });
+  return `https://query2.finance.yahoo.com/v1/finance/search?${params.toString()}`;
+}
+
+async function yahooFinanceSearch(query: string, quotesCount = 16, newsCount = 0) {
+  const response = await fetch(yahooSearchUrl(query, quotesCount, newsCount), {
+    headers: YAHOO_SEARCH_HEADERS,
+  });
+  if (!response.ok) return { quotes: [] as YahooSearchQuote[], news: [] as YahooSearchNews[] };
+  const json = (await response.json().catch(() => null)) as {
+    quotes?: YahooSearchQuote[];
+    news?: YahooSearchNews[];
+  } | null;
+  return {
+    quotes: Array.isArray(json?.quotes) ? json.quotes : [],
+    news: Array.isArray(json?.news) ? json.news : [],
+  };
+}
+
+function mapYahooQuoteToSearchResult(row: YahooSearchQuote): (SearchResult & { rank: number }) | null {
+  const symbol = String(row.symbol || "")
     .trim()
-    .toUpperCase()
-    .replace(/[^A-Z0-9.\s-]+/g, " ")
-    .replace(/\s+/g, " ");
+    .toUpperCase();
+  if (!symbol || symbol.includes("=") || symbol.includes("^")) return null;
+  if (row.isYahooFinance === false) return null;
+
+  const type = String(row.quoteType || "").toUpperCase();
+  if (!["EQUITY", "ETF", "MUTUALFUND"].includes(type)) return null;
+
+  // Prefer primary US listings (AAPL, VOO) over foreign dual listings (AAPL.MX, 1RCAT.MI).
+  const hasForeignSuffix = /[.=]/.test(symbol) || /\d/.test(symbol[0] || "");
+  const exch = `${row.exchDisp || ""} ${row.exchange || ""}`;
+  const isUsExchange = US_EXCHANGE_RE.test(exch) || (!hasForeignSuffix && !exch.trim());
+
+  let rank = 50;
+  if (type === "EQUITY" || type === "ETF") rank -= 10;
+  if (!hasForeignSuffix) rank -= 20;
+  if (isUsExchange) rank -= 15;
+  if (type === "ETF") rank -= 2;
+
+  return {
+    symbol,
+    displaySymbol: symbol,
+    description: String(row.shortname || row.longname || symbol).trim() || symbol,
+    type: type === "ETF" ? "ETF" : type === "MUTUALFUND" ? "Mutual Fund" : "Common Stock",
+    rank,
+  };
 }
 
-function matchesStockQuery(query: string, symbol: string, name: string | null | undefined): boolean {
-  const q = normalizeSearchText(query);
-  if (!q) return false;
-  const sym = normalizeSearchText(symbol);
-  const desc = normalizeSearchText(name);
-  if (sym.includes(q) || desc.includes(q)) return true;
-
-  const compactQ = q.replace(/[\s.-]+/g, "");
-  const compactSym = sym.replace(/[\s.-]+/g, "");
-  const compactDesc = desc.replace(/[\s.-]+/g, "");
-  if (compactQ && (compactSym.includes(compactQ) || compactDesc.includes(compactQ))) return true;
-
-  const tokens = q.split(" ").filter(Boolean);
-  if (tokens.length > 1) {
-    return tokens.every((token) => sym.includes(token) || desc.includes(token));
+function mapYahooNewsHeadlines(
+  news: YahooSearchNews[],
+  maxAgeDays: number,
+  limit: number
+): string[] {
+  const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of news) {
+    const title = String(item.title || "").trim();
+    if (!title) continue;
+    const key = title.toLowerCase();
+    if (seen.has(key)) continue;
+    const publishedMs =
+      typeof item.providerPublishTime === "number" && item.providerPublishTime > 0
+        ? item.providerPublishTime * 1000
+        : Date.now();
+    if (publishedMs < cutoff) continue;
+    seen.add(key);
+    const publisher = String(item.publisher || "").trim();
+    out.push(publisher ? `${title} (${publisher})` : title);
+    if (out.length >= limit) break;
   }
-  return false;
+  return out;
 }
 
-function catalogMatches(query: string): SearchResult[] {
-  // Known catalog only — never invent a fake card for an unrecognized typed ticker.
-  return SEARCH_CATALOG.filter((row) =>
-    matchesStockQuery(query, row.symbol, [row.description, ...(row.aliases || [])].join(" "))
-  )
-    .map(({ symbol, displaySymbol, description, type }) => ({
-      symbol,
-      displaySymbol,
-      description,
-      type,
-    }))
-    .slice(0, 8);
+/** Pull recent Yahoo Finance headlines for 1-week and 1-month briefing windows. */
+async function fetchYahooBriefingNews(symbol: string, name: string): Promise<{
+  weekHeadlines: string[];
+  monthHeadlines: string[];
+}> {
+  const queries = [symbol, name].map((q) => q.trim()).filter(Boolean);
+  const uniqueQueries = [...new Set(queries)];
+  const bundles = await Promise.all(
+    uniqueQueries.map(async (q) => {
+      try {
+        return await yahooFinanceSearch(q, 4, 18);
+      } catch {
+        return { quotes: [] as YahooSearchQuote[], news: [] as YahooSearchNews[] };
+      }
+    })
+  );
+  const news = bundles.flatMap((bundle) => bundle.news);
+  return {
+    weekHeadlines: mapYahooNewsHeadlines(news, 7, 8),
+    monthHeadlines: mapYahooNewsHeadlines(news, 30, 12),
+  };
 }
 
 async function handleQuote(req: IncomingMessage | any, res: ServerResponse | any) {
@@ -257,40 +328,36 @@ async function handleSearch(req: IncomingMessage | any, res: ServerResponse | an
   const url = urlOf(req);
   const query = String(url.searchParams.get("q") || url.searchParams.get("query") || "")
     .trim()
-    .slice(0, 40);
+    .slice(0, 64);
   if (!query) {
     return sendJson(res, 200, []);
   }
 
   try {
-    const yahoo = await fetch(
-      `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&quotesCount=8&newsCount=0`,
-      { headers: { "User-Agent": "Sprout/1.0" } }
-    );
-    const json = (await yahoo.json().catch(() => null)) as {
-      quotes?: Array<{ symbol?: string; shortname?: string; longname?: string; quoteType?: string }>;
-    } | null;
-    const remote = (json?.quotes ?? [])
-      .map((row) => {
-        const symbol = String(row.symbol || "").trim().toUpperCase();
-        if (!symbol || symbol.includes("=")) return null;
-        const type = String(row.quoteType || "").toUpperCase();
-        if (type && !["EQUITY", "ETF", "MUTUALFUND", "INDEX"].includes(type)) return null;
-        return {
-          symbol,
-          displaySymbol: symbol,
-          description: String(row.shortname || row.longname || symbol).trim() || symbol,
-          type: type === "ETF" ? "ETF" : "Common Stock",
-        } satisfies SearchResult;
+    const { quotes } = await yahooFinanceSearch(query, 16, 0);
+    const seen = new Set<string>();
+    const remote = quotes
+      .map(mapYahooQuoteToSearchResult)
+      .filter((row): row is SearchResult & { rank: number } => row != null)
+      .sort((a, b) => a.rank - b.rank || a.symbol.localeCompare(b.symbol))
+      .filter((row) => {
+        if (seen.has(row.symbol)) return false;
+        seen.add(row.symbol);
+        return true;
       })
-      .filter((row): row is SearchResult => row != null)
-      .slice(0, 8);
-    if (remote.length > 0) return sendJson(res, 200, remote);
-  } catch {
-    // fall through to catalog
+      .slice(0, 10)
+      .map(({ symbol, displaySymbol, description, type }) => ({
+        symbol,
+        displaySymbol,
+        description,
+        type,
+      }));
+    // Live Yahoo results only — never synthesize fake ticker cards.
+    return sendJson(res, 200, remote);
+  } catch (error) {
+    console.error("Yahoo Finance search failed:", error);
+    return sendJson(res, 200, []);
   }
-
-  return sendJson(res, 200, catalogMatches(query));
 }
 
 const GEMINI_TIMEOUT_MS = 20_000;
@@ -474,18 +541,29 @@ async function generateStockAnalysisPayload(body: Record<string, unknown>) {
   const price = asFinite(body.price) ?? undefined;
   const changePct = asFinite(body.changePct) ?? undefined;
   const positionNote = typeof body.positionNote === "string" ? body.positionNote.trim() : "";
-  const fundamentals = await buildMetricsSnapshot(symbol);
-  const fallback = buildFallbackStockBriefing(symbol, name, fundamentals, EDUCATIONAL_DISCLAIMER);
+
+  const [fundamentals, news] = await Promise.all([
+    buildMetricsSnapshot(symbol),
+    fetchYahooBriefingNews(symbol, name),
+  ]);
+
+  const unavailable = (message: string) => ({
+    status: 503 as const,
+    payload: {
+      growthDrivers: [] as string[],
+      keyRisks: [] as string[],
+      analystConsensus: "",
+      sentiment: "Hold" as const,
+      source: "ai" as const,
+      warning: message,
+      disclaimer: EDUCATIONAL_DISCLAIMER,
+      error: message,
+    },
+  });
 
   const apiKey = getGeminiApiKey();
   if (!apiKey) {
-    return {
-      status: 200 as const,
-      payload: {
-        ...fallback,
-        warning: "Live Sprout AI synthesis was unavailable. Showing a fundamentals-based briefing.",
-      },
-    };
+    return unavailable("Sprout AI is not configured. Live stock briefings are unavailable.");
   }
 
   const model = getGeminiModel() || GEMINI_FLASH_MODEL;
@@ -497,6 +575,9 @@ async function generateStockAnalysisPayload(body: Record<string, unknown>) {
     changePct,
     positionNote,
     fundamentals,
+    weekHeadlines: news.weekHeadlines,
+    monthHeadlines: news.monthHeadlines,
+    headlines: news.monthHeadlines,
     systemInstruction: SPROUT_SYSTEM_INSTRUCTION,
   });
 
@@ -521,13 +602,7 @@ async function generateStockAnalysisPayload(body: Record<string, unknown>) {
     const parsed = parseStockBriefingJson(text);
     if (!parsed) {
       console.error("Sprout stock analysis JSON parse failed. Raw:", text.slice(0, 400));
-      return {
-        status: 200 as const,
-        payload: {
-          ...fallback,
-          warning: "Live Sprout AI synthesis was unavailable. Showing a fundamentals-based briefing.",
-        },
-      };
+      return unavailable("Sprout AI returned an incomplete briefing. Please try again.");
     }
     return {
       status: 200 as const,
@@ -535,13 +610,7 @@ async function generateStockAnalysisPayload(body: Record<string, unknown>) {
     };
   } catch (error) {
     console.error("Error generating Sprout stock analysis:", error);
-    return {
-      status: 200 as const,
-      payload: {
-        ...fallback,
-        warning: "Sprout AI was unavailable. Showing a high-level fallback briefing.",
-      },
-    };
+    return unavailable("Sprout AI was unavailable. Please try again shortly.");
   }
 }
 
@@ -599,13 +668,20 @@ export default async function handleStockPath(req: IncomingMessage | any, res: S
               name: url.searchParams.get("name"),
             };
       const result = await generateStockAnalysisPayload(body || {});
-      if ("error" in result) return sendJson(res, result.status, { error: result.error });
-      return sendJson(res, result.status, result.payload);
+      if ("error" in result && !("payload" in result)) {
+        return sendJson(res, result.status, { error: result.error });
+      }
+      return sendJson(res, result.status, "payload" in result ? result.payload : result);
     } catch (error) {
-      const symbol = "STOCK";
-      return sendJson(res, 200, {
-        ...buildFallbackStockBriefing(symbol, symbol, { symbol }, EDUCATIONAL_DISCLAIMER),
-        warning: "Sprout AI was unavailable. Showing a high-level fallback briefing.",
+      return sendJson(res, 503, {
+        growthDrivers: [],
+        keyRisks: [],
+        analystConsensus: "",
+        sentiment: "Hold",
+        source: "ai",
+        warning: "Sprout AI was unavailable. Please try again shortly.",
+        error: "Sprout AI was unavailable. Please try again shortly.",
+        disclaimer: EDUCATIONAL_DISCLAIMER,
         detail: error instanceof Error ? error.message : undefined,
       });
     }

@@ -180,26 +180,13 @@ export async function linkTokenCreate(
   };
 
   if (mode === "brokerage") {
+    // Investments-required Link: US brokerage / IRA / 401(k) institutions only
+    // (Robinhood, Fidelity, Schwab, E*TRADE, Webull, …) — not checking/savings banks.
     payload.products = ["investments"];
     payload.optional_products = ["transactions"];
-    // Restrict Institution + Account Select to investment accounts (brokerage, IRA, 401k, …).
-    // Plaid subtypes are case-sensitive — "403B" (not "403b") is required at this index.
     payload.account_filters = {
       investment: {
-        account_subtypes: [
-          "brokerage",
-          "ira",
-          "roth",
-          "401k",
-          "403B",
-          "529",
-          "hsa",
-          "mutual fund",
-          "stock plan",
-          "trust",
-          "ugma",
-          "utma",
-        ],
+        account_subtypes: ["all"],
       },
     };
   } else {

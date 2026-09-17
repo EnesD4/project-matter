@@ -33,7 +33,6 @@ import {
 import { useMarketPolling } from "../hooks/useMarketPolling";
 import { EDUCATIONAL_DISCLAIMER } from "../lib/sproutAi";
 import {
-  buildFallbackStockBriefing,
   normalizeStockBriefing,
   type SproutStockAnalysis,
 } from "../lib/gemini";
@@ -483,22 +482,7 @@ export default function StockDetailPage({
     if (analysisLoading) return;
     setAnalysisLoading(true);
     setAnalysisError(null);
-    const fallback = buildFallbackStockBriefing(
-      holding.symbol,
-      holding.description || holding.symbol,
-      {
-        symbol: holding.symbol,
-        name: holding.description,
-        revenueGrowthYoy: metrics?.revenueGrowthYoy ?? null,
-        cash: metrics?.cash ?? null,
-        debt: metrics?.debt ?? null,
-        fcf: metrics?.fcf ?? null,
-        pe: metrics?.pe ?? null,
-        peTag: metrics?.peTag,
-        recommendation: metrics?.recommendation ?? null,
-      },
-      EDUCATIONAL_DISCLAIMER
-    );
+    setAnalysis(null);
     try {
       const res = await fetch(`${apiBase()}/api/stocks/analysis`, {
         method: "POST",
@@ -514,15 +498,24 @@ export default function StockDetailPage({
         }),
       });
       const data = (await res.json().catch(() => null)) as unknown;
-      if (!res.ok && !data) throw new Error("analysis failed");
-      const normalized = normalizeStockBriefing(data, fallback);
+      const rec = data && typeof data === "object" ? (data as Record<string, unknown>) : null;
+      const apiError =
+        (typeof rec?.error === "string" && rec.error.trim()) ||
+        (typeof rec?.warning === "string" && rec.warning.trim()) ||
+        null;
+      const normalized = normalizeStockBriefing(data);
+      if (!normalized) {
+        setAnalysisError(
+          apiError ||
+            (!res.ok
+              ? "Sprout AI could not generate a live briefing right now."
+              : "Sprout AI returned an incomplete briefing. Please try again.")
+        );
+        return;
+      }
       setAnalysis(normalized);
     } catch {
-      setAnalysis({
-        ...fallback,
-        warning: "Sprout AI couldn't finish this briefing. Showing a fundamentals-based fallback.",
-      });
-      setAnalysisError(null);
+      setAnalysisError("Sprout AI couldn't finish this briefing. Please try again.");
     } finally {
       setAnalysisLoading(false);
     }
@@ -974,7 +967,7 @@ export default function StockDetailPage({
                   <div>
                     <p className="text-sm font-bold text-white">Sprout AI is analyzing {holding.symbol}…</p>
                     <p className="mt-0.5 text-[12px] text-[#9CA3AF]">
-                      Growth drivers, risks, and Street consensus
+                      Live news, catalysts, and Street consensus
                     </p>
                   </div>
                 </div>

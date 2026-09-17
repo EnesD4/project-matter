@@ -655,7 +655,7 @@ export async function fetchStockSearch(
   query: string,
   signal?: AbortSignal
 ): Promise<StockSearchResult[]> {
-  const q = query.trim().slice(0, 40);
+  const q = query.trim().slice(0, 64);
   if (!q) return [];
   const local = localTickerMatches(q);
   try {
@@ -664,8 +664,8 @@ export async function fetchStockSearch(
       signal
     );
     const remote = parseSearchPayload(data);
-    // Prefer rows that match ticker or company name; keep other API hits as fallbacks.
-    return mergeSearchResults(q, local, remote);
+    // Prefer live Yahoo Finance hits; keep local catalog only to fill gaps.
+    return mergeSearchResults(q, remote, local);
   } catch (err) {
     if ((err as Error).name === "AbortError") throw err;
     return local;

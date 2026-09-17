@@ -7,6 +7,7 @@ import {
   exchangePlaidPublicToken,
   type PlaidLinkResult,
 } from "../lib/plaidLink";
+import { createBrokerageLinkToken } from "../lib/plaid";
 
 export type PlaidConnectMode = "bank" | "brokerage";
 
@@ -46,7 +47,8 @@ export default function PlaidConnectButton({
     setStatus((current) => (current === "connected" ? current : "loading"));
     setError(null);
     try {
-      const token = await createPlaidLinkToken(mode);
+      const token =
+        mode === "brokerage" ? await createBrokerageLinkToken() : await createPlaidLinkToken(mode);
       setLinkToken(token);
       setStatus((current) => (current === "connected" ? current : "idle"));
     } catch (err) {

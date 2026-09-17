@@ -229,8 +229,8 @@ export function parseStockBriefingJson(
 /** Normalize partial API / model payloads so the UI never rejects a usable briefing. */
 export function normalizeStockBriefing(
   raw: unknown,
-  fallback: SproutStockAnalysis
-): SproutStockAnalysis {
+  fallback?: SproutStockAnalysis | null
+): SproutStockAnalysis | null {
   const rec = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   const growthDrivers = asStringList(rec.growthDrivers).slice(0, 4);
   const keyRisks = asStringList(rec.keyRisks).slice(0, 4);
@@ -243,17 +243,10 @@ export function normalizeStockBriefing(
         ? "Sell"
         : rawSentiment === "hold"
           ? "Hold"
-          : fallback.sentiment;
-  const source = rec.source === "ai" || rec.source === "fallback" ? rec.source : fallback.source;
+          : fallback?.sentiment || "Hold";
+  const source = rec.source === "ai" || rec.source === "fallback" ? rec.source : fallback?.source || "ai";
   if (growthDrivers.length === 0 || keyRisks.length === 0 || !analystConsensus) {
-    return {
-      ...fallback,
-      warning:
-        typeof rec.warning === "string" && rec.warning.trim()
-          ? rec.warning.trim()
-          : fallback.warning ||
-            "Live Sprout AI synthesis was incomplete. Showing a fundamentals-based briefing.",
-    };
+    return null;
   }
   return {
     growthDrivers,
@@ -265,57 +258,11 @@ export function normalizeStockBriefing(
     disclaimer:
       typeof rec.disclaimer === "string" && rec.disclaimer.trim()
         ? rec.disclaimer.trim()
-        : fallback.disclaimer,
+        : fallback?.disclaimer,
   };
 }
 
-/** Fundamentals-only stock briefing when Gemini is unavailable or returns unusable JSON. */
-export function buildFallbackStockBriefing(
-  symbol: string,
-  name: string,
-  fundamentals: StockBriefingFundamentals = { symbol },
-  disclaimer = "For educational purposes only. Not financial or tax advice."
-): SproutStockAnalysis {
-  const rec = fundamentals.recommendation;
-  const total = rec ? rec.strongBuy + rec.buy + rec.hold + rec.sell + rec.strongSell : 0;
-  const bullish = rec ? rec.strongBuy + rec.buy : 0;
-  const bearish = rec ? rec.sell + rec.strongSell : 0;
-  const sentiment: SproutStockAnalysis["sentiment"] =
-    total === 0 ? "Hold" : bullish / total >= 0.55 ? "Buy" : bearish / total >= 0.3 ? "Sell" : "Hold";
-
-  const growth =
-    fundamentals.revenueGrowthYoy != null
-      ? `${name} (${symbol}) posted ${fundamentals.revenueGrowthYoy >= 0 ? "positive" : "negative"} revenue growth of ${fundamentals.revenueGrowthYoy.toFixed(1)}% year over year.`
-      : `Recent product cycles, category demand, and operating execution remain the core growth narrative for ${symbol}.`;
-  const cashFlow =
-    fundamentals.fcf != null && fundamentals.fcf > 0
-      ? "The company is generating free cash flow, which can fund reinvestment, buybacks, or a stronger balance sheet."
-      : "Watch the next earnings print, major commercial wins, and any guidance updates for confirmation of the growth story.";
-  const leverageRisk =
-    fundamentals.debt != null &&
-    fundamentals.cash != null &&
-    fundamentals.debt > fundamentals.cash
-      ? "Net leverage is worth monitoring if rates stay high or cash flow slows."
-      : "A miss on growth, margins, or guidance could re-rate the stock quickly.";
-  const consensus =
-    rec && total > 0
-      ? `Street sentiment leans ${sentiment}: ${bullish} buy-side ratings vs ${rec.hold} hold and ${bearish} sell in the latest snapshot.`
-      : `Analyst coverage is thin right now — treat the setup as a Hold until a clearer Street consensus is available.`;
-
-  return {
-    growthDrivers: [growth, cashFlow],
-    keyRisks: [
-      "Valuation, competition, and macro sensitivity (rates, consumer, or enterprise spend) can all reverse the near-term tape.",
-      leverageRisk,
-    ],
-    analystConsensus: consensus,
-    sentiment,
-    source: "fallback",
-    disclaimer,
-  };
-}
-
-/** Prompt body for the Sprout AI stock briefing generator. */
+/** Prompt body for the Sprout AI stock briefing generator (live news + fundamentals). */
 export function buildStockBriefingPrompt(args: {
   symbol: string;
   name: string;
@@ -323,6 +270,11 @@ export function buildStockBriefingPrompt(args: {
   changePct?: number;
   positionNote?: string;
   fundamentals: StockBriefingFundamentals;
+  /** Recent headlines from roughly the last 7 days. */
+  weekHeadlines?: string[];
+  /** Headlines spanning roughly the last 30 days. */
+  monthHeadlines?: string[];
+  /** @deprecated Prefer weekHeadlines / monthHeadlines. */
   headlines?: string[];
   systemInstruction?: string;
 }): string {
@@ -331,10 +283,20 @@ export function buildStockBriefingPrompt(args: {
   const recLine = rec
     ? `Strong Buy ${rec.strongBuy}, Buy ${rec.buy}, Hold ${rec.hold}, Sell ${rec.sell}, Strong Sell ${rec.strongSell} (period ${rec.period || "latest"})`
     : "No live analyst rating snapshot available.";
-  const headlineBlock =
-    args.headlines && args.headlines.length > 0
-      ? args.headlines.map((h, i) => `${i + 1}. ${h}`).join("\n")
-      : "No recent company headlines available.";
+  const week =
+    args.weekHeadlines && args.weekHeadlines.length > 0
+      ? args.weekHeadlines.map((h, i) => `${i + 1}. ${h}`).join("\n")
+      : "No headlines captured for the last 7 days.";
+  const monthSource =
+    args.monthHeadlines && args.monthHeadlines.length > 0
+      ? args.monthHeadlines
+      : args.headlines && args.headlines.length > 0
+        ? args.headlines
+        : [];
+  const month =
+    monthSource.length > 0
+      ? monthSource.map((h, i) => `${i + 1}. ${h}`).join("\n")
+      : "No headlines captured for the last 30 days.";
   const priceLine =
     args.price != null
       ? `Current price: $${args.price.toFixed(2)}${
@@ -345,7 +307,11 @@ export function buildStockBriefingPrompt(args: {
       : "Current price: not provided.";
   const system = args.systemInstruction || "";
 
-  return `${system ? `${system}\n\n` : ""}Write a concise educational briefing about a company the user already opened. Teach context only — never a stock pick or trade signal.
+  return `${system ? `${system}\n\n` : ""}Write a detailed educational briefing about ${args.name} (${args.symbol}). Teach context only — never a stock pick or trade signal.
+
+Use the live market news and fundamentals below. Cover BOTH:
+1) Macro / market context that affects this name (rates, sector tape, risk appetite, peers), and
+2) Company-specific catalysts from the last 1 week and last 1 month (earnings, guidance, deals, product launches, regulatory news, capital actions).
 
 Stock: ${args.symbol} (${args.name})
 ${priceLine}
@@ -355,19 +321,24 @@ Cash: ${f.cash != null ? Math.round(f.cash) : "n/a"}  Debt: ${f.debt != null ? M
 Free cash flow: ${f.fcf != null ? Math.round(f.fcf) : "n/a"}
 Published analyst ratings (report as facts, not as your recommendation): ${recLine}
 ${args.positionNote ? `User already holds or viewed this name: ${args.positionNote}` : ""}
-Recent headlines:
-${headlineBlock}
+
+Last 7 days — market & company news:
+${week}
+
+Last 30 days — market & company news:
+${month}
 
 Return ONLY valid JSON (no markdown) with exactly these keys:
 {
-  "growthDrivers": ["2-4 short educational bullets on recent earnings, key deals, product cycles, or operating highlights"],
-  "keyRisks": ["2-4 short bullets on material risks to watch"],
-  "analystConsensus": "1-2 sentences summarizing published Buy/Hold/Sell ratings in plain English. This is Street data, not your advice.",
+  "growthDrivers": ["2-4 specific bullets that cite recent catalysts, financial performance, strategic updates, and relevant macro/sector backdrop — not generic filler"],
+  "keyRisks": ["2-4 specific bullets on material risks tied to recent news, competition, valuation, or macro sensitivity"],
+  "analystConsensus": "1-2 sentences summarizing published Buy/Hold/Sell ratings in plain English, optionally noting how recent news may frame Street debate. This is Street data, not your advice.",
   "sentiment": "Buy" | "Hold" | "Sell"
 }
 
 Rules:
-- Everyday language. No ticker-dump. No fabricated precise earnings numbers that are not implied above.
-- Educational briefing only. Do not tell the user to buy, sell, or hold. sentiment must mirror published Street ratings, never a Sprout trade signal.
-- No licensed tax advice. Keep each bullet to 1-2 sentences.`;
+- Be specific and non-generic. Reference themes from the supplied headlines when present (without inventing precise dollar figures that are not implied above).
+- Everyday language. No ticker-dump. Educational briefing only — do not tell the user to buy, sell, or hold.
+- sentiment must mirror published Street ratings, never a Sprout trade signal.
+- No licensed tax advice. Keep each bullet to 1-2 sentences, but make them information-dense.`;
 }
