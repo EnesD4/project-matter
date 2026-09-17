@@ -61,7 +61,6 @@ import {
   fetchStockQuotes,
   fetchStockSearch,
   isLiveQuoteSource,
-  localTickerMatches,
   matchesStockQuery,
   mockQuoteForSymbol,
   normalizeStockData,
@@ -1156,7 +1155,7 @@ export default function InvestmentPortfolioCard({
     setChartAnimate(true);
   }, [range, benchmarkOn]);
 
-  // Live stock search — local catalog for instant name/ticker hits, then debounced live API.
+  // Live stock search via /api/search (Yahoo Finance proxy) — no static catalog hints.
   useEffect(() => {
     if (selectedTicker) {
       return;
@@ -1170,9 +1169,7 @@ export default function InvestmentPortfolioCard({
       return;
     }
 
-    const local = localTickerMatches(query);
-    // Instant catalog hints only — never invent unknown tickers while waiting for Yahoo.
-    setSearchResults(local);
+    setSearchResults([]);
     setSearchError(null);
     setSearchLoading(true);
 
@@ -1185,11 +1182,11 @@ export default function InvestmentPortfolioCard({
         // but keep ticker + company-name matches at the front of the list.
         const primary = data.filter((r) => !r.symbol.includes("."));
         const ranked = (primary.length > 0 ? primary : data).slice(0, 8);
-        // Live Yahoo + known catalog only — empty list if neither matched (no fake cards).
         setSearchResults(ranked);
       } catch (err) {
         if ((err as Error).name !== "AbortError") {
-          setSearchResults(local);
+          setSearchResults([]);
+          setSearchError("Search unavailable. Try again in a moment.");
         }
       } finally {
         setSearchLoading(false);
@@ -1629,7 +1626,6 @@ export default function InvestmentPortfolioCard({
       searchResults.find((row) => (row.displaySymbol || row.symbol).toUpperCase() === upper) ||
       searchResults.find((row) => matchesStockQuery(query, row.symbol, row.description)) ||
       searchResults[0] ||
-      localTickerMatches(query)[0] ||
       null
     );
   };

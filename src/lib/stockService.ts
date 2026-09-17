@@ -9,7 +9,6 @@ import {
   RangeOption,
   SeriesPoint,
 } from "./priceSimulation";
-import { catalogSearchText, US_STOCK_SEARCH_CATALOG } from "./usStockCatalog";
 
 export type StockQuote = {
   c: number;
@@ -42,6 +41,10 @@ export type StockSearchResult = {
   displaySymbol: string;
   description: string;
   type: string;
+  shortname?: string;
+  longname?: string;
+  quoteType?: string;
+  ticker?: string;
 };
 
 export type StockChartResponse = {
@@ -453,30 +456,34 @@ export function matchesStockQuery(
   return false;
 }
 
-function searchRelevance(query: string, symbol: string, name: string): number {
-  const q = normalizeSearchText(query);
-  const sym = normalizeSearchText(symbol);
-  const desc = normalizeSearchText(name);
-  if (!q) return 99;
-  if (sym === q) return 0;
-  if (sym.startsWith(q)) return 1;
-  if (sym.includes(q)) return 2;
-  if (desc.startsWith(q)) return 3;
-  if (desc.includes(q)) return 4;
-  const compactQ = q.replace(/[\s.-]+/g, "");
-  if (compactQ && sym.replace(/[\s.-]+/g, "").includes(compactQ)) return 5;
-  if (compactQ && desc.replace(/[\s.-]+/g, "").includes(compactQ)) return 6;
-  return 7;
-}
-
 function asSearchResult(row: Partial<StockSearchResult> | null | undefined): StockSearchResult | null {
-  const symbol = normalizeSymbol(row?.displaySymbol || row?.symbol || "");
+  const symbol = normalizeSymbol(
+    row?.ticker || row?.displaySymbol || row?.symbol || ""
+  );
   if (!symbol) return null;
+  const shortname = String(row?.shortname || "").trim();
+  const longname = String(row?.longname || "").trim();
+  const description =
+    String(row?.description || "").trim() || shortname || longname || symbol;
+  const quoteType = String(row?.quoteType || "").trim();
+  const type =
+    String(row?.type || "").trim() ||
+    (quoteType.toUpperCase() === "ETF"
+      ? "ETF"
+      : quoteType.toUpperCase() === "MUTUALFUND"
+        ? "Mutual Fund"
+        : quoteType
+          ? "Common Stock"
+          : "");
   return {
     symbol,
+    ticker: symbol,
     displaySymbol: symbol,
-    description: String(row?.description || symbol).trim() || symbol,
-    type: String(row?.type || "").trim(),
+    description,
+    type,
+    shortname: shortname || undefined,
+    longname: longname || undefined,
+    quoteType: quoteType || undefined,
   };
 }
 
@@ -486,9 +493,11 @@ function parseSearchPayload(data: unknown): StockSearchResult[] {
     ? data
     : Array.isArray((data as { result?: unknown }).result)
       ? (data as { result: unknown[] }).result
-      : Array.isArray((data as { items?: unknown }).items)
-        ? (data as { items: unknown[] }).items
-        : [];
+      : Array.isArray((data as { quotes?: unknown }).quotes)
+        ? (data as { quotes: unknown[] }).quotes
+        : Array.isArray((data as { items?: unknown }).items)
+          ? (data as { items: unknown[] }).items
+          : [];
   const seen = new Set<string>();
   const out: StockSearchResult[] = [];
   for (const row of rows) {
@@ -500,66 +509,31 @@ function parseSearchPayload(data: unknown): StockSearchResult[] {
   return out;
 }
 
-function mergeSearchResults(query: string, ...groups: StockSearchResult[][]): StockSearchResult[] {
-  const seen = new Set<string>();
-  const merged: StockSearchResult[] = [];
-  for (const group of groups) {
-    for (const row of group) {
-      if (!row?.symbol || seen.has(row.symbol)) continue;
-      seen.add(row.symbol);
-      merged.push(row);
-    }
-  }
-  return merged
-    .sort((a, b) => {
-      const aMatch = matchesStockQuery(query, a.symbol, a.description) ? 0 : 1;
-      const bMatch = matchesStockQuery(query, b.symbol, b.description) ? 0 : 1;
-      if (aMatch !== bMatch) return aMatch - bMatch;
-      return (
-        searchRelevance(query, a.symbol, a.description) -
-        searchRelevance(query, b.symbol, b.description)
-      );
-    })
-    .slice(0, 8);
+/**
+ * @deprecated Static catalogs are no longer used for search — prefer fetchStockSearch.
+ * Kept as a no-op helper so older call sites compile; always returns [].
+ */
+export function localTickerMatches(_query: string): StockSearchResult[] {
+  return [];
 }
 
-/**
- * Instant local matches from the US stock/ETF dictionary (ticker + company name + aliases).
- * Never invents unknown tickers — unknown queries return [] so the UI can show "No stocks found".
- */
-export function localTickerMatches(query: string): StockSearchResult[] {
-  const raw = String(query || "").trim();
-  if (!raw) return [];
-
-  const fromSearchCatalog = US_STOCK_SEARCH_CATALOG.filter((entry) =>
-    matchesStockQuery(raw, entry.symbol, catalogSearchText(entry))
-  ).map((entry) => ({
-    symbol: entry.symbol,
-    displaySymbol: entry.symbol,
-    description: entry.name,
-    type: entry.type,
-  }));
-
-  // Merge demo catalog names so lesson/demo tickers stay searchable even if omitted above.
-  const seen = new Set(fromSearchCatalog.map((row) => row.symbol));
-  for (const [symbol, meta] of Object.entries(DEMO_TICKER_CATALOG)) {
-    if (seen.has(symbol)) continue;
-    if (!matchesStockQuery(raw, symbol, meta.name)) continue;
-    seen.add(symbol);
-    fromSearchCatalog.push({
-      symbol,
-      displaySymbol: symbol,
-      description: meta.name,
-      type: "Common Stock",
-    });
+export async function fetchStockSearch(
+  query: string,
+  signal?: AbortSignal
+): Promise<StockSearchResult[]> {
+  const q = query.trim().slice(0, 64);
+  if (!q) return [];
+  try {
+    const data = await safeApiGet<unknown>(
+      `${apiUrl("/api/search")}?q=${encodeURIComponent(q)}`,
+      signal
+    );
+    return parseSearchPayload(data).slice(0, 8);
+  } catch (err) {
+    if ((err as Error).name === "AbortError") throw err;
+    // No static catalog fallback — empty means "no live hits".
+    return [];
   }
-
-  return fromSearchCatalog
-    .sort(
-      (a, b) =>
-        searchRelevance(raw, a.symbol, a.description) - searchRelevance(raw, b.symbol, b.description)
-    )
-    .slice(0, 8);
 }
 
 const MOCK_DAY_CHANGE: Record<string, number> = {
@@ -649,30 +623,6 @@ function mockChartForSymbol(ticker: string, range: RangeOption, fallbackPrice?: 
     );
   }
   return { mapped, source: "mock", points };
-}
-
-export async function fetchStockSearch(
-  query: string,
-  signal?: AbortSignal
-): Promise<StockSearchResult[]> {
-  const q = query.trim().slice(0, 64);
-  if (!q) return [];
-  const local = localTickerMatches(q);
-  try {
-    const data = await safeApiGet<unknown>(
-      `${apiUrl("/api/stocks/search")}?q=${encodeURIComponent(q)}`,
-      signal
-    );
-    const remote = parseSearchPayload(data);
-    // Live Yahoo proxy hits win. Local catalog only fills exact known gaps — never invents tickers.
-    if (remote.length > 0) {
-      return mergeSearchResults(q, remote, local);
-    }
-    return local;
-  } catch (err) {
-    if ((err as Error).name === "AbortError") throw err;
-    return local;
-  }
 }
 
 export async function fetchStockChart(

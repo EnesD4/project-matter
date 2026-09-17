@@ -1,4 +1,4 @@
-import { getStoredUser, getToken, type CashFlowDebt, type PortfolioApiItem } from "./auth";
+import { getStoredUser, getToken, type CashFlowDebt, type PortfolioApiItem, writePortfolioCache } from "./auth";
 import { serverlessFetch } from "./serverless";
 import {
   cashReservesFromAccounts,
@@ -13,7 +13,8 @@ import {
   type BankTransaction,
   type DetectedRetirement,
 } from "./bankActivity";
-import { clearActiveDemoScenario } from "./demoScenarios";
+import { clearActiveDemoScenario, buildDemoApplyDetail } from "./demoScenarios";
+import { allowClientMockFallback, markClientMockMode } from "./apiBase";
 import type { SafetyNetReserveLine } from "./safetyNet";
 import { getSupabaseAccessToken, getSupabaseUserId } from "./supabaseSync";
 
@@ -204,6 +205,91 @@ export function dispatchPlaidConnected(result: PlaidLinkResult) {
 }
 
 export const dispatchPlaidSandboxConnected = dispatchPlaidConnected;
+
+/** Detect missing / invalid Plaid (or SnapTrade-style) API credentials from an error message. */
+export function isExternalBrokerageCredentialsError(message: string): boolean {
+  return /PLAID_CLIENT_ID|PLAID_SECRET|Plaid is not configured|missing or invalid|SnapTrade|credentials/i.test(
+    String(message || "")
+  );
+}
+
+/**
+ * Local interactive mock for Verified Brokerage when live Plaid/SnapTrade credentials are absent.
+ * Uses the balanced demo holdings so every portfolio tab stays fully usable offline.
+ */
+export function buildLocalMockBrokerageResult(
+  institutionHint = "Local Demo Brokerage"
+): PlaidLinkResult {
+  const detail = buildDemoApplyDetail("balanced");
+  const brokerName = String(institutionHint || detail.brokerName || "Local Demo Brokerage").trim();
+  const brokerageCash = Math.max(0, Number(detail.brokerageCash) || 2500);
+  const holdings: PlaidLinkHolding[] = (detail.holdings || []).map((lot) => ({
+    ...lot,
+    accountType: "verified" as const,
+    name: lot.symbol,
+  }));
+  const accounts: PlaidLinkAccount[] = [
+    {
+      id: localId("mock-broker"),
+      name: `${brokerName} Brokerage`,
+      officialName: `${brokerName} Investment Account`,
+      type: "investment",
+      subtype: "brokerage",
+      mask: "0000",
+      institution: brokerName,
+      balance:
+        brokerageCash +
+        holdings.reduce((sum, lot) => sum + (Number(lot.shares) || 0) * (Number(lot.buyPrice) || 0), 0),
+    },
+    {
+      id: localId("mock-check"),
+      name: "Everyday Checking",
+      officialName: "Everyday Checking",
+      type: "depository",
+      subtype: "checking",
+      mask: "1111",
+      institution: brokerName,
+      balance: Math.max(0, Number(detail.cash) || 0),
+    },
+    {
+      id: localId("mock-save"),
+      name: "High-Yield Savings",
+      officialName: "High-Yield Savings",
+      type: "depository",
+      subtype: "savings",
+      mask: "2222",
+      institution: brokerName,
+      balance: Math.max(0, Number(detail.hysa) || 0),
+    },
+  ];
+  return resultFromAccounts(accounts, {
+    institution: brokerName,
+    holdings,
+    transactions: detail.transactions || [],
+    brokerageCash,
+  });
+}
+
+/**
+ * When live brokerage APIs are unavailable locally, seed Verified Brokerage with mock state
+ * and keep Paper Trading / portfolio tabs fully interactive.
+ */
+export function connectLocalMockBrokerage(institutionHint?: string): PlaidLinkResult {
+  markClientMockMode();
+  const result = buildLocalMockBrokerageResult(institutionHint);
+  try {
+    void persistBankAccounts(result.accounts);
+  } catch {
+    // local-only — ignore persistence failures
+  }
+  try {
+    writePortfolioCache(result.holdings);
+  } catch {
+    // ignore quota
+  }
+  dispatchPlaidConnected(result);
+  return result;
+}
 
 function plaidClientUserId(raw: string): string {
   const value = raw.trim();

@@ -436,8 +436,8 @@ async function resolveStockQuote(symbol: string): Promise<(QuoteSnapshot & { sou
   };
 }
 
-// Stock Search Endpoint — Yahoo Finance (US equities & ETFs by name or ticker)
-app.get('/api/stocks/search', async (req, res) => {
+// Stock Search Endpoint — Yahoo Finance fuzzy proxy (CORS-free via same-origin)
+async function handleYahooFinanceSearch(req: express.Request, res: express.Response) {
   try {
     const query = String(req.query.q || req.query.query || '').trim().slice(0, 64);
     if (!query) {
@@ -445,7 +445,7 @@ app.get('/api/stocks/search', async (req, res) => {
     }
     const params = new URLSearchParams({
       q: query,
-      quotesCount: '16',
+      quotesCount: '24',
       newsCount: '0',
       lang: 'en-US',
       region: 'US',
@@ -476,7 +476,8 @@ app.get('/api/stocks/search', async (req, res) => {
           .toUpperCase();
         if (!symbol || symbol.includes('=') || symbol.includes('^')) return null;
         if (row.isYahooFinance === false) return null;
-        const type = String(row.quoteType || '').toUpperCase();
+        const quoteType = String(row.quoteType || '').trim();
+        const type = quoteType.toUpperCase();
         if (type && !['EQUITY', 'ETF', 'MUTUALFUND'].includes(type)) return null;
         const hasForeignSuffix = /[.=]/.test(symbol);
         const exch = `${row.exchDisp || ''} ${row.exchange || ''}`;
@@ -485,10 +486,16 @@ app.get('/api/stocks/search', async (req, res) => {
         if (type === 'EQUITY' || type === 'ETF' || !type) rank -= 10;
         if (!hasForeignSuffix) rank -= 20;
         if (isUs) rank -= 15;
+        const shortname = String(row.shortname || '').trim();
+        const longname = String(row.longname || '').trim();
         return {
           symbol,
+          ticker: symbol,
           displaySymbol: symbol,
-          description: String(row.shortname || row.longname || symbol).trim() || symbol,
+          shortname,
+          longname,
+          quoteType: quoteType || 'EQUITY',
+          description: shortname || longname || symbol,
           type: type === 'ETF' ? 'ETF' : type === 'MUTUALFUND' ? 'Mutual Fund' : 'Common Stock',
           rank,
         };
@@ -504,22 +511,46 @@ app.get('/api/stocks/search', async (req, res) => {
         return true;
       })
       .slice(0, 10)
-      .map(({ symbol, displaySymbol, description, type }: {
-        symbol: string;
-        displaySymbol: string;
-        description: string;
-        type: string;
-      }) => ({ symbol, displaySymbol, description, type }));
+      .map(
+        ({
+          symbol,
+          ticker,
+          displaySymbol,
+          shortname,
+          longname,
+          quoteType,
+          description,
+          type,
+        }: {
+          symbol: string;
+          ticker: string;
+          displaySymbol: string;
+          shortname: string;
+          longname: string;
+          quoteType: string;
+          description: string;
+          type: string;
+        }) => ({
+          symbol,
+          ticker,
+          displaySymbol,
+          shortname,
+          longname,
+          quoteType,
+          description,
+          type,
+        })
+      );
 
-    if (remote.length > 0) return res.json(remote);
-
-    // No Yahoo hits — return empty rather than inventing ticker cards.
-    return res.json([]);
+    return res.json(remote);
   } catch (error) {
     console.error('Error fetching search results:', error);
     res.json([]);
   }
-});
+}
+
+app.get('/api/search', handleYahooFinanceSearch);
+app.get('/api/stocks/search', handleYahooFinanceSearch);
 
 // Company Profile Endpoint — Polygon ticker details first, Finnhub fallback
 app.get('/api/stocks/profile', async (req, res) => {

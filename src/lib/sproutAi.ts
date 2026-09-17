@@ -19,6 +19,7 @@ Hard rules (never break these):
 - NEVER invent live prices, earnings numbers, or headlines. Prefer supplied context and Google Search grounding when available.
 - If asked for a pick ("what should I buy?"), a trade signal, or tax advice, refuse in one short sentence and offer educational framing instead.
 - Do NOT redirect individual-stock questions into cash-flow lectures, $0 non-essential spending templates, or safety-net checklists unless the user explicitly asks about their budget or spending.
+- When asked about a ticker or company, answer with contextual financial analysis, market news, and performance commentary.
 
 You MAY (and should, when asked):
 - Analyze a named company or ticker: business model, recent earnings and guidance, competitive positioning, sector backdrop, and 1-week / 1-month news catalysts
@@ -254,25 +255,28 @@ export function isIndividualStockQuery(text: string): boolean {
   const raw = String(text || "").trim();
   if (!raw) return false;
   const lower = raw.toLowerCase();
+  // Pure personal-finance asks stay on the coaching path.
   if (
     /\b(budget|cash flow|safety net|debt|avalanche|snowball|spending|non-essential|hysa|emergency fund)\b/i.test(
       lower
     ) &&
-    !/\b(stock|ticker|earnings|shares?|equity|nasdaq|nyse|analyze|analysis|catalyst|compet)\b/i.test(lower)
+    !/\b(stock|ticker|earnings|shares?|equity|nasdaq|nyse|analy[sz]e|analysis|catalyst|compet|adobe|nvidia|amd|tesla|apple|microsoft|amazon|meta|google|alphabet|aeva|avav|ondas|ionq|marvell|rocket lab|roku|netflix|palantir|intel)\b/i.test(
+      lower
+    )
   ) {
     return false;
   }
   if (
-    /\b(analy[sz]e|analysis|earnings|guidance|catalyst|ticker|stock|shares?|valuation|competitor|competitive|market cap|pe ratio|why is .+ (struggling|down|up|falling|rallying|weak)|what happened (to|with)|news (on|about|for)|1[- ]?(week|month)|ytd performance)\b/i.test(
+    /\b(analy[sz]e|analysis|earnings|guidance|catalyst|ticker|stock|shares?|valuation|competitor|competitive|market cap|pe ratio|why is .+ (struggling|down|up|falling|rallying|weak)|what happened (to|with)|news (on|about|for)|1[- ]?(week|month)|ytd performance|how is .+ (doing|performing)|tell me about)\b/i.test(
       lower
     )
   ) {
     return true;
   }
-  // Bare ticker or well-known company name asks (e.g. "AMD", "Adobe", "Aeva").
+  // Bare ticker or well-known company name asks (e.g. "AMD", "Adobe", "MRVL", "IonQ").
   if (/^[A-Za-z]{1,5}$/.test(raw) && raw === raw.toUpperCase()) return true;
   if (
-    /\b(adobe|apple|nvidia|amd|tesla|microsoft|amazon|meta|google|alphabet|aeva|avav|ondas|red cat|intel|netflix|palantir)\b/i.test(
+    /\b(adobe|apple|nvidia|amd|tesla|microsoft|amazon|meta|google|alphabet|aeva|avav|ondas|red cat|intel|netflix|palantir|marvell|rocket lab|ionq|roku|broadcom|costco|shopify|coinbase|sofi|pltr|mrvl|rktl?b?|aev|ond)\b/i.test(
       lower
     )
   ) {
@@ -304,15 +308,20 @@ export function buildSproutUserPrompt(args: {
   const name = firstNameOf(snapshot.userName);
 
   if (stockAsk) {
-    return `${formatEducationalContext(snapshot)}
+    // Stock-analysis path: skip cash-flow milestones so the model cannot pivot to $0 spend templates.
+    const portfolioLine = snapshot.portfolio?.summary
+      ? `Holdings context (facts only): ${snapshot.portfolio.summary}`
+      : "Holdings context: none linked yet.";
+    return `Learner: ${name}
+${portfolioLine}
 
 Conversation:
 ${conversation}
 
-Reply to ${name}'s latest message as Sprout AI with educational individual-stock analysis.
-Use Google Search grounding for real-time 1-week and 1-month news catalysts, earnings, and market context when available.
-Cover financial analysis, recent earnings news, competitive positioning, and market updates as relevant.
-Do NOT pivot to cash-flow, $0 non-essential spending, or safety-net templates unless they asked about their budget.
+Reply to ${name}'s latest message as Sprout AI with educational individual-stock / market analysis.
+Provide contextual financial analysis, recent market/news catalysts, competitive positioning, and stock performance commentary for the ticker or company they asked about.
+Use Google Search grounding for real-time 1-week and 1-month news when available.
+Do NOT mention cash flow, non-essential spending, $0 spending templates, safety-net checklists, or budget cutbacks unless they explicitly asked about their personal budget.
 Do not give trade signals or tax advice. Address them by first name only.`;
   }
 

@@ -125,19 +125,19 @@ export function buildGeminiCoachDiagnosticsPrompt(args: {
   };
 
   const base = buildSproutUserPrompt({ snapshot, conversation });
-  // Individual stock questions must NOT be forced into cash-flow / cutback templates.
+  // Individual stock questions must get analysis — never cash-flow / cutback / $0 spend templates.
   if (isIndividualStockQuery(latestUserUtterance(conversation))) {
     return `${base}
 
 ---
-Stock-analysis mode: answer the company/ticker question with educational financial analysis and timely news.
-Do not force cash-flow, non-essential spending cuts, or $0 spending templates into this reply.`;
+Stock-analysis mode (mandatory): answer the company/ticker question with educational financial analysis, market news context, and stock performance commentary.
+Forbidden in this reply: cash-flow lectures, non-essential spending cuts, $0 spending templates, safety-net checklists, or budget pivots.`;
   }
 
   return `${base}
 
 ---
-Additional real-data diagnostic brief (prioritize these live numbers when discussing budget, spending, or investing concepts):
+Additional real-data diagnostic brief (prioritize these live numbers when discussing budget, spending, or investing concepts — skip this brief if the user asked about a specific stock or company):
 ${buildFinancialDiagnosticsPrompt(params)}`;
 }
 

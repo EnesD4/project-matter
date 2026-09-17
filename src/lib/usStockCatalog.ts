@@ -1,6 +1,6 @@
 /**
- * Pre-mapped top US equities & ETFs for instant client-side search.
- * Matched by ticker, company name, and optional aliases (e.g. "red cat" → RCAT).
+ * @deprecated Prefer live /api/search — kept for reference/demo aliases only.
+ * Pre-mapped top US equities & ETFs (no longer used by client search).
  */
 
 export type UsStockCatalogEntry = {

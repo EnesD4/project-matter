@@ -33,7 +33,6 @@ import {
   fetchStockProfile,
   fetchStockQuotes,
   fetchStockSearch,
-  localTickerMatches,
   resolveLiveMark,
 } from "../lib/stockService";
 import Sparkline from "./Sparkline";
@@ -198,8 +197,7 @@ function WatchlistCard({
       return;
     }
 
-    const local = localTickerMatches(query).slice(0, 6);
-    setSearchResults(local);
+    setSearchResults([]);
     setSearchLoading(true);
     const controller = new AbortController();
     const timeoutId = window.setTimeout(async () => {
@@ -209,7 +207,7 @@ function WatchlistCard({
         const ranked = (primary.length > 0 ? primary : data).slice(0, 6);
         setSearchResults(ranked);
       } catch (err) {
-        if ((err as Error).name !== "AbortError") setSearchResults(local);
+        if ((err as Error).name !== "AbortError") setSearchResults([]);
       } finally {
         setSearchLoading(false);
       }

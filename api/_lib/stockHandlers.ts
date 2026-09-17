@@ -20,6 +20,12 @@ import {
   SPROUT_SYSTEM_INSTRUCTION,
 } from "../../src/lib/sproutAi.js";
 import { isDividendEtf } from "../../src/lib/allocation.js";
+import {
+  searchYahooFinanceQuotes,
+  yahooFinanceSearch,
+  type YahooSearchNews,
+  type YahooSearchQuote,
+} from "./yahooSearch.js";
 
 function sendJson(res: any, status: number, payload: unknown) {
   if (typeof res.status === "function" && typeof res.json === "function") {
@@ -58,39 +64,6 @@ const YAHOO_RANGE: Record<string, { interval: string; range: string }> = {
   "1Y": { interval: "1d", range: "1y" },
   ALL: { interval: "1wk", range: "5y" },
 };
-
-type SearchResult = {
-  symbol: string;
-  displaySymbol: string;
-  description: string;
-  type: string;
-};
-
-type YahooSearchQuote = {
-  symbol?: string;
-  shortname?: string;
-  longname?: string;
-  quoteType?: string;
-  exchDisp?: string;
-  exchange?: string;
-  isYahooFinance?: boolean;
-};
-
-type YahooSearchNews = {
-  title?: string;
-  publisher?: string;
-  providerPublishTime?: number;
-  link?: string;
-};
-
-const YAHOO_SEARCH_HEADERS = {
-  "User-Agent":
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-  Accept: "application/json",
-};
-
-const US_EXCHANGE_RE =
-  /\b(NASDAQ|NYSE|NYSEARCA|NYSE American|AMEX|Cboe|BATS|OTC|OTCQB|OTCQX|PINK)\b/i;
 
 async function yahooChart(symbol: string, range: string) {
   const spec = YAHOO_RANGE[range] || YAHOO_RANGE["1M"];
@@ -161,85 +134,6 @@ function quoteFromMeta(symbol: string, meta: Record<string, unknown>) {
     o: Number(meta.regularMarketOpen ?? previous ?? 0) || price,
     pc: Number.isFinite(previous) && previous > 0 ? previous : price,
     t: Number(meta.regularMarketTime ?? 0) || Math.floor(Date.now() / 1000),
-  };
-}
-
-function yahooSearchUrl(query: string, quotesCount: number, newsCount: number): string {
-  const params = new URLSearchParams({
-    q: query,
-    quotesCount: String(quotesCount),
-    newsCount: String(newsCount),
-    lang: "en-US",
-    region: "US",
-    enableFuzzyQuery: "true",
-    quotesQueryId: "tss_match_phrase_query",
-    multiQuoteQueryId: "multi_quote_single_token_query",
-    newsQueryId: "news_cie_vespa",
-    enableEnhancedTrivialQuery: "true",
-  });
-  return `https://query2.finance.yahoo.com/v1/finance/search?${params.toString()}`;
-}
-
-async function yahooFinanceSearch(query: string, quotesCount = 16, newsCount = 0) {
-  const urls = [
-    yahooSearchUrl(query, quotesCount, newsCount),
-    // query1 mirror — some networks block query2 intermittently.
-    yahooSearchUrl(query, quotesCount, newsCount).replace(
-      "query2.finance.yahoo.com",
-      "query1.finance.yahoo.com"
-    ),
-  ];
-  let lastEmpty = { quotes: [] as YahooSearchQuote[], news: [] as YahooSearchNews[] };
-  for (const url of urls) {
-    try {
-      const response = await fetch(url, { headers: YAHOO_SEARCH_HEADERS });
-      if (!response.ok) continue;
-      const json = (await response.json().catch(() => null)) as {
-        quotes?: YahooSearchQuote[];
-        news?: YahooSearchNews[];
-      } | null;
-      const quotes = Array.isArray(json?.quotes) ? json.quotes : [];
-      const news = Array.isArray(json?.news) ? json.news : [];
-      lastEmpty = { quotes, news };
-      if (quotes.length > 0 || news.length > 0) {
-        return { quotes, news };
-      }
-    } catch {
-      // try next host
-    }
-  }
-  return lastEmpty;
-}
-
-function mapYahooQuoteToSearchResult(row: YahooSearchQuote): (SearchResult & { rank: number }) | null {
-  const symbol = String(row.symbol || "")
-    .trim()
-    .toUpperCase();
-  if (!symbol || symbol.includes("=") || symbol.includes("^")) return null;
-  if (row.isYahooFinance === false) return null;
-
-  const type = String(row.quoteType || "").toUpperCase();
-  // Accept equities/ETFs/funds; also allow blank quoteType for fuzzy name hits (e.g. Aeva).
-  if (type && !["EQUITY", "ETF", "MUTUALFUND", "INDEX"].includes(type)) return null;
-  if (type === "INDEX") return null;
-
-  // Prefer primary US listings (AAPL, VOO) over foreign dual listings (AAPL.MX, 1RCAT.MI).
-  const hasForeignSuffix = /[.=]/.test(symbol);
-  const exch = `${row.exchDisp || ""} ${row.exchange || ""}`;
-  const isUsExchange = US_EXCHANGE_RE.test(exch) || (!hasForeignSuffix && !exch.trim());
-
-  let rank = 50;
-  if (type === "EQUITY" || type === "ETF" || !type) rank -= 10;
-  if (!hasForeignSuffix) rank -= 20;
-  if (isUsExchange) rank -= 15;
-  if (type === "ETF") rank -= 2;
-
-  return {
-    symbol,
-    displaySymbol: symbol,
-    description: String(row.shortname || row.longname || symbol).trim() || symbol,
-    type: type === "ETF" ? "ETF" : type === "MUTUALFUND" ? "Mutual Fund" : "Common Stock",
-    rank,
   };
 }
 
@@ -354,32 +248,8 @@ async function handleSearch(req: IncomingMessage | any, res: ServerResponse | an
   }
 
   try {
-    const { quotes } = await yahooFinanceSearch(query, 24, 0);
-    const seen = new Set<string>();
-    const mapped = quotes
-      .map(mapYahooQuoteToSearchResult)
-      .filter((row): row is SearchResult & { rank: number } => row != null);
-
-    // If US filters removed everything, still return the best Yahoo hits (never invent cards).
-    const preferUs = mapped.filter((row) => !/[.=]/.test(row.symbol));
-    const pool = preferUs.length > 0 ? preferUs : mapped;
-
-    const remote = pool
-      .sort((a, b) => a.rank - b.rank || a.symbol.localeCompare(b.symbol))
-      .filter((row) => {
-        if (seen.has(row.symbol)) return false;
-        seen.add(row.symbol);
-        return true;
-      })
-      .slice(0, 10)
-      .map(({ symbol, displaySymbol, description, type }) => ({
-        symbol,
-        displaySymbol,
-        description,
-        type,
-      }));
     // Live Yahoo results only — never synthesize fake ticker cards.
-    return sendJson(res, 200, remote);
+    return sendJson(res, 200, await searchYahooFinanceQuotes(query, 10));
   } catch (error) {
     console.error("Yahoo Finance search failed:", error);
     return sendJson(res, 200, []);

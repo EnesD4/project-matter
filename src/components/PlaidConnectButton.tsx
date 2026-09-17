@@ -2,12 +2,16 @@ import { Check, Landmark, Loader2, Wallet } from "lucide-react";
 import React, { useCallback, useEffect, useState } from "react";
 import { usePlaidLink, type PlaidLinkOnExit, type PlaidLinkOnSuccess } from "react-plaid-link";
 import {
+  connectLocalMockBrokerage,
   createPlaidLinkToken,
   dispatchPlaidConnected,
   exchangePlaidPublicToken,
+  isExternalBrokerageCredentialsError,
   type PlaidLinkResult,
 } from "../lib/plaidLink";
 import { createBrokerageLinkToken } from "../lib/plaid";
+import { allowClientMockFallback } from "../lib/apiBase";
+import { markPaperAccountCreated, hasPaperAccount } from "../lib/paperTrading";
 
 export type PlaidConnectMode = "bank" | "brokerage";
 
@@ -42,18 +46,39 @@ export default function PlaidConnectButton({
   const [error, setError] = useState<string | null>(null);
   const [linkToken, setLinkToken] = useState<string | null>(null);
   const [shouldAutoOpen, setShouldAutoOpen] = useState(autoOpen);
+  const [useLocalMock, setUseLocalMock] = useState(false);
+
+  const seedLocalMock = useCallback(() => {
+    if (!hasPaperAccount()) markPaperAccountCreated();
+    const mock = connectLocalMockBrokerage(institutionHint || undefined);
+    onConnected?.(mock);
+    setLinkToken(null);
+    setUseLocalMock(false);
+    setStatus("connected");
+    setError(null);
+  }, [institutionHint, onConnected]);
 
   const loadToken = useCallback(async () => {
     setStatus((current) => (current === "connected" ? current : "loading"));
     setError(null);
+    setUseLocalMock(false);
     try {
       const token =
         mode === "brokerage" ? await createBrokerageLinkToken() : await createPlaidLinkToken(mode);
       setLinkToken(token);
       setStatus((current) => (current === "connected" ? current : "idle"));
     } catch (err) {
+      const message = err instanceof Error ? err.message : "Could not start Plaid Link.";
+      // Missing SnapTrade/Plaid credentials → offer local mock (activated on click / autoOpen).
+      if (allowClientMockFallback() && isExternalBrokerageCredentialsError(message)) {
+        setLinkToken(null);
+        setUseLocalMock(true);
+        setError(null);
+        setStatus((current) => (current === "connected" ? current : "idle"));
+        return;
+      }
       setLinkToken(null);
-      setError(err instanceof Error ? err.message : "Could not start Plaid Link.");
+      setError(message);
       setStatus((current) => (current === "connected" ? current : "idle"));
     }
   }, [mode]);
@@ -107,6 +132,10 @@ export default function PlaidConnectButton({
 
   const start = useCallback(() => {
     if (status === "connected" || status === "connecting") return;
+    if (useLocalMock) {
+      seedLocalMock();
+      return;
+    }
     if (!linkToken || !ready) {
       setShouldAutoOpen(true);
       void loadToken();
@@ -116,16 +145,21 @@ export default function PlaidConnectButton({
     setStatus("connecting");
     setShouldAutoOpen(false);
     open();
-  }, [linkToken, loadToken, open, ready, status]);
+  }, [linkToken, loadToken, open, ready, seedLocalMock, status, useLocalMock]);
 
   useEffect(() => {
     if (!shouldAutoOpen || status === "connected" || status === "connecting") return;
+    if (useLocalMock) {
+      seedLocalMock();
+      setShouldAutoOpen(false);
+      return;
+    }
     if (!linkToken || !ready) return;
     setError(null);
     setStatus("connecting");
     setShouldAutoOpen(false);
     open();
-  }, [linkToken, open, ready, shouldAutoOpen, status]);
+  }, [linkToken, open, ready, seedLocalMock, shouldAutoOpen, status, useLocalMock]);
 
   if (status === "connected") {
     return (
@@ -141,11 +175,17 @@ export default function PlaidConnectButton({
   const busy = status === "loading" || status === "connecting";
   const Icon = mode === "brokerage" ? Wallet : Landmark;
   const defaultLabel =
-    mode === "brokerage"
-      ? institutionHint
-        ? `Connect ${institutionHint} Brokerage via Plaid`
-        : "Connect Brokerage via Plaid"
-      : "Connect Bank";
+    useLocalMock
+      ? mode === "brokerage"
+        ? institutionHint
+          ? `Use local ${institutionHint} demo`
+          : "Use local brokerage demo"
+        : "Use local bank demo"
+      : mode === "brokerage"
+        ? institutionHint
+          ? `Connect ${institutionHint} Brokerage via Plaid`
+          : "Connect Brokerage via Plaid"
+        : "Connect Bank";
   const buttonLabel =
     status === "connecting"
       ? institutionHint
@@ -153,19 +193,26 @@ export default function PlaidConnectButton({
         : "Opening Plaid…"
       : status === "loading"
         ? "Preparing Plaid…"
-        : label || defaultLabel;
+        : label && !useLocalMock
+          ? label
+          : defaultLabel;
 
   return (
     <div className="space-y-2">
       <button
         type="button"
         onClick={start}
-        disabled={busy || (!ready && !error && Boolean(linkToken))}
+        disabled={busy || (!ready && !error && !useLocalMock && Boolean(linkToken))}
         className={`flex w-full items-center justify-center gap-2 rounded-xl bg-[#10B981] px-4 py-3 text-sm font-extrabold text-[#042F2E] transition hover:bg-emerald-400 active:scale-[0.99] disabled:cursor-wait disabled:opacity-80 ${className}`}
       >
         {busy ? <Loader2 size={16} className="animate-spin" /> : <Icon size={16} />}
         {buttonLabel}
       </button>
+      {useLocalMock ? (
+        <p className="text-center text-[11px] font-semibold text-slate-400">
+          Live Plaid credentials are not configured — continuing with interactive local mock data.
+        </p>
+      ) : null}
       {error ? <p className="text-center text-[12px] font-semibold text-rose-300">{error}</p> : null}
     </div>
   );
