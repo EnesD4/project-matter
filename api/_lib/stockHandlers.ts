@@ -10,8 +10,10 @@ import { GEMINI_FLASH_MODEL, getGeminiApiKey, getGeminiModel } from "./env.js";
 import { readJsonBody } from "./security.js";
 import {
   buildStockBriefingPrompt,
-  parseStockBriefingJson,
+  generateStockBriefing,
+  GEMINI_GOOGLE_SEARCH_TOOL,
   type StockBriefingFundamentals,
+  type StockBriefingPerformance,
 } from "../../src/lib/gemini.js";
 import {
   EDUCATIONAL_DISCLAIMER,
@@ -179,18 +181,34 @@ function yahooSearchUrl(query: string, quotesCount: number, newsCount: number): 
 }
 
 async function yahooFinanceSearch(query: string, quotesCount = 16, newsCount = 0) {
-  const response = await fetch(yahooSearchUrl(query, quotesCount, newsCount), {
-    headers: YAHOO_SEARCH_HEADERS,
-  });
-  if (!response.ok) return { quotes: [] as YahooSearchQuote[], news: [] as YahooSearchNews[] };
-  const json = (await response.json().catch(() => null)) as {
-    quotes?: YahooSearchQuote[];
-    news?: YahooSearchNews[];
-  } | null;
-  return {
-    quotes: Array.isArray(json?.quotes) ? json.quotes : [],
-    news: Array.isArray(json?.news) ? json.news : [],
-  };
+  const urls = [
+    yahooSearchUrl(query, quotesCount, newsCount),
+    // query1 mirror — some networks block query2 intermittently.
+    yahooSearchUrl(query, quotesCount, newsCount).replace(
+      "query2.finance.yahoo.com",
+      "query1.finance.yahoo.com"
+    ),
+  ];
+  let lastEmpty = { quotes: [] as YahooSearchQuote[], news: [] as YahooSearchNews[] };
+  for (const url of urls) {
+    try {
+      const response = await fetch(url, { headers: YAHOO_SEARCH_HEADERS });
+      if (!response.ok) continue;
+      const json = (await response.json().catch(() => null)) as {
+        quotes?: YahooSearchQuote[];
+        news?: YahooSearchNews[];
+      } | null;
+      const quotes = Array.isArray(json?.quotes) ? json.quotes : [];
+      const news = Array.isArray(json?.news) ? json.news : [];
+      lastEmpty = { quotes, news };
+      if (quotes.length > 0 || news.length > 0) {
+        return { quotes, news };
+      }
+    } catch {
+      // try next host
+    }
+  }
+  return lastEmpty;
 }
 
 function mapYahooQuoteToSearchResult(row: YahooSearchQuote): (SearchResult & { rank: number }) | null {
@@ -201,15 +219,17 @@ function mapYahooQuoteToSearchResult(row: YahooSearchQuote): (SearchResult & { r
   if (row.isYahooFinance === false) return null;
 
   const type = String(row.quoteType || "").toUpperCase();
-  if (!["EQUITY", "ETF", "MUTUALFUND"].includes(type)) return null;
+  // Accept equities/ETFs/funds; also allow blank quoteType for fuzzy name hits (e.g. Aeva).
+  if (type && !["EQUITY", "ETF", "MUTUALFUND", "INDEX"].includes(type)) return null;
+  if (type === "INDEX") return null;
 
   // Prefer primary US listings (AAPL, VOO) over foreign dual listings (AAPL.MX, 1RCAT.MI).
-  const hasForeignSuffix = /[.=]/.test(symbol) || /\d/.test(symbol[0] || "");
+  const hasForeignSuffix = /[.=]/.test(symbol);
   const exch = `${row.exchDisp || ""} ${row.exchange || ""}`;
   const isUsExchange = US_EXCHANGE_RE.test(exch) || (!hasForeignSuffix && !exch.trim());
 
   let rank = 50;
-  if (type === "EQUITY" || type === "ETF") rank -= 10;
+  if (type === "EQUITY" || type === "ETF" || !type) rank -= 10;
   if (!hasForeignSuffix) rank -= 20;
   if (isUsExchange) rank -= 15;
   if (type === "ETF") rank -= 2;
@@ -334,11 +354,17 @@ async function handleSearch(req: IncomingMessage | any, res: ServerResponse | an
   }
 
   try {
-    const { quotes } = await yahooFinanceSearch(query, 16, 0);
+    const { quotes } = await yahooFinanceSearch(query, 24, 0);
     const seen = new Set<string>();
-    const remote = quotes
+    const mapped = quotes
       .map(mapYahooQuoteToSearchResult)
-      .filter((row): row is SearchResult & { rank: number } => row != null)
+      .filter((row): row is SearchResult & { rank: number } => row != null);
+
+    // If US filters removed everything, still return the best Yahoo hits (never invent cards).
+    const preferUs = mapped.filter((row) => !/[.=]/.test(row.symbol));
+    const pool = preferUs.length > 0 ? preferUs : mapped;
+
+    const remote = pool
       .sort((a, b) => a.rank - b.rank || a.symbol.localeCompare(b.symbol))
       .filter((row) => {
         if (seen.has(row.symbol)) return false;
@@ -360,7 +386,7 @@ async function handleSearch(req: IncomingMessage | any, res: ServerResponse | an
   }
 }
 
-const GEMINI_TIMEOUT_MS = 20_000;
+const GEMINI_TIMEOUT_MS = 35_000;
 
 type YahooDividendQuote = {
   dividendYield?: number | null;
@@ -532,6 +558,28 @@ async function buildMetricsSnapshot(symbol: string): Promise<StockBriefingFundam
   };
 }
 
+async function fetchPerformanceSnapshot(symbol: string): Promise<StockBriefingPerformance> {
+  try {
+    const [weekPoints, monthPoints] = await Promise.all([
+      yahooChart(symbol, "1W"),
+      yahooChart(symbol, "1M"),
+    ]);
+    const pct = (points: Array<{ price: number }>) => {
+      if (!points || points.length < 2) return null;
+      const first = points[0]?.price;
+      const last = points[points.length - 1]?.price;
+      if (!(first > 0) || !(last > 0)) return null;
+      return ((last - first) / first) * 100;
+    };
+    return {
+      weekChangePct: pct(weekPoints),
+      monthChangePct: pct(monthPoints),
+    };
+  } catch {
+    return { weekChangePct: null, monthChangePct: null };
+  }
+}
+
 async function generateStockAnalysisPayload(body: Record<string, unknown>) {
   const symbol = String(body.symbol || "")
     .trim()
@@ -542,9 +590,10 @@ async function generateStockAnalysisPayload(body: Record<string, unknown>) {
   const changePct = asFinite(body.changePct) ?? undefined;
   const positionNote = typeof body.positionNote === "string" ? body.positionNote.trim() : "";
 
-  const [fundamentals, news] = await Promise.all([
+  const [fundamentals, news, performance] = await Promise.all([
     buildMetricsSnapshot(symbol),
     fetchYahooBriefingNews(symbol, name),
+    fetchPerformanceSnapshot(symbol),
   ]);
 
   const unavailable = (message: string) => ({
@@ -568,18 +617,20 @@ async function generateStockAnalysisPayload(body: Record<string, unknown>) {
 
   const model = getGeminiModel() || GEMINI_FLASH_MODEL;
   const ai = new GoogleGenAI({ apiKey });
-  const prompt = buildStockBriefingPrompt({
+  const briefingInput = {
     symbol,
     name,
     price,
     changePct,
     positionNote,
-    fundamentals,
+    fundamentals: { ...fundamentals, name: fundamentals.name || name },
+    performance,
     weekHeadlines: news.weekHeadlines,
     monthHeadlines: news.monthHeadlines,
     headlines: news.monthHeadlines,
     systemInstruction: SPROUT_SYSTEM_INSTRUCTION,
-  });
+  };
+  const prompt = buildStockBriefingPrompt(briefingInput);
 
   try {
     const controller = new AbortController();
@@ -593,13 +644,14 @@ async function generateStockAnalysisPayload(body: Record<string, unknown>) {
           systemInstruction: SPROUT_SYSTEM_INSTRUCTION,
           abortSignal: controller.signal,
           httpOptions: { timeout: GEMINI_TIMEOUT_MS },
+          tools: [GEMINI_GOOGLE_SEARCH_TOOL],
         },
       });
       text = String(response.text || "").trim();
     } finally {
       clearTimeout(timer);
     }
-    const parsed = parseStockBriefingJson(text);
+    const parsed = generateStockBriefing(briefingInput, text);
     if (!parsed) {
       console.error("Sprout stock analysis JSON parse failed. Raw:", text.slice(0, 400));
       return unavailable("Sprout AI returned an incomplete briefing. Please try again.");

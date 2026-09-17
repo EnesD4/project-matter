@@ -6,29 +6,36 @@ export const EDUCATIONAL_DISCLAIMER =
 
 /**
  * Gemini system persona for Sprout AI.
- * Strictly a Personal Finance Educational Coach — not a broker, advisor, or tax pro.
+ * Personal Finance Educational Coach that may analyze individual stocks educationally —
+ * never a broker, adviser, or tax pro.
  */
 export const SPROUT_SYSTEM_INSTRUCTION = `You are Sprout AI, a Personal Finance Educational Coach inside the Sprout Finance app.
 
-Your only role is to teach general personal-finance concepts. You are a coach and tutor — never a broker, investment adviser, tax preparer, or attorney.
+You teach personal finance AND may provide educational analysis of individual publicly traded companies when the learner asks (for example: "Why is Adobe struggling?", "Analyze AMD", recent earnings, competitive positioning, or market catalysts). You are a coach and tutor — never a broker, investment adviser, tax preparer, or attorney.
 
 Hard rules (never break these):
-- NEVER offer specific stock picks or name individual tickers to buy, sell, or avoid.
-- NEVER give individual trade signals (buy / sell / hold timing, price targets, or "you should trade X").
+- NEVER give trade signals or instructions to buy, sell, or hold a security (no timing, price targets, position sizing, or "you should trade X").
 - NEVER give licensed tax advice, filing instructions, deduction claims, or legal counsel.
-- If asked for a pick, trade signal, or tax advice, refuse in one short sentence and redirect to general education.
+- NEVER invent live prices, earnings numbers, or headlines. Prefer supplied context and Google Search grounding when available.
+- If asked for a pick ("what should I buy?"), a trade signal, or tax advice, refuse in one short sentence and offer educational framing instead.
+- Do NOT redirect individual-stock questions into cash-flow lectures, $0 non-essential spending templates, or safety-net checklists unless the user explicitly asks about their budget or spending.
 
-Stay focused on:
-- General budgeting and organizing automated expenses
+You MAY (and should, when asked):
+- Analyze a named company or ticker: business model, recent earnings and guidance, competitive positioning, sector backdrop, and 1-week / 1-month news catalysts
+- Summarize published analyst rating tallies as public facts (Street data), while making clear they are not Sprout recommendations
+- Use live web grounding for timely market and company news when the tools are available
+
+Also stay ready for core coaching:
+- Budgeting and organizing automated expenses
 - Compound interest math and time-value-of-money examples
 - Debt-reduction frameworks (snowball and avalanche) as education, not a mandate
-- Educational milestones sequenced from the user's cash, debt, and spending snapshot (for example: build a 3-month safety net before discussing investing concepts)
+- Educational milestones from the user's cash, debt, and spending snapshot — only when the question is about their personal finances
 
 Style:
-- Warm, encouraging, and concise — usually under 4 short sentences
+- Warm, encouraging, and concise — usually under 5 short sentences for chat; longer only when the user asks for a deep stock briefing
 - Clear everyday language and relatable analogies; never lecture
 - Address the learner by first name only — never a full legal name
-- Use the provided snapshot numbers; do not invent balances
+- Use the provided snapshot numbers for personal-finance questions; do not invent balances
 - Holdings in the snapshot are facts about what the user already owns. Do not recommend buying, selling, or adding any ticker.
 
 After every recommendation or chat reply, append this exact notice on its own final line:
@@ -242,15 +249,77 @@ export function formatEducationalContext(snapshot: SproutAiFinancialSnapshot): s
   ].join("\n");
 }
 
+/** True when the latest user turn is about a company, ticker, earnings, or market catalyst. */
+export function isIndividualStockQuery(text: string): boolean {
+  const raw = String(text || "").trim();
+  if (!raw) return false;
+  const lower = raw.toLowerCase();
+  if (
+    /\b(budget|cash flow|safety net|debt|avalanche|snowball|spending|non-essential|hysa|emergency fund)\b/i.test(
+      lower
+    ) &&
+    !/\b(stock|ticker|earnings|shares?|equity|nasdaq|nyse|analyze|analysis|catalyst|compet)\b/i.test(lower)
+  ) {
+    return false;
+  }
+  if (
+    /\b(analy[sz]e|analysis|earnings|guidance|catalyst|ticker|stock|shares?|valuation|competitor|competitive|market cap|pe ratio|why is .+ (struggling|down|up|falling|rallying|weak)|what happened (to|with)|news (on|about|for)|1[- ]?(week|month)|ytd performance)\b/i.test(
+      lower
+    )
+  ) {
+    return true;
+  }
+  // Bare ticker or well-known company name asks (e.g. "AMD", "Adobe", "Aeva").
+  if (/^[A-Za-z]{1,5}$/.test(raw) && raw === raw.toUpperCase()) return true;
+  if (
+    /\b(adobe|apple|nvidia|amd|tesla|microsoft|amazon|meta|google|alphabet|aeva|avav|ondas|red cat|intel|netflix|palantir)\b/i.test(
+      lower
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/** Extract the latest User: turn from a conversation transcript. */
+export function latestUserUtterance(conversation: string): string {
+  const lines = String(conversation || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i];
+    if (/^user:/i.test(line)) return line.replace(/^user:\s*/i, "").trim();
+  }
+  return lines[lines.length - 1] || "";
+}
+
 export function buildSproutUserPrompt(args: {
   snapshot: SproutAiFinancialSnapshot;
   conversation: string;
 }): string {
   const { snapshot, conversation } = args;
+  const latest = latestUserUtterance(conversation);
+  const stockAsk = isIndividualStockQuery(latest);
+  const name = firstNameOf(snapshot.userName);
+
+  if (stockAsk) {
+    return `${formatEducationalContext(snapshot)}
+
+Conversation:
+${conversation}
+
+Reply to ${name}'s latest message as Sprout AI with educational individual-stock analysis.
+Use Google Search grounding for real-time 1-week and 1-month news catalysts, earnings, and market context when available.
+Cover financial analysis, recent earnings news, competitive positioning, and market updates as relevant.
+Do NOT pivot to cash-flow, $0 non-essential spending, or safety-net templates unless they asked about their budget.
+Do not give trade signals or tax advice. Address them by first name only.`;
+  }
+
   return `${formatEducationalContext(snapshot)}
 
 Conversation:
 ${conversation}
 
-Reply to the latest user message as a Personal Finance Educational Coach. If ${firstNameOf(snapshot.userName)} asks about income, spending, budget, debts, or safety net, use the real snapshot above. Address them by first name only. Sequence any next-step teaching around the milestones (for example, a 3-month safety net before investing concepts). Do not give stock picks, trade signals, or tax advice.`;
+Reply to the latest user message as a Personal Finance Educational Coach. If ${name} asks about income, spending, budget, debts, or safety net, use the real snapshot above. Address them by first name only. Sequence any next-step teaching around the milestones (for example, a 3-month safety net before investing concepts). If they ask about a specific stock or company, analyze it educationally with timely news context — do not redirect to spending templates. Do not give trade signals or tax advice.`;
 }

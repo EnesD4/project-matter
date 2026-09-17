@@ -2,6 +2,9 @@ import { GoogleGenAI } from "@google/genai";
 import type { IncomingMessage, ServerResponse } from "http";
 import {
   buildFinancialDiagnosticsPrompt,
+  GEMINI_GOOGLE_SEARCH_TOOL,
+  isIndividualStockQuery,
+  latestUserUtterance,
   type GeminiFinancialParams,
 } from "../../src/lib/gemini.js";
 import {
@@ -39,6 +42,7 @@ export type GeminiCoachErrorCode =
 type CoachHttpError = Error & { status: number; code: GeminiCoachErrorCode };
 
 const GEMINI_TIMEOUT_MS = 20_000;
+const GEMINI_GROUNDED_TIMEOUT_MS = 35_000;
 const MAX_CONVERSATION_CHARS = 12_000;
 const RATE_WINDOW_MS = 60_000;
 const RATE_MAX = 20;
@@ -158,15 +162,40 @@ function clipConversation(text: string): string {
   return text.slice(-MAX_CONVERSATION_CHARS);
 }
 
-function buildUserPrompt(body: GeminiCoachRequest): string {
-  const conversation = clipConversation(
+function conversationText(body: GeminiCoachRequest): string {
+  return clipConversation(
     (body.conversation || "").trim() || historyToConversation(body.history) || (body.message || "").trim()
   );
+}
+
+function buildUserPrompt(body: GeminiCoachRequest): { prompt: string; enableWebGrounding: boolean } {
+  const conversation = conversationText(body);
   if (!conversation) {
     throw coachError("A message is required.", 400, "invalid");
   }
 
   const snapshot = body.snapshot || FALLBACK_SNAPSHOT;
+  const latest = latestUserUtterance(conversation) || (body.message || "").trim();
+  const stockAsk = isIndividualStockQuery(latest);
+  const portfolioLine = `- Investment portfolio (facts only — do not recommend trades): ${
+    body.portfolioContext?.trim() || "No investments or connected accounts yet."
+  }`;
+
+  const base = buildSproutUserPrompt({ snapshot, conversation });
+
+  if (stockAsk) {
+    return {
+      enableWebGrounding: true,
+      prompt: `${base}
+
+---
+Stock-analysis mode with live web grounding: answer the company/ticker question directly.
+Cover financial analysis, recent earnings, competitive positioning, and 1-week / 1-month catalysts.
+Do NOT redirect to cash-flow, non-essential spending cuts, or $0 spending templates.
+${portfolioLine}`,
+    };
+  }
+
   const financial =
     body.financial ||
     ({
@@ -195,16 +224,14 @@ function buildUserPrompt(body: GeminiCoachRequest): string {
         })),
     } satisfies GeminiFinancialParams);
 
-  return `${buildSproutUserPrompt({
-    snapshot,
-    conversation,
-  })}
+  return {
+    enableWebGrounding: false,
+    prompt: `${base}
 
 ---
 ${buildFinancialDiagnosticsPrompt(financial)}
-\n- Investment portfolio (facts only — do not recommend trades): ${
-    body.portfolioContext?.trim() || "No investments or connected accounts yet."
-  }`;
+${portfolioLine}`,
+  };
 }
 
 function clientIp(req: IncomingMessage): string {
@@ -294,9 +321,12 @@ function beginSse(res: ServerResponse) {
   });
 }
 
-async function withGeminiTimeout<T>(work: (signal: AbortSignal) => Promise<T>): Promise<T> {
+async function withGeminiTimeout<T>(
+  work: (signal: AbortSignal) => Promise<T>,
+  timeoutMs = GEMINI_TIMEOUT_MS
+): Promise<T> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await work(controller.signal);
   } finally {
@@ -314,20 +344,23 @@ export async function generateCoachReply(body: GeminiCoachRequest): Promise<stri
     throw coachError("Gemini is not configured on the server.", 503, "unavailable");
   }
 
-  const userPrompt = buildUserPrompt(body);
+  const { prompt: userPrompt, enableWebGrounding } = buildUserPrompt(body);
   const model = getGeminiModel() || GEMINI_FLASH_MODEL;
   const ai = getGeminiClient(apiKey);
 
-  const response = await withGeminiTimeout((abortSignal) =>
-    ai.models.generateContent({
-      model,
-      contents: userPrompt,
-      config: {
-        systemInstruction: SPROUT_SYSTEM_INSTRUCTION,
-        abortSignal,
-        httpOptions: { timeout: GEMINI_TIMEOUT_MS },
-      },
-    })
+  const response = await withGeminiTimeout(
+    (abortSignal) =>
+      ai.models.generateContent({
+        model,
+        contents: userPrompt,
+        config: {
+          systemInstruction: SPROUT_SYSTEM_INSTRUCTION,
+          abortSignal,
+          httpOptions: { timeout: enableWebGrounding ? GEMINI_GROUNDED_TIMEOUT_MS : GEMINI_TIMEOUT_MS },
+          ...(enableWebGrounding ? { tools: [GEMINI_GOOGLE_SEARCH_TOOL] } : {}),
+        },
+      }),
+    enableWebGrounding ? GEMINI_GROUNDED_TIMEOUT_MS : GEMINI_TIMEOUT_MS
   );
 
   const text = stripEducationalDisclaimer(String(response.text || ""));
@@ -346,11 +379,39 @@ async function streamCoachReply(
     throw coachError("Gemini is not configured on the server.", 503, "unavailable");
   }
 
-  const userPrompt = buildUserPrompt(body);
+  const { prompt: userPrompt, enableWebGrounding } = buildUserPrompt(body);
   const model = getGeminiModel() || GEMINI_FLASH_MODEL;
   const ai = getGeminiClient(apiKey);
 
   beginSse(res);
+
+  // Google Search grounding is more reliable on non-stream generateContent; emit as one SSE done.
+  if (enableWebGrounding) {
+    const response = await withGeminiTimeout(
+      (abortSignal) =>
+        ai.models.generateContent({
+          model,
+          contents: userPrompt,
+          config: {
+            systemInstruction: SPROUT_SYSTEM_INSTRUCTION,
+            abortSignal,
+            httpOptions: { timeout: GEMINI_GROUNDED_TIMEOUT_MS },
+            tools: [GEMINI_GOOGLE_SEARCH_TOOL],
+          },
+        }),
+      GEMINI_GROUNDED_TIMEOUT_MS
+    );
+    const text = stripEducationalDisclaimer(String(response.text || ""));
+    if (!text) {
+      writeSse(res, "error", { error: "Sprout AI came back blank. Try that question again.", code: "blank" });
+      res.end();
+      return;
+    }
+    writeSse(res, "delta", { delta: text });
+    writeSse(res, "done", { text, source: "gemini", model, grounded: true });
+    res.end();
+    return;
+  }
 
   const stream = await withGeminiTimeout((abortSignal) =>
     ai.models.generateContentStream({

@@ -207,7 +207,7 @@ function WatchlistCard({
         const data = await fetchStockSearch(query, controller.signal);
         const primary = data.filter((r) => !r.symbol.includes("."));
         const ranked = (primary.length > 0 ? primary : data).slice(0, 6);
-        setSearchResults(ranked.length > 0 ? ranked : local);
+        setSearchResults(ranked);
       } catch (err) {
         if ((err as Error).name !== "AbortError") setSearchResults(local);
       } finally {

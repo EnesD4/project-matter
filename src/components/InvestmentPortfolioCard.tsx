@@ -1171,6 +1171,7 @@ export default function InvestmentPortfolioCard({
     }
 
     const local = localTickerMatches(query);
+    // Instant catalog hints only — never invent unknown tickers while waiting for Yahoo.
     setSearchResults(local);
     setSearchError(null);
     setSearchLoading(true);
@@ -1184,8 +1185,8 @@ export default function InvestmentPortfolioCard({
         // but keep ticker + company-name matches at the front of the list.
         const primary = data.filter((r) => !r.symbol.includes("."));
         const ranked = (primary.length > 0 ? primary : data).slice(0, 8);
-        // Keep local catalog hits when the API returns nothing — never invent unknown tickers.
-        setSearchResults(ranked.length > 0 ? ranked : local);
+        // Live Yahoo + known catalog only — empty list if neither matched (no fake cards).
+        setSearchResults(ranked);
       } catch (err) {
         if ((err as Error).name !== "AbortError") {
           setSearchResults(local);

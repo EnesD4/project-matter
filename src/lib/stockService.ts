@@ -664,8 +664,11 @@ export async function fetchStockSearch(
       signal
     );
     const remote = parseSearchPayload(data);
-    // Prefer live Yahoo Finance hits; keep local catalog only to fill gaps.
-    return mergeSearchResults(q, remote, local);
+    // Live Yahoo proxy hits win. Local catalog only fills exact known gaps — never invents tickers.
+    if (remote.length > 0) {
+      return mergeSearchResults(q, remote, local);
+    }
+    return local;
   } catch (err) {
     if ((err as Error).name === "AbortError") throw err;
     return local;

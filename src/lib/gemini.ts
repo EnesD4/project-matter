@@ -8,8 +8,12 @@ import { safeFormatNumber, toFiniteNumber } from "./money";
 import {
   buildSproutUserPrompt,
   firstNameOf,
+  isIndividualStockQuery,
+  latestUserUtterance,
   type SproutAiFinancialSnapshot,
 } from "./sproutAi";
+
+export { isIndividualStockQuery, latestUserUtterance };
 
 /** Dynamic user financial parameters for Gemini diagnostic prompts. */
 export type GeminiFinancialParams = {
@@ -121,6 +125,15 @@ export function buildGeminiCoachDiagnosticsPrompt(args: {
   };
 
   const base = buildSproutUserPrompt({ snapshot, conversation });
+  // Individual stock questions must NOT be forced into cash-flow / cutback templates.
+  if (isIndividualStockQuery(latestUserUtterance(conversation))) {
+    return `${base}
+
+---
+Stock-analysis mode: answer the company/ticker question with educational financial analysis and timely news.
+Do not force cash-flow, non-essential spending cuts, or $0 spending templates into this reply.`;
+  }
+
   return `${base}
 
 ---
@@ -262,14 +275,23 @@ export function normalizeStockBriefing(
   };
 }
 
-/** Prompt body for the Sprout AI stock briefing generator (live news + fundamentals). */
-export function buildStockBriefingPrompt(args: {
+export type StockBriefingPerformance = {
+  /** Approx. 1-week price change percent when known. */
+  weekChangePct?: number | null;
+  /** Approx. 1-month price change percent when known. */
+  monthChangePct?: number | null;
+  /** Optional short tape note (e.g. "underperformed XLK"). */
+  note?: string;
+};
+
+export type GenerateStockBriefingInput = {
   symbol: string;
   name: string;
   price?: number;
   changePct?: number;
   positionNote?: string;
   fundamentals: StockBriefingFundamentals;
+  performance?: StockBriefingPerformance;
   /** Recent headlines from roughly the last 7 days. */
   weekHeadlines?: string[];
   /** Headlines spanning roughly the last 30 days. */
@@ -277,7 +299,16 @@ export function buildStockBriefingPrompt(args: {
   /** @deprecated Prefer weekHeadlines / monthHeadlines. */
   headlines?: string[];
   systemInstruction?: string;
-}): string {
+};
+
+function formatPct(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "n/a";
+  const sign = value >= 0 ? "+" : "";
+  return `${sign}${value.toFixed(2)}%`;
+}
+
+/** Prompt body for the Sprout AI stock briefing generator (live news + fundamentals). */
+export function buildStockBriefingPrompt(args: GenerateStockBriefingInput): string {
   const f = args.fundamentals;
   const rec = f.recommendation;
   const recLine = rec
@@ -286,7 +317,7 @@ export function buildStockBriefingPrompt(args: {
   const week =
     args.weekHeadlines && args.weekHeadlines.length > 0
       ? args.weekHeadlines.map((h, i) => `${i + 1}. ${h}`).join("\n")
-      : "No headlines captured for the last 7 days.";
+      : "No headlines captured for the last 7 days — use Google Search grounding for live catalysts.";
   const monthSource =
     args.monthHeadlines && args.monthHeadlines.length > 0
       ? args.monthHeadlines
@@ -296,25 +327,30 @@ export function buildStockBriefingPrompt(args: {
   const month =
     monthSource.length > 0
       ? monthSource.map((h, i) => `${i + 1}. ${h}`).join("\n")
-      : "No headlines captured for the last 30 days.";
+      : "No headlines captured for the last 30 days — use Google Search grounding for live catalysts.";
   const priceLine =
     args.price != null
       ? `Current price: $${args.price.toFixed(2)}${
           args.changePct != null
-            ? ` (${args.changePct >= 0 ? "+" : ""}${args.changePct.toFixed(2)}%)`
+            ? ` (day ${args.changePct >= 0 ? "+" : ""}${args.changePct.toFixed(2)}%)`
             : ""
         }`
       : "Current price: not provided.";
+  const perf = args.performance || {};
+  const performanceLine = `1-week performance: ${formatPct(perf.weekChangePct)} | 1-month performance: ${formatPct(
+    perf.monthChangePct
+  )}${perf.note ? ` | Note: ${perf.note}` : ""}`;
   const system = args.systemInstruction || "";
 
   return `${system ? `${system}\n\n` : ""}Write a detailed educational briefing about ${args.name} (${args.symbol}). Teach context only — never a stock pick or trade signal.
 
-Use the live market news and fundamentals below. Cover BOTH:
+Use the live market news, 1-month performance, and fundamentals below. Prefer Google Search grounding for anything missing or stale. Cover BOTH:
 1) Macro / market context that affects this name (rates, sector tape, risk appetite, peers), and
 2) Company-specific catalysts from the last 1 week and last 1 month (earnings, guidance, deals, product launches, regulatory news, capital actions).
 
 Stock: ${args.symbol} (${args.name})
 ${priceLine}
+${performanceLine}
 Revenue growth YoY: ${f.revenueGrowthYoy != null ? `${f.revenueGrowthYoy.toFixed(1)}%` : "n/a"}
 P/E: ${f.pe != null ? f.pe.toFixed(1) : "n/a"} (${f.peTag || "N/A"})
 Cash: ${f.cash != null ? Math.round(f.cash) : "n/a"}  Debt: ${f.debt != null ? Math.round(f.debt) : "n/a"}
@@ -337,8 +373,26 @@ Return ONLY valid JSON (no markdown) with exactly these keys:
 }
 
 Rules:
-- Be specific and non-generic. Reference themes from the supplied headlines when present (without inventing precise dollar figures that are not implied above).
+- Be specific and non-generic. Reference themes from the supplied headlines and 1-month performance when present (without inventing precise dollar figures that are not implied above).
 - Everyday language. No ticker-dump. Educational briefing only — do not tell the user to buy, sell, or hold.
 - sentiment must mirror published Street ratings, never a Sprout trade signal.
+- Never return a generic fundamentals-only filler briefing. If news is thin, ground on the web and say what you found.
 - No licensed tax advice. Keep each bullet to 1-2 sentences, but make them information-dense.`;
 }
+
+/**
+ * Build + validate the educational stock briefing payload.
+ * Callers supply model text from Gemini (with Google Search grounding). Returns null on parse failure —
+ * never invents a fundamentals-based fallback briefing.
+ */
+export function generateStockBriefing(
+  input: GenerateStockBriefingInput,
+  modelText: string
+): Omit<SproutStockAnalysis, "source" | "warning" | "disclaimer"> | null {
+  const prompt = buildStockBriefingPrompt(input);
+  if (!prompt.trim() || !String(modelText || "").trim()) return null;
+  return parseStockBriefingJson(modelText);
+}
+
+/** Gemini tool config: live Google Search grounding for stock / market questions. */
+export const GEMINI_GOOGLE_SEARCH_TOOL = { googleSearch: {} } as const;
