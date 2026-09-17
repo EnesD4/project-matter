@@ -128,9 +128,14 @@ import StockLogo from "./StockLogo";
 
 export type PortfolioWorkspace = "verified" | "paper";
 
-function externalBrokerTradeUrl(symbol: string): string {
-  const ticker = encodeURIComponent(String(symbol || "").toUpperCase());
-  return `https://robinhood.com/stocks/${ticker}`;
+/** Deep-link to the user's connected brokerage (or a sensible default). */
+function externalBrokerHomeUrl(brokerName?: string | null): string {
+  const name = String(brokerName || "").toLowerCase();
+  if (/fidelity/.test(name)) return "https://www.fidelity.com";
+  if (/schwab/.test(name)) return "https://www.schwab.com";
+  if (/e\s*\*?\s*trade|etrade/.test(name)) return "https://us.etrade.com";
+  if (/webull/.test(name)) return "https://www.webull.com";
+  return "https://robinhood.com";
 }
 
 export type StockHolding = {
@@ -418,30 +423,29 @@ type InvestmentPortfolioCardProps = {
 
 function PortfolioActionButtons({
   workspace,
-  paperReady,
+  brokerageUrl,
   onAddStock,
   onConnectBroker,
-  onOpenPaperLab,
   onSwitchToVerified,
 }: {
   workspace: PortfolioWorkspace;
-  paperReady: boolean;
+  brokerageUrl: string;
   onAddStock: () => void;
   onConnectBroker: () => void;
-  onOpenPaperLab: () => void;
   onSwitchToVerified: () => void;
 }) {
   if (workspace === "verified") {
     return (
       <div className="mt-4 flex flex-col gap-2">
-        <button
-          type="button"
-          onClick={onOpenPaperLab}
+        <a
+          href={brokerageUrl}
+          target="_blank"
+          rel="noopener noreferrer"
           className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-[#10B981] px-4 py-3 text-sm font-bold text-[#042F2E] transition hover:bg-emerald-400 active:scale-[0.99]"
         >
-          <Plus size={16} />
-          {paperReady ? "Open Simulation Lab" : "Create Paper Account"}
-        </button>
+          <ExternalLink size={16} />
+          Open Brokerage
+        </a>
         <button
           type="button"
           onClick={onConnectBroker}
@@ -2263,9 +2267,7 @@ export default function InvestmentPortfolioCard({
         <p className="mt-1 text-3xl font-extrabold tracking-tight text-white tabular-nums">
           {privacyMoney(privacyMode, displayValue)}
         </p>
-        {workspace === "verified" ? (
-          <p className="mt-1 text-[11px] font-semibold text-sky-300/90">Read-only linked holdings</p>
-        ) : paperReady ? (
+        {workspace === "paper" && paperReady ? (
           <p className="mt-1 text-[11px] font-semibold text-emerald-300/90">
             Paper cash {privacyMoney(privacyMode, paperCash)} · starting {privacyMoney(privacyMode, PAPER_STARTING_CASH)}
           </p>
@@ -2773,18 +2775,6 @@ export default function InvestmentPortfolioCard({
                         </div>
                         {isStock && <ChevronRight size={14} className="flex-shrink-0 text-[#9CA3AF]" />}
                       </button>
-                      {isStock && workspace === "verified" ? (
-                        <a
-                          href={externalBrokerTradeUrl(h.symbol)}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="ml-1 inline-flex flex-shrink-0 items-center gap-1 rounded-lg border border-[#1F2937] bg-[#0A0A0A] px-2 py-1.5 text-[10px] font-bold text-sky-300 transition hover:border-sky-500/40 hover:bg-sky-500/10"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          Trade on Robinhood
-                          <ExternalLink size={11} aria-hidden />
-                        </a>
-                      ) : null}
                     </div>
                   );
                 })}
@@ -2827,10 +2817,11 @@ export default function InvestmentPortfolioCard({
 
       <PortfolioActionButtons
         workspace={workspace}
-        paperReady={paperReady}
+        brokerageUrl={externalBrokerHomeUrl(
+          linkedBrokerInstitutions[0] || readDemoBrokerageMeta()?.brokerName
+        )}
         onAddStock={openManualModal}
         onConnectBroker={openConnectBrokerModal}
-        onOpenPaperLab={openPaperLab}
         onSwitchToVerified={switchToVerifiedPortfolio}
       />
 
