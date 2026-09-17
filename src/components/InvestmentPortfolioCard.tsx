@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ArrowLeftRight,
   Banknote,
   BarChart3,
   ChevronDown,
@@ -421,12 +422,14 @@ function PortfolioActionButtons({
   onAddStock,
   onConnectBroker,
   onOpenPaperLab,
+  onSwitchToVerified,
 }: {
   workspace: PortfolioWorkspace;
   paperReady: boolean;
   onAddStock: () => void;
   onConnectBroker: () => void;
   onOpenPaperLab: () => void;
+  onSwitchToVerified: () => void;
 }) {
   if (workspace === "verified") {
     return (
@@ -463,10 +466,11 @@ function PortfolioActionButtons({
       </button>
       <button
         type="button"
-        onClick={onAddStock}
+        onClick={onSwitchToVerified}
         className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-[#2A2A2A] bg-[#0A0A0A] px-4 py-3 text-sm font-bold text-white transition hover:border-[#3F3F3F] hover:bg-[#111111] active:scale-[0.99]"
       >
-        Place Order
+        <ArrowLeftRight size={16} />
+        Switch to Real Portfolio
       </button>
     </div>
   );
@@ -1513,7 +1517,17 @@ export default function InvestmentPortfolioCard({
       setPaperReady(true);
       setPaperCash(loadPaperCash());
     }
+    // Keep holdings/cash/modals in memory — only flip the visible workspace.
+    setConnectBrokerOpen(false);
     setWorkspace("paper");
+  };
+
+  const switchToVerifiedPortfolio = () => {
+    // Instant view toggle; do not remount or clear paper/verified data.
+    setModalOpen(false);
+    setPaperQuestIntent(null);
+    setConnectBrokerOpen(false);
+    setWorkspace("verified");
   };
 
   const closeModal = () => {
@@ -2193,7 +2207,7 @@ export default function InvestmentPortfolioCard({
           <button
             type="button"
             aria-pressed={workspace === "verified"}
-            onClick={() => setWorkspace("verified")}
+            onClick={switchToVerifiedPortfolio}
             className={`flex-1 rounded-lg px-3 py-2 text-[11px] font-extrabold uppercase tracking-wide transition ${
               workspace === "verified"
                 ? "bg-sky-500/20 text-sky-200"
@@ -2206,8 +2220,12 @@ export default function InvestmentPortfolioCard({
             type="button"
             aria-pressed={workspace === "paper"}
             onClick={() => {
-              if (paperReady) setWorkspace("paper");
-              else openPaperLab();
+              if (paperReady) {
+                setConnectBrokerOpen(false);
+                setWorkspace("paper");
+              } else {
+                openPaperLab();
+              }
             }}
             className={`flex-1 rounded-lg px-3 py-2 text-[11px] font-extrabold uppercase tracking-wide transition ${
               workspace === "paper"
@@ -2813,6 +2831,7 @@ export default function InvestmentPortfolioCard({
         onAddStock={openManualModal}
         onConnectBroker={openConnectBrokerModal}
         onOpenPaperLab={openPaperLab}
+        onSwitchToVerified={switchToVerifiedPortfolio}
       />
 
       {typeof belowHoldings === "function"
